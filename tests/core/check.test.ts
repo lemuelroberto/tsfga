@@ -1,6 +1,34 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { check } from "src/core/check.ts";
+import type { RelationConfig, Tuple } from "src/core/types.ts";
 import { MockTupleStore } from "tests/helpers/mock-store.ts";
+
+function makeTuple(overrides: Partial<Tuple> = {}): Tuple {
+  return {
+    objectType: "",
+    objectId: "",
+    relation: "",
+    subjectType: "",
+    subjectId: "",
+    subjectRelation: null,
+    conditionName: null,
+    conditionContext: null,
+    ...overrides,
+  };
+}
+
+function makeConfig(overrides: Partial<RelationConfig> = {}): RelationConfig {
+  return {
+    objectType: "",
+    relation: "",
+    directlyAssignableTypes: null,
+    impliedBy: null,
+    computedUserset: null,
+    tupleToUserset: null,
+    allowsUsersetSubjects: false,
+    ...overrides,
+  };
+}
 
 describe("check algorithm", () => {
   let store: MockTupleStore;
@@ -11,13 +39,15 @@ describe("check algorithm", () => {
 
   describe("Step 1: Direct tuple check", () => {
     test("returns true for direct tuple match", async () => {
-      store.tuples.push({
-        objectType: "doc",
-        objectId: "1",
-        relation: "viewer",
-        subjectType: "user",
-        subjectId: "alice",
-      });
+      store.tuples.push(
+        makeTuple({
+          objectType: "doc",
+          objectId: "1",
+          relation: "viewer",
+          subjectType: "user",
+          subjectId: "alice",
+        }),
+      );
       expect(
         await check(store, {
           objectType: "doc",
@@ -42,14 +72,16 @@ describe("check algorithm", () => {
     });
 
     test("evaluates condition on direct tuple", async () => {
-      store.tuples.push({
-        objectType: "doc",
-        objectId: "1",
-        relation: "viewer",
-        subjectType: "user",
-        subjectId: "alice",
-        conditionName: "in_region",
-      });
+      store.tuples.push(
+        makeTuple({
+          objectType: "doc",
+          objectId: "1",
+          relation: "viewer",
+          subjectType: "user",
+          subjectId: "alice",
+          conditionName: "in_region",
+        }),
+      );
       store.conditionDefinitions.push({
         name: "in_region",
         expression: 'region == "us"',
@@ -83,22 +115,26 @@ describe("check algorithm", () => {
   describe("Step 2: Userset expansion", () => {
     test("resolves userset tuple", async () => {
       // channel:proj#writer -> workspace:sandcastle#member
-      store.tuples.push({
-        objectType: "channel",
-        objectId: "proj",
-        relation: "writer",
-        subjectType: "workspace",
-        subjectId: "sandcastle",
-        subjectRelation: "member",
-      });
+      store.tuples.push(
+        makeTuple({
+          objectType: "channel",
+          objectId: "proj",
+          relation: "writer",
+          subjectType: "workspace",
+          subjectId: "sandcastle",
+          subjectRelation: "member",
+        }),
+      );
       // user:catherine is member of workspace:sandcastle
-      store.tuples.push({
-        objectType: "workspace",
-        objectId: "sandcastle",
-        relation: "member",
-        subjectType: "user",
-        subjectId: "catherine",
-      });
+      store.tuples.push(
+        makeTuple({
+          objectType: "workspace",
+          objectId: "sandcastle",
+          relation: "member",
+          subjectType: "user",
+          subjectId: "catherine",
+        }),
+      );
 
       expect(
         await check(store, {
@@ -112,14 +148,16 @@ describe("check algorithm", () => {
     });
 
     test("returns false when userset subject doesn't have relation", async () => {
-      store.tuples.push({
-        objectType: "channel",
-        objectId: "proj",
-        relation: "writer",
-        subjectType: "workspace",
-        subjectId: "sandcastle",
-        subjectRelation: "member",
-      });
+      store.tuples.push(
+        makeTuple({
+          objectType: "channel",
+          objectId: "proj",
+          relation: "writer",
+          subjectType: "workspace",
+          subjectId: "sandcastle",
+          subjectRelation: "member",
+        }),
+      );
       // david is NOT a member of workspace:sandcastle (he's a guest)
 
       expect(
@@ -134,22 +172,26 @@ describe("check algorithm", () => {
     });
 
     test("evaluates condition on userset tuple", async () => {
-      store.tuples.push({
-        objectType: "channel",
-        objectId: "proj",
-        relation: "writer",
-        subjectType: "workspace",
-        subjectId: "sandcastle",
-        subjectRelation: "member",
-        conditionName: "weekday_only",
-      });
-      store.tuples.push({
-        objectType: "workspace",
-        objectId: "sandcastle",
-        relation: "member",
-        subjectType: "user",
-        subjectId: "alice",
-      });
+      store.tuples.push(
+        makeTuple({
+          objectType: "channel",
+          objectId: "proj",
+          relation: "writer",
+          subjectType: "workspace",
+          subjectId: "sandcastle",
+          subjectRelation: "member",
+          conditionName: "weekday_only",
+        }),
+      );
+      store.tuples.push(
+        makeTuple({
+          objectType: "workspace",
+          objectId: "sandcastle",
+          relation: "member",
+          subjectType: "user",
+          subjectId: "alice",
+        }),
+      );
       store.conditionDefinitions.push({
         name: "weekday_only",
         expression: "is_weekday == true",
@@ -182,25 +224,29 @@ describe("check algorithm", () => {
 
   describe("Step 3: Relation inheritance (implied_by)", () => {
     test("resolves implied relation", async () => {
-      store.relationConfigs.push({
-        objectType: "workspace",
-        relation: "member",
-        impliedBy: ["channels_admin"],
-        allowsUsersetSubjects: false,
-      });
-      store.relationConfigs.push({
-        objectType: "workspace",
-        relation: "channels_admin",
-        impliedBy: ["legacy_admin"],
-        allowsUsersetSubjects: false,
-      });
-      store.tuples.push({
-        objectType: "workspace",
-        objectId: "sandcastle",
-        relation: "legacy_admin",
-        subjectType: "user",
-        subjectId: "amy",
-      });
+      store.relationConfigs.push(
+        makeConfig({
+          objectType: "workspace",
+          relation: "member",
+          impliedBy: ["channels_admin"],
+        }),
+      );
+      store.relationConfigs.push(
+        makeConfig({
+          objectType: "workspace",
+          relation: "channels_admin",
+          impliedBy: ["legacy_admin"],
+        }),
+      );
+      store.tuples.push(
+        makeTuple({
+          objectType: "workspace",
+          objectId: "sandcastle",
+          relation: "legacy_admin",
+          subjectType: "user",
+          subjectId: "amy",
+        }),
+      );
 
       // amy -> legacy_admin -> channels_admin -> member
       expect(
@@ -215,19 +261,22 @@ describe("check algorithm", () => {
     });
 
     test("doesn't resolve unrelated implied chain", async () => {
-      store.relationConfigs.push({
-        objectType: "workspace",
-        relation: "member",
-        impliedBy: ["channels_admin"],
-        allowsUsersetSubjects: false,
-      });
-      store.tuples.push({
-        objectType: "workspace",
-        objectId: "sandcastle",
-        relation: "guest",
-        subjectType: "user",
-        subjectId: "david",
-      });
+      store.relationConfigs.push(
+        makeConfig({
+          objectType: "workspace",
+          relation: "member",
+          impliedBy: ["channels_admin"],
+        }),
+      );
+      store.tuples.push(
+        makeTuple({
+          objectType: "workspace",
+          objectId: "sandcastle",
+          relation: "guest",
+          subjectType: "user",
+          subjectId: "david",
+        }),
+      );
 
       expect(
         await check(store, {
@@ -243,19 +292,22 @@ describe("check algorithm", () => {
 
   describe("Step 4: Computed userset", () => {
     test("checks computed userset relation on same object", async () => {
-      store.relationConfigs.push({
-        objectType: "branch",
-        relation: "can_merge",
-        computedUserset: "can_push",
-        allowsUsersetSubjects: false,
-      });
-      store.tuples.push({
-        objectType: "branch",
-        objectId: "main",
-        relation: "can_push",
-        subjectType: "user",
-        subjectId: "alice",
-      });
+      store.relationConfigs.push(
+        makeConfig({
+          objectType: "branch",
+          relation: "can_merge",
+          computedUserset: "can_push",
+        }),
+      );
+      store.tuples.push(
+        makeTuple({
+          objectType: "branch",
+          objectId: "main",
+          relation: "can_push",
+          subjectType: "user",
+          subjectId: "alice",
+        }),
+      );
 
       expect(
         await check(store, {
@@ -269,12 +321,13 @@ describe("check algorithm", () => {
     });
 
     test("returns false when user doesn't have computed relation", async () => {
-      store.relationConfigs.push({
-        objectType: "branch",
-        relation: "can_merge",
-        computedUserset: "can_push",
-        allowsUsersetSubjects: false,
-      });
+      store.relationConfigs.push(
+        makeConfig({
+          objectType: "branch",
+          relation: "can_merge",
+          computedUserset: "can_push",
+        }),
+      );
 
       expect(
         await check(store, {
@@ -290,31 +343,36 @@ describe("check algorithm", () => {
 
   describe("Step 5: Tuple-to-userset", () => {
     test("follows tupleset then checks computed userset", async () => {
-      store.relationConfigs.push({
-        objectType: "repo",
-        relation: "reader",
-        tupleToUserset: {
-          tupleset: "organization",
-          computedUserset: "member",
-        },
-        allowsUsersetSubjects: false,
-      });
+      store.relationConfigs.push(
+        makeConfig({
+          objectType: "repo",
+          relation: "reader",
+          tupleToUserset: {
+            tupleset: "organization",
+            computedUserset: "member",
+          },
+        }),
+      );
       // repo:myrepo has organization -> org:acme
-      store.tuples.push({
-        objectType: "repo",
-        objectId: "myrepo",
-        relation: "organization",
-        subjectType: "org",
-        subjectId: "acme",
-      });
+      store.tuples.push(
+        makeTuple({
+          objectType: "repo",
+          objectId: "myrepo",
+          relation: "organization",
+          subjectType: "org",
+          subjectId: "acme",
+        }),
+      );
       // user:alice is member of org:acme
-      store.tuples.push({
-        objectType: "org",
-        objectId: "acme",
-        relation: "member",
-        subjectType: "user",
-        subjectId: "alice",
-      });
+      store.tuples.push(
+        makeTuple({
+          objectType: "org",
+          objectId: "acme",
+          relation: "member",
+          subjectType: "user",
+          subjectId: "alice",
+        }),
+      );
 
       expect(
         await check(store, {
@@ -328,22 +386,25 @@ describe("check algorithm", () => {
     });
 
     test("returns false when user doesn't have relation on linked object", async () => {
-      store.relationConfigs.push({
-        objectType: "repo",
-        relation: "reader",
-        tupleToUserset: {
-          tupleset: "organization",
-          computedUserset: "member",
-        },
-        allowsUsersetSubjects: false,
-      });
-      store.tuples.push({
-        objectType: "repo",
-        objectId: "myrepo",
-        relation: "organization",
-        subjectType: "org",
-        subjectId: "acme",
-      });
+      store.relationConfigs.push(
+        makeConfig({
+          objectType: "repo",
+          relation: "reader",
+          tupleToUserset: {
+            tupleset: "organization",
+            computedUserset: "member",
+          },
+        }),
+      );
+      store.tuples.push(
+        makeTuple({
+          objectType: "repo",
+          objectId: "myrepo",
+          relation: "organization",
+          subjectType: "org",
+          subjectId: "acme",
+        }),
+      );
       // bob is NOT a member of org:acme
 
       expect(
@@ -361,18 +422,20 @@ describe("check algorithm", () => {
   describe("Max depth protection", () => {
     test("returns false when max depth exceeded", async () => {
       // Create circular implied_by
-      store.relationConfigs.push({
-        objectType: "doc",
-        relation: "a",
-        impliedBy: ["b"],
-        allowsUsersetSubjects: false,
-      });
-      store.relationConfigs.push({
-        objectType: "doc",
-        relation: "b",
-        impliedBy: ["a"],
-        allowsUsersetSubjects: false,
-      });
+      store.relationConfigs.push(
+        makeConfig({
+          objectType: "doc",
+          relation: "a",
+          impliedBy: ["b"],
+        }),
+      );
+      store.relationConfigs.push(
+        makeConfig({
+          objectType: "doc",
+          relation: "b",
+          impliedBy: ["a"],
+        }),
+      );
 
       expect(
         await check(
@@ -394,132 +457,128 @@ describe("check algorithm", () => {
     beforeEach(() => {
       // Relation configs
       store.relationConfigs.push(
-        {
+        makeConfig({
           objectType: "workspace",
           relation: "legacy_admin",
           directlyAssignableTypes: ["user"],
-          allowsUsersetSubjects: false,
-        },
-        {
+        }),
+        makeConfig({
           objectType: "workspace",
           relation: "channels_admin",
           directlyAssignableTypes: ["user"],
           impliedBy: ["legacy_admin"],
-          allowsUsersetSubjects: false,
-        },
-        {
+        }),
+        makeConfig({
           objectType: "workspace",
           relation: "member",
           directlyAssignableTypes: ["user"],
           impliedBy: ["channels_admin"],
-          allowsUsersetSubjects: false,
-        },
-        {
+        }),
+        makeConfig({
           objectType: "workspace",
           relation: "guest",
           directlyAssignableTypes: ["user"],
-          allowsUsersetSubjects: false,
-        },
-        {
+        }),
+        makeConfig({
           objectType: "channel",
           relation: "writer",
           directlyAssignableTypes: ["user", "workspace"],
           allowsUsersetSubjects: true,
-        },
-        {
+        }),
+        makeConfig({
           objectType: "channel",
           relation: "commenter",
           directlyAssignableTypes: ["user", "workspace"],
           impliedBy: ["writer"],
           allowsUsersetSubjects: true,
-        },
+        }),
       );
 
       // Tuples
       store.tuples.push(
         // Workspace roles
-        {
+        makeTuple({
           objectType: "workspace",
           objectId: "sandcastle",
           relation: "legacy_admin",
           subjectType: "user",
           subjectId: "amy",
-        },
-        {
+        }),
+        makeTuple({
           objectType: "workspace",
           objectId: "sandcastle",
           relation: "channels_admin",
           subjectType: "user",
           subjectId: "bob",
-        },
-        {
+        }),
+        makeTuple({
           objectType: "workspace",
           objectId: "sandcastle",
           relation: "member",
           subjectType: "user",
           subjectId: "catherine",
-        },
-        {
+        }),
+        makeTuple({
           objectType: "workspace",
           objectId: "sandcastle",
           relation: "guest",
           subjectType: "user",
           subjectId: "david",
-        },
-        {
+        }),
+        makeTuple({
           objectType: "workspace",
           objectId: "sandcastle",
           relation: "member",
           subjectType: "user",
           subjectId: "emily",
-        },
+        }),
         // Channel: general
-        {
+        makeTuple({
           objectType: "channel",
           objectId: "general",
           relation: "writer",
           subjectType: "user",
           subjectId: "emily",
-        },
+        }),
         // Channel: marketing_internal
-        {
+        makeTuple({
           objectType: "channel",
           objectId: "marketing_internal",
           relation: "writer",
           subjectType: "user",
           subjectId: "bob",
-        },
-        {
+        }),
+        makeTuple({
           objectType: "channel",
           objectId: "marketing_internal",
           relation: "writer",
           subjectType: "user",
           subjectId: "emily",
-        },
+        }),
         // Channel: proj_marketing_campaign
-        {
+        makeTuple({
           objectType: "channel",
           objectId: "proj_marketing_campaign",
           relation: "writer",
           subjectType: "user",
           subjectId: "david",
-        },
-        {
+        }),
+        makeTuple({
           objectType: "channel",
           objectId: "proj_marketing_campaign",
           relation: "writer",
           subjectType: "user",
           subjectId: "emily",
-        },
+        }),
         // Userset: workspace:sandcastle#member -> channel:proj_marketing_campaign#writer
-        {
+        makeTuple({
           objectType: "channel",
           objectId: "proj_marketing_campaign",
           relation: "writer",
           subjectType: "workspace",
           subjectId: "sandcastle",
           subjectRelation: "member",
-        },
+        }),
       );
     });
 

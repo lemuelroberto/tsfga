@@ -89,10 +89,10 @@ export class KyselyTupleStore implements TupleStore {
     return {
       objectType: row.object_type,
       relation: row.relation,
-      directlyAssignableTypes: row.directly_assignable_types ?? undefined,
-      impliedBy: row.implied_by ?? undefined,
-      computedUserset: row.computed_userset ?? undefined,
-      tupleToUserset: ttu ?? undefined,
+      directlyAssignableTypes: row.directly_assignable_types,
+      impliedBy: row.implied_by,
+      computedUserset: row.computed_userset,
+      tupleToUserset: ttu,
       allowsUsersetSubjects: row.allows_userset_subjects,
     };
   }
@@ -111,8 +111,10 @@ export class KyselyTupleStore implements TupleStore {
     return {
       name: row.name,
       expression: row.expression,
-      parameters:
-        (row.parameters as Record<string, ConditionParameterType>) ?? undefined,
+      parameters: row.parameters as Record<
+        string,
+        ConditionParameterType
+      > | null,
     };
   }
 
@@ -181,7 +183,7 @@ export class KyselyTupleStore implements TupleStore {
     Array<{
       subjectType: string;
       subjectId: string;
-      subjectRelation?: string;
+      subjectRelation: string | null;
     }>
   > {
     const rows = await this.db
@@ -195,7 +197,7 @@ export class KyselyTupleStore implements TupleStore {
     return rows.map((r) => ({
       subjectType: r.subject_type,
       subjectId: r.subject_id,
-      subjectRelation: r.subject_relation ?? undefined,
+      subjectRelation: r.subject_relation,
     }));
   }
 
@@ -288,10 +290,9 @@ export class KyselyTupleStore implements TupleStore {
       relation: row.relation,
       subjectType: row.subject_type,
       subjectId: row.subject_id,
-      subjectRelation: row.subject_relation ?? undefined,
-      conditionName: row.condition_name ?? undefined,
-      conditionContext:
-        (row.condition_context as Record<string, unknown>) ?? undefined,
+      subjectRelation: row.subject_relation,
+      conditionName: row.condition_name,
+      conditionContext: row.condition_context as Record<string, unknown> | null,
     };
   }
 }

@@ -63,7 +63,7 @@ export interface TupleStore {
     Array<{
       subjectType: string;
       subjectId: string;
-      subjectRelation?: string;
+      subjectRelation: string | null;
     }>
   >;
 

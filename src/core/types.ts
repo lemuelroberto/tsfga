@@ -5,19 +5,19 @@ export interface Tuple {
   relation: string;
   subjectType: string;
   subjectId: string;
-  subjectRelation?: string;
-  conditionName?: string;
-  conditionContext?: Record<string, unknown>;
+  subjectRelation: string | null;
+  conditionName: string | null;
+  conditionContext: Record<string, unknown> | null;
 }
 
 /** Configuration for a relation on an object type */
 export interface RelationConfig {
   objectType: string;
   relation: string;
-  directlyAssignableTypes?: string[];
-  impliedBy?: string[];
-  computedUserset?: string;
-  tupleToUserset?: { tupleset: string; computedUserset: string };
+  directlyAssignableTypes: string[] | null;
+  impliedBy: string[] | null;
+  computedUserset: string | null;
+  tupleToUserset: { tupleset: string; computedUserset: string } | null;
   allowsUsersetSubjects: boolean;
 }
 
@@ -25,7 +25,7 @@ export interface RelationConfig {
 export interface ConditionDefinition {
   name: string;
   expression: string;
-  parameters?: Record<string, ConditionParameterType>;
+  parameters: Record<string, ConditionParameterType> | null;
 }
 
 /** Supported CEL parameter types */
@@ -62,9 +62,9 @@ export interface AddTupleRequest {
   relation: string;
   subjectType: string;
   subjectId: string;
-  subjectRelation?: string;
-  conditionName?: string;
-  conditionContext?: Record<string, unknown>;
+  subjectRelation?: string | null;
+  conditionName?: string | null;
+  conditionContext?: Record<string, unknown> | null;
 }
 
 /** Parameters for removing a tuple */
@@ -74,5 +74,5 @@ export interface RemoveTupleRequest {
   relation: string;
   subjectType: string;
   subjectId: string;
-  subjectRelation?: string;
+  subjectRelation?: string | null;
 }

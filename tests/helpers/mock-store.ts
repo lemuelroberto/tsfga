@@ -96,9 +96,9 @@ export class MockTupleStore implements TupleStore {
       relation: tuple.relation,
       subjectType: tuple.subjectType,
       subjectId: tuple.subjectId,
-      subjectRelation: tuple.subjectRelation,
-      conditionName: tuple.conditionName,
-      conditionContext: tuple.conditionContext,
+      subjectRelation: tuple.subjectRelation ?? null,
+      conditionName: tuple.conditionName ?? null,
+      conditionContext: tuple.conditionContext ?? null,
     };
     if (idx >= 0) {
       this.tuples[idx] = newTuple;
@@ -142,7 +142,7 @@ export class MockTupleStore implements TupleStore {
     Array<{
       subjectType: string;
       subjectId: string;
-      subjectRelation?: string;
+      subjectRelation: string | null;
     }>
   > {
     return this.tuples

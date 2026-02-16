@@ -46,6 +46,9 @@ describe("Slack Model Conformance", () => {
       objectType: "workspace",
       relation: "legacy_admin",
       directlyAssignableTypes: ["user"],
+      impliedBy: null,
+      computedUserset: null,
+      tupleToUserset: null,
       allowsUsersetSubjects: false,
     });
     await tsfgaClient.writeRelationConfig({
@@ -53,6 +56,8 @@ describe("Slack Model Conformance", () => {
       relation: "channels_admin",
       directlyAssignableTypes: ["user"],
       impliedBy: ["legacy_admin"],
+      computedUserset: null,
+      tupleToUserset: null,
       allowsUsersetSubjects: false,
     });
     await tsfgaClient.writeRelationConfig({
@@ -60,18 +65,26 @@ describe("Slack Model Conformance", () => {
       relation: "member",
       directlyAssignableTypes: ["user"],
       impliedBy: ["channels_admin"],
+      computedUserset: null,
+      tupleToUserset: null,
       allowsUsersetSubjects: false,
     });
     await tsfgaClient.writeRelationConfig({
       objectType: "workspace",
       relation: "guest",
       directlyAssignableTypes: ["user"],
+      impliedBy: null,
+      computedUserset: null,
+      tupleToUserset: null,
       allowsUsersetSubjects: false,
     });
     await tsfgaClient.writeRelationConfig({
       objectType: "channel",
       relation: "writer",
       directlyAssignableTypes: ["user", "workspace"],
+      impliedBy: null,
+      computedUserset: null,
+      tupleToUserset: null,
       allowsUsersetSubjects: true,
     });
     await tsfgaClient.writeRelationConfig({
@@ -79,6 +92,8 @@ describe("Slack Model Conformance", () => {
       relation: "commenter",
       directlyAssignableTypes: ["user", "workspace"],
       impliedBy: ["writer"],
+      computedUserset: null,
+      tupleToUserset: null,
       allowsUsersetSubjects: true,
     });
 

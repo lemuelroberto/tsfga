@@ -14,6 +14,9 @@ function makeTuple(overrides: Partial<Tuple> = {}): Tuple {
     relation: "viewer",
     subjectType: "user",
     subjectId: "alice",
+    subjectRelation: null,
+    conditionName: null,
+    conditionContext: null,
     ...overrides,
   };
 }

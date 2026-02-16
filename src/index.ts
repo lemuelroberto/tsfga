@@ -32,7 +32,7 @@ export interface TsfgaClient {
     Array<{
       subjectType: string;
       subjectId: string;
-      subjectRelation?: string;
+      subjectRelation: string | null;
     }>
   >;
   writeRelationConfig(config: RelationConfig): Promise<void>;
@@ -114,7 +114,7 @@ export function createTsfga(
       Array<{
         subjectType: string;
         subjectId: string;
-        subjectRelation?: string;
+        subjectRelation: string | null;
       }>
     > {
       return store.listDirectSubjects(objectType, objectId, relation);

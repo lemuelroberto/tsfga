@@ -40,6 +40,8 @@ describe("KyselyTupleStore", () => {
         relation: "member",
         directlyAssignableTypes: ["user"],
         impliedBy: ["channels_admin"],
+        computedUserset: null,
+        tupleToUserset: null,
         allowsUsersetSubjects: false,
       });
 
@@ -62,12 +64,18 @@ describe("KyselyTupleStore", () => {
         objectType: "workspace",
         relation: "member",
         directlyAssignableTypes: ["user"],
+        impliedBy: null,
+        computedUserset: null,
+        tupleToUserset: null,
         allowsUsersetSubjects: false,
       });
       await store.upsertRelationConfig({
         objectType: "workspace",
         relation: "member",
         directlyAssignableTypes: ["user", "team"],
+        impliedBy: null,
+        computedUserset: null,
+        tupleToUserset: null,
         allowsUsersetSubjects: true,
       });
 
@@ -80,6 +88,10 @@ describe("KyselyTupleStore", () => {
       await store.upsertRelationConfig({
         objectType: "workspace",
         relation: "member",
+        directlyAssignableTypes: null,
+        impliedBy: null,
+        computedUserset: null,
+        tupleToUserset: null,
         allowsUsersetSubjects: false,
       });
       expect(await store.deleteRelationConfig("workspace", "member")).toBe(
@@ -98,6 +110,9 @@ describe("KyselyTupleStore", () => {
       await store.upsertRelationConfig({
         objectType: "repo",
         relation: "reader",
+        directlyAssignableTypes: null,
+        impliedBy: null,
+        computedUserset: null,
         tupleToUserset: {
           tupleset: "organization",
           computedUserset: "member",
@@ -164,7 +179,7 @@ describe("KyselyTupleStore", () => {
       expect(tuple?.objectType).toBe("workspace");
       expect(tuple?.objectId).toBe(uuid1);
       expect(tuple?.subjectId).toBe(uuid2);
-      expect(tuple?.subjectRelation).toBeUndefined();
+      expect(tuple?.subjectRelation).toBeNull();
     });
 
     test("findDirectTuple returns null for missing tuple", async () => {
@@ -360,6 +375,156 @@ describe("KyselyTupleStore", () => {
           subjectId: uuid2,
         }),
       ).toBe(false);
+    });
+  });
+
+  describe("Null round-trips", () => {
+    test("tuple without optional fields returns null", async () => {
+      await store.insertTuple({
+        objectType: "workspace",
+        objectId: uuid1,
+        relation: "member",
+        subjectType: "user",
+        subjectId: uuid2,
+      });
+
+      const tuple = await store.findDirectTuple(
+        "workspace",
+        uuid1,
+        "member",
+        "user",
+        uuid2,
+      );
+      expect(tuple?.subjectRelation).toBeNull();
+      expect(tuple?.conditionName).toBeNull();
+      expect(tuple?.conditionContext).toBeNull();
+    });
+
+    test("upsert clears conditionName with null", async () => {
+      await store.insertTuple({
+        objectType: "doc",
+        objectId: uuid1,
+        relation: "viewer",
+        subjectType: "user",
+        subjectId: uuid2,
+        conditionName: "in_region",
+      });
+      await store.insertTuple({
+        objectType: "doc",
+        objectId: uuid1,
+        relation: "viewer",
+        subjectType: "user",
+        subjectId: uuid2,
+        conditionName: null,
+      });
+
+      const tuple = await store.findDirectTuple(
+        "doc",
+        uuid1,
+        "viewer",
+        "user",
+        uuid2,
+      );
+      expect(tuple?.conditionName).toBeNull();
+    });
+
+    test("upsert clears conditionContext with null", async () => {
+      await store.insertTuple({
+        objectType: "doc",
+        objectId: uuid1,
+        relation: "viewer",
+        subjectType: "user",
+        subjectId: uuid2,
+        conditionName: "in_region",
+        conditionContext: { region: "us" },
+      });
+      await store.insertTuple({
+        objectType: "doc",
+        objectId: uuid1,
+        relation: "viewer",
+        subjectType: "user",
+        subjectId: uuid2,
+        conditionName: "in_region",
+        conditionContext: null,
+      });
+
+      const tuple = await store.findDirectTuple(
+        "doc",
+        uuid1,
+        "viewer",
+        "user",
+        uuid2,
+      );
+      expect(tuple?.conditionContext).toBeNull();
+    });
+
+    test("relation config nullable fields return null", async () => {
+      await store.upsertRelationConfig({
+        objectType: "workspace",
+        relation: "member",
+        directlyAssignableTypes: null,
+        impliedBy: null,
+        computedUserset: null,
+        tupleToUserset: null,
+        allowsUsersetSubjects: false,
+      });
+
+      const config = await store.findRelationConfig("workspace", "member");
+      expect(config?.directlyAssignableTypes).toBeNull();
+      expect(config?.impliedBy).toBeNull();
+      expect(config?.computedUserset).toBeNull();
+      expect(config?.tupleToUserset).toBeNull();
+    });
+
+    test("upsert clears relation config impliedBy with null", async () => {
+      await store.upsertRelationConfig({
+        objectType: "workspace",
+        relation: "member",
+        directlyAssignableTypes: ["user"],
+        impliedBy: ["channels_admin"],
+        computedUserset: null,
+        tupleToUserset: null,
+        allowsUsersetSubjects: false,
+      });
+      await store.upsertRelationConfig({
+        objectType: "workspace",
+        relation: "member",
+        directlyAssignableTypes: ["user"],
+        impliedBy: null,
+        computedUserset: null,
+        tupleToUserset: null,
+        allowsUsersetSubjects: false,
+      });
+
+      const config = await store.findRelationConfig("workspace", "member");
+      expect(config?.impliedBy).toBeNull();
+    });
+
+    test("condition definition parameters null round-trip", async () => {
+      await store.upsertConditionDefinition({
+        name: "no_params",
+        expression: "true",
+        parameters: null,
+      });
+
+      const cond = await store.findConditionDefinition("no_params");
+      expect(cond?.parameters).toBeNull();
+    });
+
+    test("upsert clears condition definition parameters", async () => {
+      await store.upsertConditionDefinition({
+        name: "test_cond",
+        expression: 'region == "us"',
+        parameters: { region: "string" },
+      });
+      await store.upsertConditionDefinition({
+        name: "test_cond",
+        expression: "true",
+        parameters: null,
+      });
+
+      const cond = await store.findConditionDefinition("test_cond");
+      expect(cond?.parameters).toBeNull();
     });
   });
 
