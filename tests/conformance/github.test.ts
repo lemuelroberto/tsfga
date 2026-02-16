@@ -118,29 +118,15 @@ describe("GitHub Model Conformance", () => {
     });
 
     // repo.admin: [user, team#member] or repo_admin from organization
-    // Use helper for TTU path + direct/userset via impliedBy
-    await tsfgaClient.writeRelationConfig({
-      objectType: "repo",
-      relation: "_admin_from_org",
-      directlyAssignableTypes: null,
-      impliedBy: null,
-      computedUserset: null,
-      tupleToUserset: {
-        tupleset: "organization",
-        computedUserset: "repo_admin",
-      },
-      excludedBy: null,
-      intersection: null,
-      allowsUsersetSubjects: false,
-    });
-
     await tsfgaClient.writeRelationConfig({
       objectType: "repo",
       relation: "admin",
       directlyAssignableTypes: ["user", "team"],
-      impliedBy: ["_admin_from_org"],
+      impliedBy: null,
       computedUserset: null,
-      tupleToUserset: null,
+      tupleToUserset: [
+        { tupleset: "organization", computedUserset: "repo_admin" },
+      ],
       excludedBy: null,
       intersection: null,
       allowsUsersetSubjects: true,
@@ -188,26 +174,13 @@ describe("GitHub Model Conformance", () => {
     // repo.reader: [user, team#member] or triager or repo_reader from organization
     await tsfgaClient.writeRelationConfig({
       objectType: "repo",
-      relation: "_reader_from_org",
-      directlyAssignableTypes: null,
-      impliedBy: null,
-      computedUserset: null,
-      tupleToUserset: {
-        tupleset: "organization",
-        computedUserset: "repo_reader",
-      },
-      excludedBy: null,
-      intersection: null,
-      allowsUsersetSubjects: false,
-    });
-
-    await tsfgaClient.writeRelationConfig({
-      objectType: "repo",
       relation: "reader",
       directlyAssignableTypes: ["user", "team"],
-      impliedBy: ["triager", "_reader_from_org"],
+      impliedBy: ["triager"],
       computedUserset: null,
-      tupleToUserset: null,
+      tupleToUserset: [
+        { tupleset: "organization", computedUserset: "repo_reader" },
+      ],
       excludedBy: null,
       intersection: null,
       allowsUsersetSubjects: true,

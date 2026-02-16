@@ -74,7 +74,7 @@ describe("Parent-Child Conformance", () => {
       directlyAssignableTypes: ["user"],
       impliedBy: null,
       computedUserset: null,
-      tupleToUserset: { tupleset: "parent", computedUserset: "editor" },
+      tupleToUserset: [{ tupleset: "parent", computedUserset: "editor" }],
       excludedBy: null,
       intersection: null,
       allowsUsersetSubjects: false,

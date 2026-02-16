@@ -180,28 +180,29 @@ async function checkBase(
 
   // Step 5: Tuple-to-userset
   if (config?.tupleToUserset) {
-    const { tupleset, computedUserset } = config.tupleToUserset;
-    const linkedTuples = await store.findTuplesByRelation(
-      request.objectType,
-      request.objectId,
-      tupleset,
-    );
-    for (const linked of linkedTuples) {
-      const hasRelation = await check(
-        store,
-        {
-          objectType: linked.subjectType,
-          objectId: linked.subjectId,
-          relation: computedUserset,
-          subjectType: request.subjectType,
-          subjectId: request.subjectId,
-          context: request.context,
-        },
-        options,
-        depth + 1,
+    for (const { tupleset, computedUserset } of config.tupleToUserset) {
+      const linkedTuples = await store.findTuplesByRelation(
+        request.objectType,
+        request.objectId,
+        tupleset,
       );
-      if (hasRelation) {
-        return true;
+      for (const linked of linkedTuples) {
+        const hasRelation = await check(
+          store,
+          {
+            objectType: linked.subjectType,
+            objectId: linked.subjectId,
+            relation: computedUserset,
+            subjectType: request.subjectType,
+            subjectId: request.subjectId,
+            context: request.context,
+          },
+          options,
+          depth + 1,
+        );
+        if (hasRelation) {
+          return true;
+        }
       }
     }
   }

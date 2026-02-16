@@ -153,42 +153,9 @@ describe("Organization Context Conformance", () => {
       directlyAssignableTypes: null,
       impliedBy: null,
       computedUserset: null,
-      tupleToUserset: {
-        tupleset: "owner",
-        computedUserset: "project_manager",
-      },
-      excludedBy: null,
-      intersection: null,
-      allowsUsersetSubjects: false,
-    });
-
-    // project._editor_from_owner: project_editor from owner (TTU helper)
-    await tsfgaClient.writeRelationConfig({
-      objectType: "project",
-      relation: "_editor_from_owner",
-      directlyAssignableTypes: null,
-      impliedBy: null,
-      computedUserset: null,
-      tupleToUserset: {
-        tupleset: "owner",
-        computedUserset: "project_editor",
-      },
-      excludedBy: null,
-      intersection: null,
-      allowsUsersetSubjects: false,
-    });
-
-    // project._editor_from_partner: project_editor from partner (TTU helper)
-    await tsfgaClient.writeRelationConfig({
-      objectType: "project",
-      relation: "_editor_from_partner",
-      directlyAssignableTypes: null,
-      impliedBy: null,
-      computedUserset: null,
-      tupleToUserset: {
-        tupleset: "partner",
-        computedUserset: "project_editor",
-      },
+      tupleToUserset: [
+        { tupleset: "owner", computedUserset: "project_manager" },
+      ],
       excludedBy: null,
       intersection: null,
       allowsUsersetSubjects: false,
@@ -199,9 +166,12 @@ describe("Organization Context Conformance", () => {
       objectType: "project",
       relation: "editor",
       directlyAssignableTypes: null,
-      impliedBy: ["manager", "_editor_from_owner", "_editor_from_partner"],
+      impliedBy: ["manager"],
       computedUserset: null,
-      tupleToUserset: null,
+      tupleToUserset: [
+        { tupleset: "owner", computedUserset: "project_editor" },
+        { tupleset: "partner", computedUserset: "project_editor" },
+      ],
       excludedBy: null,
       intersection: null,
       allowsUsersetSubjects: false,

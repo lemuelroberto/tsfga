@@ -470,10 +470,12 @@ describe("check algorithm", () => {
         makeConfig({
           objectType: "repo",
           relation: "reader",
-          tupleToUserset: {
-            tupleset: "organization",
-            computedUserset: "member",
-          },
+          tupleToUserset: [
+            {
+              tupleset: "organization",
+              computedUserset: "member",
+            },
+          ],
         }),
       );
       // repo:myrepo has organization -> org:acme
@@ -513,10 +515,12 @@ describe("check algorithm", () => {
         makeConfig({
           objectType: "repo",
           relation: "reader",
-          tupleToUserset: {
-            tupleset: "organization",
-            computedUserset: "member",
-          },
+          tupleToUserset: [
+            {
+              tupleset: "organization",
+              computedUserset: "member",
+            },
+          ],
         }),
       );
       store.tuples.push(

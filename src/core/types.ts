@@ -23,7 +23,7 @@ export interface RelationConfig {
   directlyAssignableTypes: string[] | null;
   impliedBy: string[] | null;
   computedUserset: string | null;
-  tupleToUserset: { tupleset: string; computedUserset: string } | null;
+  tupleToUserset: Array<{ tupleset: string; computedUserset: string }> | null;
   excludedBy: string | null;
   intersection: IntersectionOperand[] | null;
   allowsUsersetSubjects: boolean;

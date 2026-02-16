@@ -85,10 +85,10 @@ export class KyselyTupleStore implements TupleStore {
 
     if (!row) return null;
 
-    const ttu = row.tuple_to_userset as {
+    const ttu = row.tuple_to_userset as Array<{
       tupleset: string;
       computedUserset: string;
-    } | null;
+    }> | null;
 
     return {
       objectType: row.object_type,

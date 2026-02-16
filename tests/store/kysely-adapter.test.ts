@@ -132,20 +132,18 @@ describe("KyselyTupleStore", () => {
         directlyAssignableTypes: null,
         impliedBy: null,
         computedUserset: null,
-        tupleToUserset: {
-          tupleset: "organization",
-          computedUserset: "member",
-        },
+        tupleToUserset: [
+          { tupleset: "organization", computedUserset: "member" },
+        ],
         excludedBy: null,
         intersection: null,
         allowsUsersetSubjects: false,
       });
 
       const config = await store.findRelationConfig("repo", "reader");
-      expect(config?.tupleToUserset).toEqual({
-        tupleset: "organization",
-        computedUserset: "member",
-      });
+      expect(config?.tupleToUserset).toEqual([
+        { tupleset: "organization", computedUserset: "member" },
+      ]);
     });
   });
 

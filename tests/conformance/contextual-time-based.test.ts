@@ -161,10 +161,9 @@ describe("Contextual Time-Based Conformance", () => {
       directlyAssignableTypes: null,
       impliedBy: null,
       computedUserset: null,
-      tupleToUserset: {
-        tupleset: "branch",
-        computedUserset: "account_manager",
-      },
+      tupleToUserset: [
+        { tupleset: "branch", computedUserset: "account_manager" },
+      ],
       excludedBy: null,
       intersection: null,
       allowsUsersetSubjects: false,
@@ -249,7 +248,7 @@ describe("Contextual Time-Based Conformance", () => {
       directlyAssignableTypes: null,
       impliedBy: null,
       computedUserset: null,
-      tupleToUserset: { tupleset: "account", computedUserset: "viewer" },
+      tupleToUserset: [{ tupleset: "account", computedUserset: "viewer" }],
       excludedBy: null,
       intersection: null,
       allowsUsersetSubjects: false,

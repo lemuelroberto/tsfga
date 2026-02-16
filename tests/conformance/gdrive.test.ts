@@ -106,29 +106,13 @@ describe("Google Drive Model Conformance", () => {
     });
 
     // folder.viewer: [user, user:*, group#member] or owner or viewer from parent
-    // TTU helper for viewer from parent
-    await tsfgaClient.writeRelationConfig({
-      objectType: "folder",
-      relation: "_viewer_from_parent",
-      directlyAssignableTypes: null,
-      impliedBy: null,
-      computedUserset: null,
-      tupleToUserset: {
-        tupleset: "parent",
-        computedUserset: "viewer",
-      },
-      excludedBy: null,
-      intersection: null,
-      allowsUsersetSubjects: false,
-    });
-
     await tsfgaClient.writeRelationConfig({
       objectType: "folder",
       relation: "viewer",
       directlyAssignableTypes: ["user", "user:*", "group"],
-      impliedBy: ["owner", "_viewer_from_parent"],
+      impliedBy: ["owner"],
       computedUserset: null,
-      tupleToUserset: null,
+      tupleToUserset: [{ tupleset: "parent", computedUserset: "viewer" }],
       excludedBy: null,
       intersection: null,
       allowsUsersetSubjects: true,
@@ -189,26 +173,11 @@ describe("Google Drive Model Conformance", () => {
     // doc.can_read: viewer or owner or viewer from parent
     await tsfgaClient.writeRelationConfig({
       objectType: "doc",
-      relation: "_viewer_from_parent",
-      directlyAssignableTypes: null,
-      impliedBy: null,
-      computedUserset: null,
-      tupleToUserset: {
-        tupleset: "parent",
-        computedUserset: "viewer",
-      },
-      excludedBy: null,
-      intersection: null,
-      allowsUsersetSubjects: false,
-    });
-
-    await tsfgaClient.writeRelationConfig({
-      objectType: "doc",
       relation: "can_read",
       directlyAssignableTypes: null,
-      impliedBy: ["viewer", "owner", "_viewer_from_parent"],
+      impliedBy: ["viewer", "owner"],
       computedUserset: null,
-      tupleToUserset: null,
+      tupleToUserset: [{ tupleset: "parent", computedUserset: "viewer" }],
       excludedBy: null,
       intersection: null,
       allowsUsersetSubjects: false,
@@ -217,26 +186,11 @@ describe("Google Drive Model Conformance", () => {
     // doc.can_share: owner or owner from parent
     await tsfgaClient.writeRelationConfig({
       objectType: "doc",
-      relation: "_owner_from_parent",
-      directlyAssignableTypes: null,
-      impliedBy: null,
-      computedUserset: null,
-      tupleToUserset: {
-        tupleset: "parent",
-        computedUserset: "owner",
-      },
-      excludedBy: null,
-      intersection: null,
-      allowsUsersetSubjects: false,
-    });
-
-    await tsfgaClient.writeRelationConfig({
-      objectType: "doc",
       relation: "can_share",
       directlyAssignableTypes: null,
-      impliedBy: ["owner", "_owner_from_parent"],
+      impliedBy: ["owner"],
       computedUserset: null,
-      tupleToUserset: null,
+      tupleToUserset: [{ tupleset: "parent", computedUserset: "owner" }],
       excludedBy: null,
       intersection: null,
       allowsUsersetSubjects: false,
@@ -247,9 +201,9 @@ describe("Google Drive Model Conformance", () => {
       objectType: "doc",
       relation: "can_write",
       directlyAssignableTypes: null,
-      impliedBy: ["owner", "_owner_from_parent"],
+      impliedBy: ["owner"],
       computedUserset: null,
-      tupleToUserset: null,
+      tupleToUserset: [{ tupleset: "parent", computedUserset: "owner" }],
       excludedBy: null,
       intersection: null,
       allowsUsersetSubjects: false,

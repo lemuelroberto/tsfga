@@ -88,10 +88,7 @@ describe("Entitlements Model Conformance", () => {
       directlyAssignableTypes: null,
       impliedBy: null,
       computedUserset: null,
-      tupleToUserset: {
-        tupleset: "subscriber",
-        computedUserset: "member",
-      },
+      tupleToUserset: [{ tupleset: "subscriber", computedUserset: "member" }],
       excludedBy: null,
       intersection: null,
       allowsUsersetSubjects: false,
@@ -117,10 +114,9 @@ describe("Entitlements Model Conformance", () => {
       directlyAssignableTypes: null,
       impliedBy: null,
       computedUserset: null,
-      tupleToUserset: {
-        tupleset: "associated_plan",
-        computedUserset: "subscriber_member",
-      },
+      tupleToUserset: [
+        { tupleset: "associated_plan", computedUserset: "subscriber_member" },
+      ],
       excludedBy: null,
       intersection: null,
       allowsUsersetSubjects: false,

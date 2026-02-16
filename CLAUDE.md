@@ -105,7 +105,7 @@ export interface RelationConfig {
   directlyAssignableTypes?: string[];
   impliedBy?: string[];
   computedUserset?: string;
-  tupleToUserset?: { tupleset: string; computedUserset: string };
+  tupleToUserset?: Array<{ tupleset: string; computedUserset: string }>;
   allowsUsersetSubjects: boolean;
 }
 
@@ -340,26 +340,29 @@ export async function check(
     }
   }
 
-  // Step 5: Tuple-to-userset
-  // e.g., for repo.read with ttu = {tupleset: "organization", computed_userset: "member"}
-  // Find tuples (repo, objectId, "organization", ?, ?) to get the linked org,
-  // then check if user has "member" on that org.
+  // Step 5: Tuple-to-userset (array — supports multiple TTU paths per relation)
+  // e.g., for project.editor with tupleToUserset:
+  //   [{ tupleset: "owner", computedUserset: "project_editor" },
+  //    { tupleset: "partner", computedUserset: "project_editor" }]
+  // For each TTU entry, find tuples via tupleset, then check computedUserset
+  // on the linked object.
   if (config?.tupleToUserset) {
-    const { tupleset, computedUserset } = config.tupleToUserset;
-    const linkedTuples = await store.findTuplesByRelation(
-      request.objectType, request.objectId, tupleset,
-    );
-    for (const linked of linkedTuples) {
-      const hasRelation = await check(store, {
-        objectType: linked.subjectType,
-        objectId: linked.subjectId,
-        relation: computedUserset,
-        subjectType: request.subjectType,
-        subjectId: request.subjectId,
-        context: request.context,
-      }, options, depth + 1);
-      if (hasRelation) {
-        return true;
+    for (const { tupleset, computedUserset } of config.tupleToUserset) {
+      const linkedTuples = await store.findTuplesByRelation(
+        request.objectType, request.objectId, tupleset,
+      );
+      for (const linked of linkedTuples) {
+        const hasRelation = await check(store, {
+          objectType: linked.subjectType,
+          objectId: linked.subjectId,
+          relation: computedUserset,
+          subjectType: request.subjectType,
+          subjectId: request.subjectId,
+          context: request.context,
+        }, options, depth + 1);
+        if (hasRelation) {
+          return true;
+        }
       }
     }
   }

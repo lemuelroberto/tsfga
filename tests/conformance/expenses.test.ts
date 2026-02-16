@@ -68,10 +68,7 @@ describe("Expenses Model Conformance", () => {
       directlyAssignableTypes: null,
       impliedBy: ["manager"],
       computedUserset: null,
-      tupleToUserset: {
-        tupleset: "manager",
-        computedUserset: "can_manage",
-      },
+      tupleToUserset: [{ tupleset: "manager", computedUserset: "can_manage" }],
       excludedBy: null,
       intersection: null,
       allowsUsersetSubjects: false,
@@ -97,10 +94,9 @@ describe("Expenses Model Conformance", () => {
       directlyAssignableTypes: null,
       impliedBy: null,
       computedUserset: null,
-      tupleToUserset: {
-        tupleset: "submitter",
-        computedUserset: "can_manage",
-      },
+      tupleToUserset: [
+        { tupleset: "submitter", computedUserset: "can_manage" },
+      ],
       excludedBy: null,
       intersection: null,
       allowsUsersetSubjects: false,
