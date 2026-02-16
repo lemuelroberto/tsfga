@@ -1,8 +1,15 @@
 import { afterAll, beforeAll, describe, test } from "bun:test";
+import type { Kysely } from "kysely";
 import { createTsfga, type TsfgaClient } from "src/index.ts";
 import { KyselyTupleStore } from "src/store/kysely/adapter.ts";
+import type { DB } from "src/store/kysely/schema.ts";
 import { expectConformance } from "tests/helpers/conformance.ts";
-import { cleanTsfgaTables, destroyDb, getDb } from "tests/helpers/db.ts";
+import {
+  beginTransaction,
+  destroyDb,
+  getDb,
+  rollbackTransaction,
+} from "tests/helpers/db.ts";
 import {
   fgaCreateStore,
   fgaWriteModel,
@@ -30,13 +37,14 @@ function uuid(name: string): string {
 }
 
 describe("Slack Model Conformance", () => {
+  let db: Kysely<DB>;
   let storeId: string;
   let authorizationModelId: string;
   let tsfgaClient: TsfgaClient;
 
   beforeAll(async () => {
-    const db = getDb();
-    await cleanTsfgaTables(db);
+    db = getDb();
+    await beginTransaction(db);
 
     const store = new KyselyTupleStore(db);
     tsfgaClient = createTsfga(store);
@@ -200,6 +208,7 @@ describe("Slack Model Conformance", () => {
   });
 
   afterAll(async () => {
+    await rollbackTransaction(db);
     await destroyDb();
   });
 

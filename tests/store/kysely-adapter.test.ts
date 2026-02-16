@@ -2,6 +2,7 @@ import {
   afterAll,
   afterEach,
   beforeAll,
+  beforeEach,
   describe,
   expect,
   test,
@@ -9,7 +10,12 @@ import {
 import type { Kysely } from "kysely";
 import { KyselyTupleStore } from "src/store/kysely/adapter.ts";
 import type { DB } from "src/store/kysely/schema.ts";
-import { cleanTsfgaTables, destroyDb, getDb } from "tests/helpers/db.ts";
+import {
+  beginTransaction,
+  destroyDb,
+  getDb,
+  rollbackTransaction,
+} from "tests/helpers/db.ts";
 
 describe("KyselyTupleStore", () => {
   let db: Kysely<DB>;
@@ -25,8 +31,13 @@ describe("KyselyTupleStore", () => {
     store = new KyselyTupleStore(db);
   });
 
+  beforeEach(async () => {
+    await rollbackTransaction(db);
+    await beginTransaction(db);
+  });
+
   afterEach(async () => {
-    await cleanTsfgaTables(db);
+    await rollbackTransaction(db);
   });
 
   afterAll(async () => {

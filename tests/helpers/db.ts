@@ -1,4 +1,4 @@
-import { Kysely, PostgresDialect } from "kysely";
+import { Kysely, PostgresDialect, sql } from "kysely";
 import pg from "pg";
 import type { DB } from "src/store/kysely/schema.ts";
 
@@ -13,6 +13,7 @@ export function getDb(): Kysely<DB> {
       user: process.env.POSTGRES_USER || "dev",
       password: process.env.POSTGRES_PASSWORD || "password",
       database: process.env.POSTGRES_DB || "dev",
+      max: 1,
     });
     _db = new Kysely<DB>({
       dialect: new PostgresDialect({ pool: _pool }),
@@ -29,8 +30,10 @@ export async function destroyDb(): Promise<void> {
   }
 }
 
-export async function cleanTsfgaTables(db: Kysely<DB>): Promise<void> {
-  await db.deleteFrom("tsfga.tuples").execute();
-  await db.deleteFrom("tsfga.relation_configs").execute();
-  await db.deleteFrom("tsfga.condition_definitions").execute();
+export async function beginTransaction(db: Kysely<DB>): Promise<void> {
+  await sql`BEGIN`.execute(db);
+}
+
+export async function rollbackTransaction(db: Kysely<DB>): Promise<void> {
+  await sql`ROLLBACK`.execute(db);
 }
