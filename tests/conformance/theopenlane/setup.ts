@@ -1,0 +1,2304 @@
+import type { Kysely } from "kysely";
+import type { AddTupleRequest, RelationConfig } from "src/core/types.ts";
+import { createTsfga, type TsfgaClient } from "src/index.ts";
+import { KyselyTupleStore } from "src/store/kysely/adapter.ts";
+import type { DB } from "src/store/kysely/schema.ts";
+import {
+  beginTransaction,
+  destroyDb,
+  getDb,
+  rollbackTransaction,
+} from "tests/helpers/db.ts";
+import {
+  fgaCreateStore,
+  fgaWriteModel,
+  fgaWriteTuples,
+} from "tests/helpers/openfga.ts";
+
+// Ref: TheOpenLane authorization model
+// https://github.com/theopenlane/core/blob/b678367/fga/model/model.fga
+
+const uuidMap = new Map<string, string>([
+  ["alice", "00000000-0000-4000-c200-000000000001"],
+  ["bob", "00000000-0000-4000-c200-000000000002"],
+  ["charlie", "00000000-0000-4000-c200-000000000003"],
+  ["diana", "00000000-0000-4000-c200-000000000004"],
+  ["eve", "00000000-0000-4000-c200-000000000005"],
+  ["frank", "00000000-0000-4000-c200-000000000006"],
+  ["grace", "00000000-0000-4000-c200-000000000007"],
+  ["henry", "00000000-0000-4000-c200-000000000008"],
+  ["svc_api", "00000000-0000-4000-c200-000000000009"],
+  ["svc_monitor", "00000000-0000-4000-c200-00000000000a"],
+  ["acme", "00000000-0000-4000-c200-00000000000b"],
+  ["subsidiary", "00000000-0000-4000-c200-00000000000c"],
+  ["engineering", "00000000-0000-4000-c200-00000000000d"],
+  ["editors_grp", "00000000-0000-4000-c200-00000000000e"],
+  ["auditors_grp", "00000000-0000-4000-c200-00000000000f"],
+  ["sys_main", "00000000-0000-4000-c200-000000000010"],
+  ["feat_sso", "00000000-0000-4000-c200-000000000011"],
+  ["prog_compliance", "00000000-0000-4000-c200-000000000012"],
+  ["ctrl_soc2", "00000000-0000-4000-c200-000000000013"],
+  ["sub_access", "00000000-0000-4000-c200-000000000014"],
+  ["policy_data", "00000000-0000-4000-c200-000000000015"],
+  ["contact_vendor", "00000000-0000-4000-c200-000000000016"],
+  ["task_review", "00000000-0000-4000-c200-000000000017"],
+  ["note_ctrl", "00000000-0000-4000-c200-000000000018"],
+  ["evidence_doc", "00000000-0000-4000-c200-000000000019"],
+  ["std_iso", "00000000-0000-4000-c200-00000000001a"],
+  ["tc_acme", "00000000-0000-4000-c200-00000000001b"],
+  ["tc_doc_public", "00000000-0000-4000-c200-00000000001c"],
+  ["tc_doc_private", "00000000-0000-4000-c200-00000000001d"],
+  ["export_data", "00000000-0000-4000-c200-00000000001e"],
+  ["file_logo", "00000000-0000-4000-c200-00000000001f"],
+  ["file_ctrl", "00000000-0000-4000-c200-000000000020"],
+  ["wf_def", "00000000-0000-4000-c200-000000000021"],
+  ["wf_instance", "00000000-0000-4000-c200-000000000022"],
+  ["assess_q1", "00000000-0000-4000-c200-000000000023"],
+  ["camp_onboard", "00000000-0000-4000-c200-000000000024"],
+]);
+
+export const WILDCARD = "*";
+
+export function uuid(name: string): string {
+  const id = uuidMap.get(name);
+  if (!id) throw new Error(`No UUID for ${name}`);
+  return id;
+}
+
+/** Shorthand for RelationConfig with defaults */
+function rc(
+  partial: Partial<RelationConfig> &
+    Pick<RelationConfig, "objectType" | "relation">,
+): RelationConfig {
+  return {
+    directlyAssignableTypes: null,
+    impliedBy: null,
+    computedUserset: null,
+    tupleToUserset: null,
+    excludedBy: null,
+    intersection: null,
+    allowsUsersetSubjects: false,
+    ...partial,
+  };
+}
+
+// === Condition definitions ===
+
+const CONDITION_DEFS = [
+  {
+    name: "public_group",
+    expression: "public == true",
+    parameters: { public: "bool" as const },
+  },
+  {
+    name: "time_based_grant",
+    expression: "current_time < grant_time + grant_duration",
+    parameters: {
+      current_time: "timestamp" as const,
+      grant_time: "timestamp" as const,
+      grant_duration: "duration" as const,
+    },
+  },
+  {
+    name: "email_domains_allowed",
+    expression:
+      'allowed_domains == [] || email_domain == "" || email_domain in allowed_domains',
+    parameters: {
+      email_domain: "string" as const,
+      allowed_domains: "list" as const,
+    },
+  },
+] as const;
+
+// === Relation configs ===
+
+const RELATION_CONFIGS: RelationConfig[] = [
+  // --- user ---
+  rc({
+    objectType: "user",
+    relation: "_self",
+    directlyAssignableTypes: ["user"],
+  }),
+  rc({ objectType: "user", relation: "can_view", computedUserset: "_self" }),
+  rc({ objectType: "user", relation: "can_edit", computedUserset: "_self" }),
+  rc({ objectType: "user", relation: "can_delete", computedUserset: "_self" }),
+  // --- service ---
+  rc({
+    objectType: "service",
+    relation: "_self",
+    directlyAssignableTypes: ["service"],
+  }),
+  rc({ objectType: "service", relation: "can_view", computedUserset: "_self" }),
+  rc({ objectType: "service", relation: "can_edit", computedUserset: "_self" }),
+  rc({
+    objectType: "service",
+    relation: "can_delete",
+    computedUserset: "_self",
+  }),
+  // --- system ---
+  rc({
+    objectType: "system",
+    relation: "system_admin",
+    directlyAssignableTypes: ["user", "service"],
+  }),
+  // --- feature ---
+  rc({
+    objectType: "feature",
+    relation: "enabled",
+    directlyAssignableTypes: ["organization"],
+  }),
+  // --- organization ---
+  rc({
+    objectType: "organization",
+    relation: "parent",
+    directlyAssignableTypes: ["organization"],
+  }),
+  rc({
+    objectType: "organization",
+    relation: "owner",
+    directlyAssignableTypes: ["user"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "owner" }],
+  }),
+  rc({
+    objectType: "organization",
+    relation: "admin",
+    directlyAssignableTypes: ["user"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "admin" }],
+  }),
+  rc({
+    objectType: "organization",
+    relation: "member",
+    directlyAssignableTypes: ["user"],
+    impliedBy: ["owner", "admin"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "member" }],
+  }),
+  rc({
+    objectType: "organization",
+    relation: "access",
+    directlyAssignableTypes: ["organization"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "organization",
+    relation: "_admin_and_access",
+    intersection: [
+      { type: "computedUserset", relation: "admin" },
+      { type: "computedUserset", relation: "access" },
+    ],
+  }),
+  rc({
+    objectType: "organization",
+    relation: "can_delete",
+    directlyAssignableTypes: ["service"],
+    impliedBy: ["owner"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_delete" }],
+  }),
+  rc({
+    objectType: "organization",
+    relation: "can_edit",
+    directlyAssignableTypes: ["service"],
+    impliedBy: ["_admin_and_access", "owner"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_edit" }],
+  }),
+  rc({
+    objectType: "organization",
+    relation: "_member_and_access",
+    intersection: [
+      { type: "computedUserset", relation: "member" },
+      { type: "computedUserset", relation: "access" },
+    ],
+  }),
+  rc({
+    objectType: "organization",
+    relation: "can_view",
+    directlyAssignableTypes: ["service", "user"],
+    impliedBy: ["_member_and_access", "owner", "can_edit"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_view" }],
+  }),
+  rc({
+    objectType: "organization",
+    relation: "audit_log_viewer",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["owner"],
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "audit_log_viewer" },
+    ],
+    intersection: [
+      { type: "direct" },
+      { type: "computedUserset", relation: "can_view" },
+    ],
+  }),
+  rc({
+    objectType: "organization",
+    relation: "can_invite_members",
+    impliedBy: ["can_view", "can_edit"],
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "can_invite_members" },
+    ],
+  }),
+  rc({
+    objectType: "organization",
+    relation: "can_invite_admins",
+    impliedBy: ["can_edit"],
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "can_invite_admins" },
+    ],
+  }),
+  rc({
+    objectType: "organization",
+    relation: "standard_creator",
+    directlyAssignableTypes: ["group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "organization",
+    relation: "can_create_standard",
+    impliedBy: ["can_edit", "standard_creator"],
+  }),
+  rc({
+    objectType: "organization",
+    relation: "group_creator",
+    directlyAssignableTypes: ["group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "organization",
+    relation: "can_create_group",
+    impliedBy: ["can_edit", "group_creator"],
+  }),
+  rc({
+    objectType: "organization",
+    relation: "trust_center_admin",
+    directlyAssignableTypes: ["user"],
+  }),
+  rc({
+    objectType: "organization",
+    relation: "can_manage_trust_center",
+    impliedBy: ["trust_center_admin", "owner"],
+  }),
+  // --- group ---
+  rc({
+    objectType: "group",
+    relation: "admin",
+    directlyAssignableTypes: ["user"],
+  }),
+  rc({
+    objectType: "group",
+    relation: "member",
+    directlyAssignableTypes: ["user"],
+    impliedBy: ["admin"],
+  }),
+  rc({
+    objectType: "group",
+    relation: "parent",
+    directlyAssignableTypes: ["organization"],
+  }),
+  rc({
+    objectType: "group",
+    relation: "parent_admin",
+    directlyAssignableTypes: ["organization"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "group",
+    relation: "parent_viewer",
+    impliedBy: ["parent_admin"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_view" }],
+  }),
+  rc({
+    objectType: "group",
+    relation: "parent_editor",
+    impliedBy: ["parent_admin"],
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "can_manage_groups" },
+    ],
+  }),
+  rc({
+    objectType: "group",
+    relation: "parent_deleter",
+    impliedBy: ["parent_admin"],
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "can_manage_groups" },
+    ],
+  }),
+  rc({
+    objectType: "group",
+    relation: "can_delete",
+    directlyAssignableTypes: ["service"],
+    impliedBy: ["admin", "parent_deleter"],
+  }),
+  rc({
+    objectType: "group",
+    relation: "can_edit",
+    directlyAssignableTypes: ["service"],
+    impliedBy: ["admin", "parent_editor"],
+  }),
+  rc({
+    objectType: "group",
+    relation: "can_view",
+    directlyAssignableTypes: ["service"],
+    impliedBy: ["can_edit", "member", "parent_viewer"],
+  }),
+  rc({
+    objectType: "group",
+    relation: "audit_log_viewer",
+    directlyAssignableTypes: ["user", "service"],
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "audit_log_viewer" },
+    ],
+    intersection: [
+      { type: "direct" },
+      { type: "computedUserset", relation: "can_view" },
+    ],
+  }),
+  // --- file ---
+  rc({
+    objectType: "file",
+    relation: "parent",
+    directlyAssignableTypes: ["user", "program", "organization", "control"],
+  }),
+  rc({
+    objectType: "file",
+    relation: "tc_doc_parent",
+    directlyAssignableTypes: ["trust_center_doc"],
+  }),
+  rc({
+    objectType: "file",
+    relation: "parent_viewer",
+    impliedBy: ["can_delete", "can_edit"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_view" }],
+  }),
+  rc({
+    objectType: "file",
+    relation: "parent_editor",
+    impliedBy: ["can_delete"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_edit" }],
+  }),
+  rc({
+    objectType: "file",
+    relation: "parent_deleter",
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_delete" }],
+  }),
+  rc({
+    objectType: "file",
+    relation: "tc_doc_viewer",
+    tupleToUserset: [
+      { tupleset: "tc_doc_parent", computedUserset: "nda_signed" },
+      { tupleset: "tc_doc_parent", computedUserset: "member" },
+    ],
+  }),
+  rc({
+    objectType: "file",
+    relation: "tc_doc_editor",
+    tupleToUserset: [
+      { tupleset: "tc_doc_parent", computedUserset: "can_edit" },
+    ],
+  }),
+  rc({
+    objectType: "file",
+    relation: "tc_doc_deleter",
+    tupleToUserset: [
+      { tupleset: "tc_doc_parent", computedUserset: "can_delete" },
+    ],
+  }),
+  rc({
+    objectType: "file",
+    relation: "can_view",
+    directlyAssignableTypes: [
+      "user:*",
+      "service:*",
+      "user",
+      "service",
+      "organization",
+    ],
+    impliedBy: ["parent_viewer", "tc_doc_viewer"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "file",
+    relation: "can_edit",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["parent_editor", "tc_doc_editor"],
+  }),
+  rc({
+    objectType: "file",
+    relation: "can_delete",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["parent_deleter", "tc_doc_deleter"],
+  }),
+  rc({
+    objectType: "file",
+    relation: "audit_log_viewer",
+    directlyAssignableTypes: ["user", "service"],
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "audit_log_viewer" },
+    ],
+    intersection: [
+      { type: "direct" },
+      { type: "computedUserset", relation: "can_view" },
+    ],
+  }),
+  // --- program ---
+  rc({
+    objectType: "program",
+    relation: "parent",
+    directlyAssignableTypes: ["organization"],
+  }),
+  rc({
+    objectType: "program",
+    relation: "admin",
+    directlyAssignableTypes: ["user"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "owner" }],
+    intersection: [
+      { type: "direct" },
+      { type: "tupleToUserset", tupleset: "parent", computedUserset: "member" },
+    ],
+  }),
+  rc({
+    objectType: "program",
+    relation: "member",
+    directlyAssignableTypes: ["user"],
+    intersection: [
+      { type: "direct" },
+      { type: "tupleToUserset", tupleset: "parent", computedUserset: "member" },
+    ],
+  }),
+  rc({
+    objectType: "program",
+    relation: "auditor",
+    directlyAssignableTypes: ["user"],
+  }),
+  rc({
+    objectType: "program",
+    relation: "editor",
+    directlyAssignableTypes: ["group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "program",
+    relation: "viewer",
+    directlyAssignableTypes: ["group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "program",
+    relation: "blocked",
+    directlyAssignableTypes: ["user", "group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "program",
+    relation: "parent_viewer",
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "owner" }],
+  }),
+  rc({
+    objectType: "program",
+    relation: "parent_editor",
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "owner" }],
+  }),
+  rc({
+    objectType: "program",
+    relation: "parent_deleter",
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "owner" }],
+  }),
+  rc({
+    objectType: "program",
+    relation: "_editor_not_blocked",
+    impliedBy: ["editor"],
+    excludedBy: "blocked",
+  }),
+  rc({
+    objectType: "program",
+    relation: "_editor_or_viewer_not_blocked",
+    impliedBy: ["editor", "viewer"],
+    excludedBy: "blocked",
+  }),
+  rc({
+    objectType: "program",
+    relation: "can_delete",
+    directlyAssignableTypes: ["service"],
+    impliedBy: ["admin", "parent_deleter"],
+  }),
+  rc({
+    objectType: "program",
+    relation: "can_edit",
+    directlyAssignableTypes: ["service"],
+    impliedBy: ["admin", "parent_editor", "_editor_not_blocked"],
+  }),
+  rc({
+    objectType: "program",
+    relation: "can_view",
+    directlyAssignableTypes: ["service"],
+    impliedBy: [
+      "member",
+      "can_edit",
+      "parent_viewer",
+      "_editor_or_viewer_not_blocked",
+    ],
+  }),
+  rc({
+    objectType: "program",
+    relation: "audit_log_viewer",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["admin"],
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "audit_log_viewer" },
+    ],
+    intersection: [
+      { type: "direct" },
+      { type: "computedUserset", relation: "can_view" },
+    ],
+  }),
+  rc({
+    objectType: "program",
+    relation: "can_invite_members",
+    impliedBy: ["member", "can_edit"],
+  }),
+  rc({
+    objectType: "program",
+    relation: "can_invite_admins",
+    computedUserset: "can_edit",
+  }),
+  // --- control ---
+  rc({
+    objectType: "control",
+    relation: "parent",
+    directlyAssignableTypes: [
+      "user",
+      "service",
+      "organization",
+      "program",
+      "standard",
+    ],
+  }),
+  rc({
+    objectType: "control",
+    relation: "system",
+    directlyAssignableTypes: ["system"],
+  }),
+  rc({
+    objectType: "control",
+    relation: "owner",
+    directlyAssignableTypes: ["group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "control",
+    relation: "delegate",
+    directlyAssignableTypes: ["group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "control",
+    relation: "blocked",
+    directlyAssignableTypes: ["user", "group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "control",
+    relation: "viewer",
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "member" },
+      { tupleset: "parent", computedUserset: "can_view" },
+    ],
+  }),
+  rc({
+    objectType: "control",
+    relation: "editor",
+    directlyAssignableTypes: ["group", "organization"],
+    allowsUsersetSubjects: true,
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "admin" },
+      { tupleset: "parent", computedUserset: "can_edit" },
+    ],
+  }),
+  rc({
+    objectType: "control",
+    relation: "_editor_not_blocked",
+    impliedBy: ["editor"],
+    excludedBy: "blocked",
+  }),
+  rc({
+    objectType: "control",
+    relation: "_viewer_not_blocked",
+    impliedBy: ["viewer"],
+    excludedBy: "blocked",
+  }),
+  rc({
+    objectType: "control",
+    relation: "can_delete",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["owner", "_editor_not_blocked"],
+    tupleToUserset: [{ tupleset: "system", computedUserset: "system_admin" }],
+  }),
+  rc({
+    objectType: "control",
+    relation: "can_edit",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["owner", "delegate", "_editor_not_blocked"],
+    tupleToUserset: [{ tupleset: "system", computedUserset: "system_admin" }],
+  }),
+  rc({
+    objectType: "control",
+    relation: "can_view",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["can_edit", "_viewer_not_blocked"],
+  }),
+  rc({
+    objectType: "control",
+    relation: "audit_log_viewer",
+    directlyAssignableTypes: ["user", "service"],
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "audit_log_viewer" },
+    ],
+    intersection: [
+      { type: "direct" },
+      { type: "computedUserset", relation: "can_view" },
+    ],
+  }),
+  // --- subcontrol ---
+  rc({
+    objectType: "subcontrol",
+    relation: "parent",
+    directlyAssignableTypes: ["user", "service", "control"],
+  }),
+  rc({
+    objectType: "subcontrol",
+    relation: "owner",
+    directlyAssignableTypes: ["group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "subcontrol",
+    relation: "delegate",
+    directlyAssignableTypes: ["group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "subcontrol",
+    relation: "blocked",
+    directlyAssignableTypes: ["user", "group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "subcontrol",
+    relation: "viewer",
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_view" }],
+  }),
+  rc({
+    objectType: "subcontrol",
+    relation: "editor",
+    directlyAssignableTypes: ["group", "organization"],
+    allowsUsersetSubjects: true,
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_edit" }],
+  }),
+  rc({
+    objectType: "subcontrol",
+    relation: "_editor_not_blocked",
+    impliedBy: ["editor"],
+    excludedBy: "blocked",
+  }),
+  rc({
+    objectType: "subcontrol",
+    relation: "_viewer_not_blocked",
+    impliedBy: ["viewer"],
+    excludedBy: "blocked",
+  }),
+  rc({
+    objectType: "subcontrol",
+    relation: "can_delete",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["owner", "_editor_not_blocked"],
+  }),
+  rc({
+    objectType: "subcontrol",
+    relation: "can_edit",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["owner", "delegate", "_editor_not_blocked"],
+  }),
+  rc({
+    objectType: "subcontrol",
+    relation: "can_view",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["can_edit", "_viewer_not_blocked"],
+  }),
+  rc({
+    objectType: "subcontrol",
+    relation: "audit_log_viewer",
+    directlyAssignableTypes: ["user", "service"],
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "audit_log_viewer" },
+    ],
+    intersection: [
+      { type: "direct" },
+      { type: "computedUserset", relation: "can_view" },
+    ],
+  }),
+  // --- internal_policy ---
+  rc({
+    objectType: "internal_policy",
+    relation: "parent",
+    directlyAssignableTypes: ["organization"],
+  }),
+  rc({
+    objectType: "internal_policy",
+    relation: "admin",
+    directlyAssignableTypes: ["user", "service"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_delete" }],
+  }),
+  rc({
+    objectType: "internal_policy",
+    relation: "editor",
+    directlyAssignableTypes: ["group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "internal_policy",
+    relation: "viewer",
+    directlyAssignableTypes: ["program", "group"],
+    allowsUsersetSubjects: true,
+    impliedBy: ["editor"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_view" }],
+  }),
+  rc({
+    objectType: "internal_policy",
+    relation: "blocked",
+    directlyAssignableTypes: ["user", "group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "internal_policy",
+    relation: "approver",
+    directlyAssignableTypes: ["group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "internal_policy",
+    relation: "delegate",
+    directlyAssignableTypes: ["group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "internal_policy",
+    relation: "_editor_not_blocked",
+    impliedBy: ["editor"],
+    excludedBy: "blocked",
+  }),
+  rc({
+    objectType: "internal_policy",
+    relation: "_viewer_not_blocked",
+    impliedBy: ["viewer"],
+    excludedBy: "blocked",
+  }),
+  rc({
+    objectType: "internal_policy",
+    relation: "can_delete",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["admin", "approver", "_editor_not_blocked"],
+  }),
+  rc({
+    objectType: "internal_policy",
+    relation: "can_edit",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["admin", "approver", "delegate", "_editor_not_blocked"],
+  }),
+  rc({
+    objectType: "internal_policy",
+    relation: "can_view",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["can_edit", "_viewer_not_blocked"],
+  }),
+  rc({
+    objectType: "internal_policy",
+    relation: "audit_log_viewer",
+    directlyAssignableTypes: ["user", "service"],
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "audit_log_viewer" },
+    ],
+    intersection: [
+      { type: "direct" },
+      { type: "computedUserset", relation: "can_view" },
+    ],
+  }),
+  // --- contact ---
+  rc({
+    objectType: "contact",
+    relation: "parent",
+    directlyAssignableTypes: ["organization"],
+  }),
+  rc({
+    objectType: "contact",
+    relation: "editor",
+    directlyAssignableTypes: ["group"],
+    allowsUsersetSubjects: true,
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_edit" }],
+  }),
+  rc({
+    objectType: "contact",
+    relation: "viewer",
+    directlyAssignableTypes: ["group"],
+    allowsUsersetSubjects: true,
+    impliedBy: ["editor"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_view" }],
+  }),
+  rc({
+    objectType: "contact",
+    relation: "blocked",
+    directlyAssignableTypes: ["user", "group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "contact",
+    relation: "_direct_and_parent_member_view",
+    directlyAssignableTypes: ["user", "service"],
+    intersection: [
+      { type: "direct" },
+      { type: "tupleToUserset", tupleset: "parent", computedUserset: "member" },
+    ],
+  }),
+  rc({
+    objectType: "contact",
+    relation: "_direct_and_parent_member_edit",
+    directlyAssignableTypes: ["user", "service"],
+    intersection: [
+      { type: "direct" },
+      { type: "tupleToUserset", tupleset: "parent", computedUserset: "member" },
+    ],
+  }),
+  rc({
+    objectType: "contact",
+    relation: "_direct_user_and_parent_member",
+    directlyAssignableTypes: ["user"],
+    intersection: [
+      { type: "direct" },
+      { type: "tupleToUserset", tupleset: "parent", computedUserset: "member" },
+    ],
+  }),
+  rc({
+    objectType: "contact",
+    relation: "_editor_not_blocked",
+    impliedBy: ["editor"],
+    excludedBy: "blocked",
+  }),
+  rc({
+    objectType: "contact",
+    relation: "_viewer_not_blocked",
+    impliedBy: ["viewer"],
+    excludedBy: "blocked",
+  }),
+  rc({
+    objectType: "contact",
+    relation: "can_view",
+    impliedBy: [
+      "can_edit",
+      "_viewer_not_blocked",
+      "_direct_and_parent_member_view",
+    ],
+  }),
+  rc({
+    objectType: "contact",
+    relation: "can_edit",
+    impliedBy: ["_editor_not_blocked", "_direct_and_parent_member_edit"],
+  }),
+  rc({
+    objectType: "contact",
+    relation: "can_delete",
+    impliedBy: ["_editor_not_blocked", "_direct_user_and_parent_member"],
+  }),
+  rc({
+    objectType: "contact",
+    relation: "audit_log_viewer",
+    directlyAssignableTypes: ["user", "service"],
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "audit_log_viewer" },
+    ],
+    intersection: [
+      { type: "direct" },
+      { type: "computedUserset", relation: "can_view" },
+    ],
+  }),
+  // --- task ---
+  rc({
+    objectType: "task",
+    relation: "parent",
+    directlyAssignableTypes: [
+      "user",
+      "service",
+      "program",
+      "control",
+      "procedure",
+      "internal_policy",
+      "subcontrol",
+      "control_objective",
+      "risk",
+      "task",
+    ],
+  }),
+  rc({
+    objectType: "task",
+    relation: "assignee",
+    directlyAssignableTypes: ["user"],
+  }),
+  rc({
+    objectType: "task",
+    relation: "assigner",
+    directlyAssignableTypes: ["user"],
+  }),
+  rc({
+    objectType: "task",
+    relation: "viewer",
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_view" }],
+  }),
+  rc({
+    objectType: "task",
+    relation: "editor",
+    directlyAssignableTypes: ["organization"],
+    allowsUsersetSubjects: true,
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_edit" }],
+  }),
+  rc({
+    objectType: "task",
+    relation: "can_delete",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["assigner"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_delete" }],
+  }),
+  rc({
+    objectType: "task",
+    relation: "can_edit",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["assignee", "assigner", "editor", "can_delete"],
+  }),
+  rc({
+    objectType: "task",
+    relation: "can_view",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["assignee", "assigner", "can_delete", "can_edit", "viewer"],
+  }),
+  rc({
+    objectType: "task",
+    relation: "audit_log_viewer",
+    directlyAssignableTypes: ["user", "service"],
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "audit_log_viewer" },
+    ],
+    intersection: [
+      { type: "direct" },
+      { type: "computedUserset", relation: "can_view" },
+    ],
+  }),
+  // --- note ---
+  rc({
+    objectType: "note",
+    relation: "parent",
+    directlyAssignableTypes: [
+      "program",
+      "control",
+      "procedure",
+      "internal_policy",
+      "subcontrol",
+      "control_objective",
+      "task",
+      "trust_center",
+      "risk",
+      "evidence",
+      "discussion",
+    ],
+  }),
+  rc({
+    objectType: "note",
+    relation: "owner",
+    directlyAssignableTypes: ["user", "service"],
+  }),
+  rc({
+    objectType: "note",
+    relation: "editor",
+    directlyAssignableTypes: ["organization"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "note",
+    relation: "can_edit",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["owner", "editor"],
+  }),
+  rc({
+    objectType: "note",
+    relation: "can_delete",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["can_edit"],
+  }),
+  rc({
+    objectType: "note",
+    relation: "can_view",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["can_edit"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_view" }],
+  }),
+  rc({
+    objectType: "note",
+    relation: "audit_log_viewer",
+    directlyAssignableTypes: ["user", "service"],
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "audit_log_viewer" },
+    ],
+    intersection: [
+      { type: "direct" },
+      { type: "computedUserset", relation: "can_view" },
+    ],
+  }),
+  // --- evidence ---
+  rc({
+    objectType: "evidence",
+    relation: "parent",
+    directlyAssignableTypes: [
+      "user",
+      "service",
+      "program",
+      "control",
+      "procedure",
+      "internal_policy",
+      "subcontrol",
+      "control_objective",
+      "task",
+    ],
+  }),
+  rc({
+    objectType: "evidence",
+    relation: "editor",
+    directlyAssignableTypes: ["group", "organization"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "evidence",
+    relation: "viewer",
+    directlyAssignableTypes: ["group"],
+    allowsUsersetSubjects: true,
+    impliedBy: ["editor"],
+  }),
+  rc({
+    objectType: "evidence",
+    relation: "blocked",
+    directlyAssignableTypes: ["user", "group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "evidence",
+    relation: "_delete_not_blocked",
+    impliedBy: ["editor"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_delete" }],
+    excludedBy: "blocked",
+  }),
+  rc({
+    objectType: "evidence",
+    relation: "_edit_not_blocked",
+    impliedBy: ["editor"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_edit" }],
+    excludedBy: "blocked",
+  }),
+  rc({
+    objectType: "evidence",
+    relation: "_view_not_blocked",
+    impliedBy: ["viewer"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_view" }],
+    excludedBy: "blocked",
+  }),
+  rc({
+    objectType: "evidence",
+    relation: "can_delete",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["_delete_not_blocked"],
+  }),
+  rc({
+    objectType: "evidence",
+    relation: "can_edit",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["can_delete", "_edit_not_blocked"],
+  }),
+  rc({
+    objectType: "evidence",
+    relation: "can_view",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["can_edit", "_view_not_blocked"],
+  }),
+  rc({
+    objectType: "evidence",
+    relation: "audit_log_viewer",
+    directlyAssignableTypes: ["user", "service"],
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "audit_log_viewer" },
+    ],
+    intersection: [
+      { type: "direct" },
+      { type: "computedUserset", relation: "can_view" },
+    ],
+  }),
+  // --- standard ---
+  rc({
+    objectType: "standard",
+    relation: "parent",
+    directlyAssignableTypes: ["organization"],
+  }),
+  rc({
+    objectType: "standard",
+    relation: "associated_with",
+    directlyAssignableTypes: ["trust_center"],
+  }),
+  rc({
+    objectType: "standard",
+    relation: "editor",
+    directlyAssignableTypes: ["user", "service"],
+  }),
+  rc({
+    objectType: "standard",
+    relation: "viewer",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["editor"],
+    tupleToUserset: [
+      { tupleset: "associated_with", computedUserset: "can_view" },
+    ],
+  }),
+  rc({
+    objectType: "standard",
+    relation: "parent_viewer",
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "member" }],
+  }),
+  rc({
+    objectType: "standard",
+    relation: "parent_editor",
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "admin" },
+      { tupleset: "parent", computedUserset: "owner" },
+    ],
+  }),
+  rc({
+    objectType: "standard",
+    relation: "can_view",
+    directlyAssignableTypes: ["user:*", "service:*"],
+    impliedBy: ["viewer", "parent_viewer"],
+  }),
+  rc({
+    objectType: "standard",
+    relation: "can_edit",
+    impliedBy: ["editor", "parent_editor"],
+  }),
+  rc({
+    objectType: "standard",
+    relation: "can_delete",
+    impliedBy: ["editor", "parent_editor"],
+  }),
+  rc({
+    objectType: "standard",
+    relation: "audit_log_viewer",
+    directlyAssignableTypes: ["user", "service"],
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "audit_log_viewer" },
+    ],
+    intersection: [
+      { type: "direct" },
+      { type: "computedUserset", relation: "can_view" },
+    ],
+  }),
+  // --- trust_center ---
+  rc({
+    objectType: "trust_center",
+    relation: "parent",
+    directlyAssignableTypes: ["organization"],
+  }),
+  rc({
+    objectType: "trust_center",
+    relation: "system",
+    directlyAssignableTypes: ["system"],
+  }),
+  rc({
+    objectType: "trust_center",
+    relation: "nda_signed",
+    directlyAssignableTypes: ["user"],
+  }),
+  rc({
+    objectType: "trust_center",
+    relation: "editor",
+    directlyAssignableTypes: ["group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "trust_center",
+    relation: "viewer",
+    computedUserset: "editor",
+  }),
+  rc({
+    objectType: "trust_center",
+    relation: "member",
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "member" }],
+  }),
+  rc({
+    objectType: "trust_center",
+    relation: "parent_viewer",
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "can_edit" },
+      { tupleset: "parent", computedUserset: "can_view" },
+    ],
+  }),
+  rc({
+    objectType: "trust_center",
+    relation: "parent_editor",
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "can_edit" },
+      { tupleset: "parent", computedUserset: "can_manage_trust_center" },
+    ],
+  }),
+  rc({
+    objectType: "trust_center",
+    relation: "parent_deleter",
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_delete" }],
+  }),
+  rc({
+    objectType: "trust_center",
+    relation: "can_view",
+    directlyAssignableTypes: ["user:*", "service:*"],
+    impliedBy: ["parent_viewer", "viewer"],
+  }),
+  rc({
+    objectType: "trust_center",
+    relation: "can_edit",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["parent_editor", "editor"],
+    tupleToUserset: [{ tupleset: "system", computedUserset: "system_admin" }],
+  }),
+  rc({
+    objectType: "trust_center",
+    relation: "can_delete",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["parent_deleter"],
+  }),
+  // --- trust_center_doc ---
+  rc({
+    objectType: "trust_center_doc",
+    relation: "parent",
+    directlyAssignableTypes: ["trust_center", "user", "service"],
+  }),
+  rc({
+    objectType: "trust_center_doc",
+    relation: "editor",
+    directlyAssignableTypes: ["group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "trust_center_doc",
+    relation: "viewer",
+    computedUserset: "editor",
+  }),
+  rc({
+    objectType: "trust_center_doc",
+    relation: "nda_signed",
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "nda_signed" }],
+  }),
+  rc({
+    objectType: "trust_center_doc",
+    relation: "member",
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "member" }],
+  }),
+  rc({
+    objectType: "trust_center_doc",
+    relation: "parent_viewer",
+    impliedBy: ["can_delete", "can_edit"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "member" }],
+  }),
+  rc({
+    objectType: "trust_center_doc",
+    relation: "parent_editor",
+    impliedBy: ["can_delete"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_edit" }],
+  }),
+  rc({
+    objectType: "trust_center_doc",
+    relation: "parent_deleter",
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_delete" }],
+  }),
+  rc({
+    objectType: "trust_center_doc",
+    relation: "can_view",
+    directlyAssignableTypes: ["user", "service", "user:*", "service:*"],
+    impliedBy: ["parent_viewer", "viewer"],
+  }),
+  rc({
+    objectType: "trust_center_doc",
+    relation: "can_edit",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["parent_editor", "editor"],
+  }),
+  rc({
+    objectType: "trust_center_doc",
+    relation: "can_delete",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["parent_deleter", "editor"],
+  }),
+  // --- export ---
+  rc({
+    objectType: "export",
+    relation: "system",
+    directlyAssignableTypes: ["system"],
+  }),
+  rc({
+    objectType: "export",
+    relation: "can_delete",
+    tupleToUserset: [{ tupleset: "system", computedUserset: "system_admin" }],
+  }),
+  rc({
+    objectType: "export",
+    relation: "can_edit",
+    directlyAssignableTypes: ["service"],
+    tupleToUserset: [{ tupleset: "system", computedUserset: "system_admin" }],
+  }),
+  rc({
+    objectType: "export",
+    relation: "can_view",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["can_edit"],
+  }),
+  // --- workflow_definition ---
+  rc({
+    objectType: "workflow_definition",
+    relation: "parent",
+    directlyAssignableTypes: ["user", "service", "organization"],
+  }),
+  rc({
+    objectType: "workflow_definition",
+    relation: "admin",
+    directlyAssignableTypes: ["user", "service"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_delete" }],
+  }),
+  rc({
+    objectType: "workflow_definition",
+    relation: "editor",
+    directlyAssignableTypes: ["group", "organization"],
+    allowsUsersetSubjects: true,
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_edit" }],
+  }),
+  rc({
+    objectType: "workflow_definition",
+    relation: "viewer",
+    directlyAssignableTypes: ["group"],
+    allowsUsersetSubjects: true,
+    impliedBy: ["editor"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_view" }],
+  }),
+  rc({
+    objectType: "workflow_definition",
+    relation: "blocked",
+    directlyAssignableTypes: ["user", "group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "workflow_definition",
+    relation: "_editor_not_blocked",
+    impliedBy: ["editor"],
+    excludedBy: "blocked",
+  }),
+  rc({
+    objectType: "workflow_definition",
+    relation: "_viewer_not_blocked",
+    impliedBy: ["viewer"],
+    excludedBy: "blocked",
+  }),
+  rc({
+    objectType: "workflow_definition",
+    relation: "can_delete",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["admin", "_editor_not_blocked"],
+  }),
+  rc({
+    objectType: "workflow_definition",
+    relation: "can_edit",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["admin", "_editor_not_blocked"],
+  }),
+  rc({
+    objectType: "workflow_definition",
+    relation: "can_view",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["can_edit", "_viewer_not_blocked"],
+  }),
+  rc({
+    objectType: "workflow_definition",
+    relation: "audit_log_viewer",
+    directlyAssignableTypes: ["user", "service"],
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "audit_log_viewer" },
+    ],
+    intersection: [
+      { type: "direct" },
+      { type: "computedUserset", relation: "can_view" },
+    ],
+  }),
+  // --- workflow_instance ---
+  rc({
+    objectType: "workflow_instance",
+    relation: "parent",
+    directlyAssignableTypes: [
+      "user",
+      "service",
+      "organization",
+      "workflow_definition",
+      "control",
+      "internal_policy",
+      "evidence",
+    ],
+  }),
+  rc({
+    objectType: "workflow_instance",
+    relation: "viewer",
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_view" }],
+  }),
+  rc({
+    objectType: "workflow_instance",
+    relation: "blocked",
+    directlyAssignableTypes: ["user", "group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "workflow_instance",
+    relation: "_viewer_not_blocked",
+    impliedBy: ["viewer"],
+    excludedBy: "blocked",
+  }),
+  rc({
+    objectType: "workflow_instance",
+    relation: "can_view",
+    directlyAssignableTypes: ["service"],
+    impliedBy: ["_viewer_not_blocked"],
+  }),
+  rc({
+    objectType: "workflow_instance",
+    relation: "can_edit",
+    directlyAssignableTypes: ["service"],
+  }),
+  rc({
+    objectType: "workflow_instance",
+    relation: "can_delete",
+    directlyAssignableTypes: ["service"],
+  }),
+  rc({
+    objectType: "workflow_instance",
+    relation: "audit_log_viewer",
+    directlyAssignableTypes: ["user", "service"],
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "audit_log_viewer" },
+    ],
+    intersection: [
+      { type: "direct" },
+      { type: "computedUserset", relation: "can_view" },
+    ],
+  }),
+  // --- assessment ---
+  rc({
+    objectType: "assessment",
+    relation: "parent",
+    directlyAssignableTypes: ["organization"],
+  }),
+  rc({
+    objectType: "assessment",
+    relation: "owner",
+    directlyAssignableTypes: ["user", "group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "assessment",
+    relation: "delegate",
+    directlyAssignableTypes: ["user", "group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "assessment",
+    relation: "editor",
+    directlyAssignableTypes: ["user", "group"],
+    allowsUsersetSubjects: true,
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "admin" },
+      { tupleset: "parent", computedUserset: "owner" },
+    ],
+  }),
+  rc({
+    objectType: "assessment",
+    relation: "viewer",
+    directlyAssignableTypes: ["user", "group"],
+    allowsUsersetSubjects: true,
+    impliedBy: ["editor"],
+  }),
+  rc({
+    objectType: "assessment",
+    relation: "blocked",
+    directlyAssignableTypes: ["user", "group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "assessment",
+    relation: "_editor_not_blocked",
+    impliedBy: ["editor"],
+    excludedBy: "blocked",
+  }),
+  rc({
+    objectType: "assessment",
+    relation: "_viewer_not_blocked",
+    impliedBy: ["viewer"],
+    excludedBy: "blocked",
+  }),
+  rc({
+    objectType: "assessment",
+    relation: "can_delete",
+    directlyAssignableTypes: ["user"],
+    impliedBy: ["owner", "_editor_not_blocked"],
+  }),
+  rc({
+    objectType: "assessment",
+    relation: "can_edit",
+    directlyAssignableTypes: ["user"],
+    impliedBy: ["owner", "delegate", "_editor_not_blocked"],
+  }),
+  rc({
+    objectType: "assessment",
+    relation: "can_view",
+    directlyAssignableTypes: ["user"],
+    impliedBy: ["can_edit", "_viewer_not_blocked"],
+  }),
+  // --- campaign ---
+  rc({
+    objectType: "campaign",
+    relation: "parent",
+    directlyAssignableTypes: ["user", "service", "organization"],
+  }),
+  rc({
+    objectType: "campaign",
+    relation: "editor",
+    directlyAssignableTypes: ["group", "organization"],
+    allowsUsersetSubjects: true,
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_edit" }],
+  }),
+  rc({
+    objectType: "campaign",
+    relation: "viewer",
+    directlyAssignableTypes: ["group"],
+    allowsUsersetSubjects: true,
+    impliedBy: ["editor"],
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "can_view" }],
+  }),
+  rc({
+    objectType: "campaign",
+    relation: "blocked",
+    directlyAssignableTypes: ["user", "group"],
+    allowsUsersetSubjects: true,
+  }),
+  rc({
+    objectType: "campaign",
+    relation: "_editor_not_blocked",
+    impliedBy: ["editor"],
+    excludedBy: "blocked",
+  }),
+  rc({
+    objectType: "campaign",
+    relation: "_viewer_not_blocked",
+    impliedBy: ["viewer"],
+    excludedBy: "blocked",
+  }),
+  rc({
+    objectType: "campaign",
+    relation: "can_delete",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["_editor_not_blocked"],
+  }),
+  rc({
+    objectType: "campaign",
+    relation: "can_edit",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["_editor_not_blocked"],
+  }),
+  rc({
+    objectType: "campaign",
+    relation: "can_view",
+    directlyAssignableTypes: ["user", "service"],
+    impliedBy: ["can_edit", "_viewer_not_blocked"],
+  }),
+  rc({
+    objectType: "campaign",
+    relation: "audit_log_viewer",
+    directlyAssignableTypes: ["user", "service"],
+    tupleToUserset: [
+      { tupleset: "parent", computedUserset: "audit_log_viewer" },
+    ],
+    intersection: [
+      { type: "direct" },
+      { type: "computedUserset", relation: "can_view" },
+    ],
+  }),
+];
+
+// === Tuples ===
+
+type Tuple = Omit<AddTupleRequest, "objectId" | "subjectId"> & {
+  objectId: string;
+  subjectId: string;
+};
+
+const TUPLES: Tuple[] = [
+  // Self-referencing tuples for user/service types
+  {
+    objectType: "user",
+    objectId: uuid("alice"),
+    relation: "_self",
+    subjectType: "user",
+    subjectId: uuid("alice"),
+  },
+  {
+    objectType: "service",
+    objectId: uuid("svc_api"),
+    relation: "_self",
+    subjectType: "service",
+    subjectId: uuid("svc_api"),
+  },
+  // Organization: acme
+  {
+    objectType: "organization",
+    objectId: uuid("acme"),
+    relation: "owner",
+    subjectType: "user",
+    subjectId: uuid("alice"),
+  },
+  {
+    objectType: "organization",
+    objectId: uuid("acme"),
+    relation: "admin",
+    subjectType: "user",
+    subjectId: uuid("bob"),
+  },
+  {
+    objectType: "organization",
+    objectId: uuid("acme"),
+    relation: "member",
+    subjectType: "user",
+    subjectId: uuid("charlie"),
+  },
+  {
+    objectType: "organization",
+    objectId: uuid("acme"),
+    relation: "member",
+    subjectType: "user",
+    subjectId: uuid("grace"),
+  },
+  {
+    objectType: "organization",
+    objectId: uuid("acme"),
+    relation: "access",
+    subjectType: "organization",
+    subjectId: uuid("acme"),
+    subjectRelation: "member",
+    conditionName: "email_domains_allowed",
+    conditionContext: { allowed_domains: ["acme.com"] },
+  },
+  {
+    objectType: "organization",
+    objectId: uuid("acme"),
+    relation: "can_edit",
+    subjectType: "service",
+    subjectId: uuid("svc_api"),
+  },
+  {
+    objectType: "organization",
+    objectId: uuid("acme"),
+    relation: "can_delete",
+    subjectType: "service",
+    subjectId: uuid("svc_api"),
+  },
+  {
+    objectType: "organization",
+    objectId: uuid("acme"),
+    relation: "audit_log_viewer",
+    subjectType: "user",
+    subjectId: uuid("alice"),
+  },
+  {
+    objectType: "organization",
+    objectId: uuid("acme"),
+    relation: "trust_center_admin",
+    subjectType: "user",
+    subjectId: uuid("alice"),
+  },
+  {
+    objectType: "organization",
+    objectId: uuid("acme"),
+    relation: "standard_creator",
+    subjectType: "group",
+    subjectId: uuid("editors_grp"),
+    subjectRelation: "member",
+  },
+  {
+    objectType: "organization",
+    objectId: uuid("acme"),
+    relation: "group_creator",
+    subjectType: "group",
+    subjectId: uuid("editors_grp"),
+    subjectRelation: "member",
+  },
+  {
+    objectType: "organization",
+    objectId: uuid("acme"),
+    relation: "can_view",
+    subjectType: "user",
+    subjectId: uuid("alice"),
+    conditionName: "time_based_grant",
+    conditionContext: {
+      grant_time: "2025-01-01T00:00:00Z",
+      grant_duration: "3600s",
+    },
+  },
+  // Organization: subsidiary
+  {
+    objectType: "organization",
+    objectId: uuid("subsidiary"),
+    relation: "parent",
+    subjectType: "organization",
+    subjectId: uuid("acme"),
+  },
+  // System: sys_main
+  {
+    objectType: "system",
+    objectId: uuid("sys_main"),
+    relation: "system_admin",
+    subjectType: "user",
+    subjectId: uuid("alice"),
+  },
+  {
+    objectType: "system",
+    objectId: uuid("sys_main"),
+    relation: "system_admin",
+    subjectType: "service",
+    subjectId: uuid("svc_api"),
+  },
+  // Feature: feat_sso
+  {
+    objectType: "feature",
+    objectId: uuid("feat_sso"),
+    relation: "enabled",
+    subjectType: "organization",
+    subjectId: uuid("acme"),
+  },
+  // Groups
+  {
+    objectType: "group",
+    objectId: uuid("engineering"),
+    relation: "member",
+    subjectType: "user",
+    subjectId: uuid("eve"),
+  },
+  {
+    objectType: "group",
+    objectId: uuid("engineering"),
+    relation: "member",
+    subjectType: "user",
+    subjectId: uuid("frank"),
+  },
+  {
+    objectType: "group",
+    objectId: uuid("engineering"),
+    relation: "admin",
+    subjectType: "user",
+    subjectId: uuid("alice"),
+  },
+  {
+    objectType: "group",
+    objectId: uuid("engineering"),
+    relation: "parent",
+    subjectType: "organization",
+    subjectId: uuid("acme"),
+    conditionName: "public_group",
+    conditionContext: { public: true },
+  },
+  {
+    objectType: "group",
+    objectId: uuid("engineering"),
+    relation: "parent_admin",
+    subjectType: "organization",
+    subjectId: uuid("acme"),
+    subjectRelation: "owner",
+  },
+  {
+    objectType: "group",
+    objectId: uuid("editors_grp"),
+    relation: "member",
+    subjectType: "user",
+    subjectId: uuid("charlie"),
+  },
+  {
+    objectType: "group",
+    objectId: uuid("auditors_grp"),
+    relation: "member",
+    subjectType: "user",
+    subjectId: uuid("henry"),
+  },
+  // Program: prog_compliance
+  {
+    objectType: "program",
+    objectId: uuid("prog_compliance"),
+    relation: "admin",
+    subjectType: "user",
+    subjectId: uuid("grace"),
+  },
+  {
+    objectType: "program",
+    objectId: uuid("prog_compliance"),
+    relation: "parent",
+    subjectType: "organization",
+    subjectId: uuid("acme"),
+  },
+  {
+    objectType: "program",
+    objectId: uuid("prog_compliance"),
+    relation: "editor",
+    subjectType: "group",
+    subjectId: uuid("engineering"),
+    subjectRelation: "member",
+  },
+  {
+    objectType: "program",
+    objectId: uuid("prog_compliance"),
+    relation: "blocked",
+    subjectType: "user",
+    subjectId: uuid("frank"),
+  },
+  {
+    objectType: "program",
+    objectId: uuid("prog_compliance"),
+    relation: "can_edit",
+    subjectType: "service",
+    subjectId: uuid("svc_api"),
+  },
+  // Control: ctrl_soc2
+  {
+    objectType: "control",
+    objectId: uuid("ctrl_soc2"),
+    relation: "parent",
+    subjectType: "program",
+    subjectId: uuid("prog_compliance"),
+  },
+  {
+    objectType: "control",
+    objectId: uuid("ctrl_soc2"),
+    relation: "owner",
+    subjectType: "group",
+    subjectId: uuid("engineering"),
+    subjectRelation: "member",
+  },
+  {
+    objectType: "control",
+    objectId: uuid("ctrl_soc2"),
+    relation: "delegate",
+    subjectType: "group",
+    subjectId: uuid("auditors_grp"),
+    subjectRelation: "member",
+  },
+  {
+    objectType: "control",
+    objectId: uuid("ctrl_soc2"),
+    relation: "system",
+    subjectType: "system",
+    subjectId: uuid("sys_main"),
+  },
+  // Subcontrol: sub_access
+  {
+    objectType: "subcontrol",
+    objectId: uuid("sub_access"),
+    relation: "parent",
+    subjectType: "control",
+    subjectId: uuid("ctrl_soc2"),
+  },
+  // Internal policy: policy_data
+  {
+    objectType: "internal_policy",
+    objectId: uuid("policy_data"),
+    relation: "parent",
+    subjectType: "organization",
+    subjectId: uuid("acme"),
+  },
+  {
+    objectType: "internal_policy",
+    objectId: uuid("policy_data"),
+    relation: "admin",
+    subjectType: "user",
+    subjectId: uuid("alice"),
+  },
+  {
+    objectType: "internal_policy",
+    objectId: uuid("policy_data"),
+    relation: "editor",
+    subjectType: "group",
+    subjectId: uuid("engineering"),
+    subjectRelation: "member",
+  },
+  {
+    objectType: "internal_policy",
+    objectId: uuid("policy_data"),
+    relation: "approver",
+    subjectType: "group",
+    subjectId: uuid("auditors_grp"),
+    subjectRelation: "member",
+  },
+  {
+    objectType: "internal_policy",
+    objectId: uuid("policy_data"),
+    relation: "blocked",
+    subjectType: "user",
+    subjectId: uuid("frank"),
+  },
+  // Contact: contact_vendor
+  {
+    objectType: "contact",
+    objectId: uuid("contact_vendor"),
+    relation: "parent",
+    subjectType: "organization",
+    subjectId: uuid("acme"),
+  },
+  {
+    objectType: "contact",
+    objectId: uuid("contact_vendor"),
+    relation: "_direct_and_parent_member_view",
+    subjectType: "user",
+    subjectId: uuid("alice"),
+  },
+  {
+    objectType: "contact",
+    objectId: uuid("contact_vendor"),
+    relation: "_direct_and_parent_member_view",
+    subjectType: "user",
+    subjectId: uuid("bob"),
+  },
+  {
+    objectType: "contact",
+    objectId: uuid("contact_vendor"),
+    relation: "editor",
+    subjectType: "group",
+    subjectId: uuid("engineering"),
+    subjectRelation: "member",
+  },
+  {
+    objectType: "contact",
+    objectId: uuid("contact_vendor"),
+    relation: "blocked",
+    subjectType: "user",
+    subjectId: uuid("frank"),
+  },
+  // Task: task_review
+  {
+    objectType: "task",
+    objectId: uuid("task_review"),
+    relation: "parent",
+    subjectType: "control",
+    subjectId: uuid("ctrl_soc2"),
+  },
+  {
+    objectType: "task",
+    objectId: uuid("task_review"),
+    relation: "assignee",
+    subjectType: "user",
+    subjectId: uuid("eve"),
+  },
+  {
+    objectType: "task",
+    objectId: uuid("task_review"),
+    relation: "assigner",
+    subjectType: "user",
+    subjectId: uuid("grace"),
+  },
+  // Note: note_ctrl
+  {
+    objectType: "note",
+    objectId: uuid("note_ctrl"),
+    relation: "parent",
+    subjectType: "control",
+    subjectId: uuid("ctrl_soc2"),
+  },
+  {
+    objectType: "note",
+    objectId: uuid("note_ctrl"),
+    relation: "owner",
+    subjectType: "user",
+    subjectId: uuid("grace"),
+  },
+  // Evidence: evidence_doc
+  {
+    objectType: "evidence",
+    objectId: uuid("evidence_doc"),
+    relation: "parent",
+    subjectType: "program",
+    subjectId: uuid("prog_compliance"),
+  },
+  {
+    objectType: "evidence",
+    objectId: uuid("evidence_doc"),
+    relation: "editor",
+    subjectType: "group",
+    subjectId: uuid("engineering"),
+    subjectRelation: "member",
+  },
+  {
+    objectType: "evidence",
+    objectId: uuid("evidence_doc"),
+    relation: "blocked",
+    subjectType: "user",
+    subjectId: uuid("frank"),
+  },
+  // Standard: std_iso
+  {
+    objectType: "standard",
+    objectId: uuid("std_iso"),
+    relation: "parent",
+    subjectType: "organization",
+    subjectId: uuid("acme"),
+  },
+  {
+    objectType: "standard",
+    objectId: uuid("std_iso"),
+    relation: "editor",
+    subjectType: "user",
+    subjectId: uuid("alice"),
+  },
+  {
+    objectType: "standard",
+    objectId: uuid("std_iso"),
+    relation: "can_view",
+    subjectType: "user",
+    subjectId: WILDCARD,
+  },
+  // Trust center: tc_acme
+  {
+    objectType: "trust_center",
+    objectId: uuid("tc_acme"),
+    relation: "parent",
+    subjectType: "organization",
+    subjectId: uuid("acme"),
+  },
+  {
+    objectType: "trust_center",
+    objectId: uuid("tc_acme"),
+    relation: "nda_signed",
+    subjectType: "user",
+    subjectId: uuid("diana"),
+  },
+  {
+    objectType: "trust_center",
+    objectId: uuid("tc_acme"),
+    relation: "editor",
+    subjectType: "group",
+    subjectId: uuid("engineering"),
+    subjectRelation: "member",
+  },
+  {
+    objectType: "trust_center",
+    objectId: uuid("tc_acme"),
+    relation: "system",
+    subjectType: "system",
+    subjectId: uuid("sys_main"),
+  },
+  // Trust center docs
+  {
+    objectType: "trust_center_doc",
+    objectId: uuid("tc_doc_public"),
+    relation: "parent",
+    subjectType: "trust_center",
+    subjectId: uuid("tc_acme"),
+  },
+  {
+    objectType: "trust_center_doc",
+    objectId: uuid("tc_doc_private"),
+    relation: "parent",
+    subjectType: "trust_center",
+    subjectId: uuid("tc_acme"),
+  },
+  {
+    objectType: "trust_center_doc",
+    objectId: uuid("tc_doc_public"),
+    relation: "can_view",
+    subjectType: "user",
+    subjectId: WILDCARD,
+  },
+  {
+    objectType: "trust_center_doc",
+    objectId: uuid("tc_doc_public"),
+    relation: "can_view",
+    subjectType: "service",
+    subjectId: WILDCARD,
+  },
+  // File: file_logo
+  {
+    objectType: "file",
+    objectId: uuid("file_logo"),
+    relation: "parent",
+    subjectType: "organization",
+    subjectId: uuid("acme"),
+  },
+  {
+    objectType: "file",
+    objectId: uuid("file_logo"),
+    relation: "can_view",
+    subjectType: "user",
+    subjectId: WILDCARD,
+  },
+  // File: file_ctrl
+  {
+    objectType: "file",
+    objectId: uuid("file_ctrl"),
+    relation: "parent",
+    subjectType: "control",
+    subjectId: uuid("ctrl_soc2"),
+  },
+  {
+    objectType: "file",
+    objectId: uuid("file_ctrl"),
+    relation: "tc_doc_parent",
+    subjectType: "trust_center_doc",
+    subjectId: uuid("tc_doc_private"),
+  },
+  // Export: export_data
+  {
+    objectType: "export",
+    objectId: uuid("export_data"),
+    relation: "system",
+    subjectType: "system",
+    subjectId: uuid("sys_main"),
+  },
+  {
+    objectType: "export",
+    objectId: uuid("export_data"),
+    relation: "can_edit",
+    subjectType: "service",
+    subjectId: uuid("svc_api"),
+  },
+  // Workflow definition: wf_def
+  {
+    objectType: "workflow_definition",
+    objectId: uuid("wf_def"),
+    relation: "parent",
+    subjectType: "organization",
+    subjectId: uuid("acme"),
+  },
+  {
+    objectType: "workflow_definition",
+    objectId: uuid("wf_def"),
+    relation: "admin",
+    subjectType: "user",
+    subjectId: uuid("bob"),
+  },
+  // Workflow instance: wf_instance
+  {
+    objectType: "workflow_instance",
+    objectId: uuid("wf_instance"),
+    relation: "parent",
+    subjectType: "workflow_definition",
+    subjectId: uuid("wf_def"),
+  },
+  {
+    objectType: "workflow_instance",
+    objectId: uuid("wf_instance"),
+    relation: "can_view",
+    subjectType: "service",
+    subjectId: uuid("svc_api"),
+  },
+  // Assessment: assess_q1
+  {
+    objectType: "assessment",
+    objectId: uuid("assess_q1"),
+    relation: "parent",
+    subjectType: "organization",
+    subjectId: uuid("acme"),
+  },
+  {
+    objectType: "assessment",
+    objectId: uuid("assess_q1"),
+    relation: "owner",
+    subjectType: "user",
+    subjectId: uuid("grace"),
+  },
+  {
+    objectType: "assessment",
+    objectId: uuid("assess_q1"),
+    relation: "delegate",
+    subjectType: "user",
+    subjectId: uuid("eve"),
+  },
+  {
+    objectType: "assessment",
+    objectId: uuid("assess_q1"),
+    relation: "blocked",
+    subjectType: "user",
+    subjectId: uuid("frank"),
+  },
+  // Campaign: camp_onboard
+  {
+    objectType: "campaign",
+    objectId: uuid("camp_onboard"),
+    relation: "parent",
+    subjectType: "organization",
+    subjectId: uuid("acme"),
+  },
+  {
+    objectType: "campaign",
+    objectId: uuid("camp_onboard"),
+    relation: "editor",
+    subjectType: "group",
+    subjectId: uuid("engineering"),
+    subjectRelation: "member",
+  },
+  {
+    objectType: "campaign",
+    objectId: uuid("camp_onboard"),
+    relation: "blocked",
+    subjectType: "user",
+    subjectId: uuid("frank"),
+  },
+];
+
+// === Setup & Teardown ===
+
+export interface TheopenlaneSetup {
+  db: Kysely<DB>;
+  storeId: string;
+  authorizationModelId: string;
+  tsfgaClient: TsfgaClient;
+}
+
+export async function setupTheopenlane(): Promise<TheopenlaneSetup> {
+  const db = getDb();
+  await beginTransaction(db);
+
+  const store = new KyselyTupleStore(db);
+  const tsfgaClient = createTsfga(store, { maxDepth: 25 });
+
+  for (const condDef of CONDITION_DEFS) {
+    await tsfgaClient.writeConditionDefinition(condDef);
+  }
+
+  for (const config of RELATION_CONFIGS) {
+    await tsfgaClient.writeRelationConfig(config);
+  }
+
+  for (const tuple of TUPLES) {
+    await tsfgaClient.addTuple(tuple);
+  }
+
+  const storeId = await fgaCreateStore("theopenlane-conformance");
+  const authorizationModelId = await fgaWriteModel(
+    storeId,
+    "tests/conformance/theopenlane/model.dsl",
+  );
+  await fgaWriteTuples(
+    storeId,
+    "tests/conformance/theopenlane/tuples.yaml",
+    authorizationModelId,
+    uuidMap,
+  );
+
+  return { db, storeId, authorizationModelId, tsfgaClient };
+}
+
+export async function teardownTheopenlane(db: Kysely<DB>): Promise<void> {
+  await rollbackTransaction(db);
+  await destroyDb();
+}
