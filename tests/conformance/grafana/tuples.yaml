@@ -1,0 +1,79 @@
+# Team membership
+- user: user:alice
+  relation: admin
+  object: team:platform
+- user: user:bob
+  relation: member
+  object: team:platform
+- user: user:charlie
+  relation: member
+  object: team:platform
+
+# Role assignment
+- user: user:diana
+  relation: assignee
+  object: role:viewer
+
+# Folder hierarchy: root -> dashboards -> alerts
+- user: folder:root
+  relation: parent
+  object: folder:dashboards
+- user: folder:dashboards
+  relation: parent
+  object: folder:alerts
+
+# Folder permissions
+- user: user:alice
+  relation: admin
+  object: folder:root
+- user: team:platform#member
+  relation: edit
+  object: folder:dashboards
+- user: role:viewer#assignee
+  relation: view
+  object: folder:root
+- user: service-account:bot
+  relation: get
+  object: folder:dashboards
+
+# Folder subresource permissions (with condition)
+- user: user:alice
+  relation: resource_create
+  object: folder:root
+  condition:
+    name: subresource_filter
+    context:
+      subresources:
+        - "dashboard"
+        - "library-panel"
+- user: team:platform#member
+  relation: resource_get
+  object: folder:dashboards
+  condition:
+    name: subresource_filter
+    context:
+      subresources:
+        - "dashboard"
+
+# Resource permissions (with group_filter condition)
+- user: user:alice
+  relation: admin
+  object: resource:res_dashboards
+  condition:
+    name: group_filter
+    context:
+      group_resource: "grafana"
+- user: team:platform#member
+  relation: view
+  object: resource:res_dashboards
+  condition:
+    name: group_filter
+    context:
+      group_resource: "grafana"
+- user: user:eve
+  relation: get
+  object: resource:res_dashboards
+  condition:
+    name: group_filter
+    context:
+      group_resource: "prometheus"
