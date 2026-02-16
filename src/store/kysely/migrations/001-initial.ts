@@ -1,96 +1,121 @@
 import { type Kysely, sql } from "kysely";
 
 export async function up(db: Kysely<unknown>): Promise<void> {
-  // Create schema
-  await sql`CREATE SCHEMA IF NOT EXISTS tsfga`.execute(db);
+  await db.schema.createSchema("tsfga").ifNotExists().execute();
 
   // Table: tsfga.tuples
-  await sql`
-		CREATE TABLE tsfga.tuples (
-			id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-			object_type text NOT NULL,
-			object_id uuid NOT NULL,
-			relation text NOT NULL,
-			subject_type text NOT NULL,
-			subject_id uuid NOT NULL,
-			subject_relation text,
-			condition_name text,
-			condition_context jsonb,
-			metadata jsonb,
-			created_at timestamptz DEFAULT now(),
-			updated_at timestamptz DEFAULT now()
-		)
-	`.execute(db);
+  await db.schema
+    .createTable("tsfga.tuples")
+    .addColumn("id", "bigint", (col) =>
+      col.generatedAlwaysAsIdentity().primaryKey(),
+    )
+    .addColumn("object_type", "text", (col) => col.notNull())
+    .addColumn("object_id", "uuid", (col) => col.notNull())
+    .addColumn("relation", "text", (col) => col.notNull())
+    .addColumn("subject_type", "text", (col) => col.notNull())
+    .addColumn("subject_id", "uuid", (col) => col.notNull())
+    .addColumn("subject_relation", "text")
+    .addColumn("condition_name", "text")
+    .addColumn("condition_context", "jsonb")
+    .addColumn("metadata", "jsonb")
+    .addColumn("created_at", "timestamptz", (col) => col.defaultTo(sql`now()`))
+    .addColumn("updated_at", "timestamptz", (col) => col.defaultTo(sql`now()`))
+    .execute();
 
-  // Unique index (handles NULL subject_relation)
+  // Unique index with COALESCE — raw SQL required (expression index)
   await sql`
-		CREATE UNIQUE INDEX idx_tuples_unique
-		ON tsfga.tuples (object_type, object_id, relation, subject_type, subject_id, COALESCE(subject_relation, ''))
-	`.execute(db);
+    CREATE UNIQUE INDEX idx_tuples_unique
+    ON tsfga.tuples (object_type, object_id, relation, subject_type, subject_id, COALESCE(subject_relation, ''))
+  `.execute(db);
 
   // Table: tsfga.relation_configs
-  await sql`
-		CREATE TABLE tsfga.relation_configs (
-			id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-			object_type text NOT NULL,
-			relation text NOT NULL,
-			directly_assignable_types text[],
-			implied_by text[],
-			computed_userset text,
-			tuple_to_userset jsonb,
-			allows_userset_subjects boolean DEFAULT true,
-			metadata jsonb,
-			UNIQUE (object_type, relation)
-		)
-	`.execute(db);
+  await db.schema
+    .createTable("tsfga.relation_configs")
+    .addColumn("id", "bigint", (col) =>
+      col.generatedAlwaysAsIdentity().primaryKey(),
+    )
+    .addColumn("object_type", "text", (col) => col.notNull())
+    .addColumn("relation", "text", (col) => col.notNull())
+    .addColumn("directly_assignable_types", sql`text[]`)
+    .addColumn("implied_by", sql`text[]`)
+    .addColumn("computed_userset", "text")
+    .addColumn("tuple_to_userset", "jsonb")
+    .addColumn("allows_userset_subjects", "boolean", (col) =>
+      col.defaultTo(true),
+    )
+    .addColumn("metadata", "jsonb")
+    .addUniqueConstraint("relation_configs_object_type_relation_unique", [
+      "object_type",
+      "relation",
+    ])
+    .execute();
 
   // Table: tsfga.condition_definitions
-  await sql`
-		CREATE TABLE tsfga.condition_definitions (
-			id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-			name text NOT NULL UNIQUE,
-			expression text NOT NULL,
-			parameters jsonb NOT NULL DEFAULT '{}'
-		)
-	`.execute(db);
+  await db.schema
+    .createTable("tsfga.condition_definitions")
+    .addColumn("id", "bigint", (col) =>
+      col.generatedAlwaysAsIdentity().primaryKey(),
+    )
+    .addColumn("name", "text", (col) => col.notNull().unique())
+    .addColumn("expression", "text", (col) => col.notNull())
+    .addColumn("parameters", "jsonb", (col) =>
+      col.notNull().defaultTo(sql`'{}'`),
+    )
+    .execute();
 
   // Index 1: Fast lookups by object
-  await sql`
-		CREATE INDEX idx_tuples_object ON tsfga.tuples (object_type, object_id)
-	`.execute(db);
+  await db.schema
+    .createIndex("idx_tuples_object")
+    .on("tsfga.tuples")
+    .columns(["object_type", "object_id"])
+    .execute();
 
   // Index 2: Fast lookups by subject (reverse queries)
-  await sql`
-		CREATE INDEX idx_tuples_subject ON tsfga.tuples (subject_type, subject_id)
-	`.execute(db);
+  await db.schema
+    .createIndex("idx_tuples_subject")
+    .on("tsfga.tuples")
+    .columns(["subject_type", "subject_id"])
+    .execute();
 
   // Index 3: Fast relation checks
-  await sql`
-		CREATE INDEX idx_tuples_check ON tsfga.tuples (object_type, object_id, relation, subject_type, subject_id)
-	`.execute(db);
+  await db.schema
+    .createIndex("idx_tuples_check")
+    .on("tsfga.tuples")
+    .columns([
+      "object_type",
+      "object_id",
+      "relation",
+      "subject_type",
+      "subject_id",
+    ])
+    .execute();
 
-  // Index 4: Fast userset expansion
-  await sql`
-		CREATE INDEX idx_tuples_userset ON tsfga.tuples (object_type, object_id, relation)
-		WHERE subject_relation IS NOT NULL
-	`.execute(db);
+  // Index 4: Fast userset expansion (partial index)
+  await db.schema
+    .createIndex("idx_tuples_userset")
+    .on("tsfga.tuples")
+    .columns(["object_type", "object_id", "relation"])
+    .where(sql.ref("subject_relation"), "is not", null)
+    .execute();
 
-  // Index 5: JSONB GIN index for metadata queries
+  // Index 5: GIN index for metadata — raw SQL required (USING GIN + WHERE)
   await sql`
-		CREATE INDEX idx_tuples_metadata ON tsfga.tuples USING GIN (metadata)
-		WHERE metadata IS NOT NULL
-	`.execute(db);
+    CREATE INDEX idx_tuples_metadata ON tsfga.tuples USING GIN (metadata)
+    WHERE metadata IS NOT NULL
+  `.execute(db);
 
-  // Index 6: Condition name lookup
-  await sql`
-		CREATE INDEX idx_tuples_condition ON tsfga.tuples (condition_name)
-		WHERE condition_name IS NOT NULL
-	`.execute(db);
+  // Index 6: Condition name lookup (partial index)
+  await db.schema
+    .createIndex("idx_tuples_condition")
+    .on("tsfga.tuples")
+    .column("condition_name")
+    .where(sql.ref("condition_name"), "is not", null)
+    .execute();
 }
 
 export async function down(db: Kysely<unknown>): Promise<void> {
-  await sql`DROP TABLE IF EXISTS tsfga.condition_definitions`.execute(db);
-  await sql`DROP TABLE IF EXISTS tsfga.relation_configs`.execute(db);
-  await sql`DROP TABLE IF EXISTS tsfga.tuples`.execute(db);
-  await sql`DROP SCHEMA IF EXISTS tsfga`.execute(db);
+  await db.schema.dropTable("tsfga.condition_definitions").ifExists().execute();
+  await db.schema.dropTable("tsfga.relation_configs").ifExists().execute();
+  await db.schema.dropTable("tsfga.tuples").ifExists().execute();
+  await db.schema.dropSchema("tsfga").ifExists().cascade().execute();
 }

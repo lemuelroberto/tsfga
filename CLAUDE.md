@@ -488,77 +488,28 @@ export class ConditionEvaluationError extends TsfgaError {
 ### Migration (`src/store/kysely/migrations/001-initial.ts`)
 
 Creates the `tsfga` schema with 3 tables and 6 indexes matching pgfga's schema
-design.
+design. Uses Kysely's DDL schema builder API where possible; raw `sql` only for
+indexes the builder cannot express.
+
+**Pattern:** Prefer `db.schema.createTable()` / `db.schema.createIndex()` over
+raw SQL. Use `sql` template literals only when the builder API cannot express
+the DDL (expression indexes, GIN + WHERE combos).
+
+**What stays as raw SQL:**
+- `idx_tuples_unique` — uses `COALESCE(subject_relation, '')` expression
+- `idx_tuples_metadata` — uses `USING GIN` with a `WHERE` clause
+
+**Migration management** uses `kysely-ctl` with config in `kysely.config.ts`:
+- `bun run db:latest` — apply all pending migrations
+- `bun run db:rollback` — rollback all migrations
+
+**Schema produced:**
 
 ```sql
--- Schema
-CREATE SCHEMA IF NOT EXISTS tsfga;
-
--- Table: tsfga.tuples
-CREATE TABLE tsfga.tuples (
-    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    object_type text NOT NULL,
-    object_id uuid NOT NULL,
-    relation text NOT NULL,
-    subject_type text NOT NULL,
-    subject_id uuid NOT NULL,
-    subject_relation text,
-    condition_name text,
-    condition_context jsonb,
-    metadata jsonb,
-    created_at timestamptz DEFAULT now(),
-    updated_at timestamptz DEFAULT now()
-);
-
--- Unique index (handles NULL subject_relation)
-CREATE UNIQUE INDEX idx_tuples_unique
-  ON tsfga.tuples (object_type, object_id, relation, subject_type, subject_id, COALESCE(subject_relation, ''));
-
--- Table: tsfga.relation_configs
-CREATE TABLE tsfga.relation_configs (
-    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    object_type text NOT NULL,
-    relation text NOT NULL,
-    directly_assignable_types text[],
-    implied_by text[],
-    computed_userset text,
-    tuple_to_userset jsonb,
-    allows_userset_subjects boolean DEFAULT true,
-    metadata jsonb,
-    UNIQUE (object_type, relation)
-);
-
--- Table: tsfga.condition_definitions
-CREATE TABLE tsfga.condition_definitions (
-    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    name text NOT NULL UNIQUE,
-    expression text NOT NULL,
-    parameters jsonb NOT NULL DEFAULT '{}'
-);
-
--- Indexes (matching pgfga's 6 indexes)
--- 1. Fast lookups by object
-CREATE INDEX idx_tuples_object ON tsfga.tuples (object_type, object_id);
-
--- 2. Fast lookups by subject (reverse queries)
-CREATE INDEX idx_tuples_subject ON tsfga.tuples (subject_type, subject_id);
-
--- 3. Fast relation checks
-CREATE INDEX idx_tuples_check ON tsfga.tuples (object_type, object_id, relation, subject_type, subject_id);
-
--- 4. Fast userset expansion (matches findUsersetTuples query pattern)
--- Note: pgfga indexes (subject_type, subject_id, subject_relation) for reverse lookups.
--- tsfga indexes (object_type, object_id, relation) to match the forward lookup in step 2.
-CREATE INDEX idx_tuples_userset ON tsfga.tuples (object_type, object_id, relation)
-    WHERE subject_relation IS NOT NULL;
-
--- 5. JSONB GIN index for metadata queries
-CREATE INDEX idx_tuples_metadata ON tsfga.tuples USING GIN (metadata)
-    WHERE metadata IS NOT NULL;
-
--- 6. Condition name lookup
-CREATE INDEX idx_tuples_condition ON tsfga.tuples (condition_name)
-    WHERE condition_name IS NOT NULL;
+-- tsfga.tuples: relationship tuples with optional conditions
+-- tsfga.relation_configs: relation definitions (implied_by, computed_userset, etc.)
+-- tsfga.condition_definitions: named CEL condition expressions
+-- 6 indexes on tsfga.tuples (unique, object, subject, check, userset, metadata, condition)
 ```
 
 **Key differences from pgfga:**
@@ -843,6 +794,8 @@ bun run check                            # Lint + format check
 bun run lint                             # Lint only
 bun run format                           # Format fix
 bun run db:generate                      # Regenerate Kysely types from DB
+bun run db:latest                        # Apply pending migrations
+bun run db:rollback                      # Rollback all migrations
 ```
 
 ### Type Generation Workflow
@@ -854,7 +807,8 @@ bun run db:generate                      # Regenerate Kysely types from DB
 # 2. Start PostgreSQL
 docker compose up -d postgres
 
-# 3. Run migrations (via a script or test setup)
+# 3. Run migrations
+bun run db:latest
 
 # 4. Regenerate types
 bun run db:generate
@@ -864,6 +818,12 @@ bun run db:generate
 ```
 
 ## Configuration Files
+
+### `kysely.config.ts`
+
+Configuration for `kysely-ctl` migration commands. Reads connection params from
+environment variables (falling back to `.env` defaults). Points to migration
+files in `src/store/kysely/migrations/`.
 
 ### `bunfig.toml`
 
