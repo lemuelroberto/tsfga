@@ -76,6 +76,12 @@ export async function evaluateTupleCondition(
     const result = compiled(context);
     return result === true;
   } catch (error) {
+    // When a condition parameter is missing, treat the condition as
+    // not satisfied (matching OpenFGA behavior where missing parameters
+    // result in {allowed: false}).
+    if (error instanceof Error && error.message.includes("Unknown variable")) {
+      return false;
+    }
     throw new ConditionEvaluationError(condDef.name, error);
   }
 }
