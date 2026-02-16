@@ -12,6 +12,7 @@ export interface Tuple {
 
 /** An operand in an intersection expression */
 export type IntersectionOperand =
+  | { type: "direct" }
   | { type: "computedUserset"; relation: string }
   | { type: "tupleToUserset"; tupleset: string; computedUserset: string };
 

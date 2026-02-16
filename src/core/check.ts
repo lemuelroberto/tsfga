@@ -220,7 +220,23 @@ async function checkIntersection(
   depth: number,
 ): Promise<boolean> {
   for (const operand of operands) {
-    if (operand.type === "computedUserset") {
+    if (operand.type === "direct") {
+      // Check direct assignment + userset (steps 1-2 of base check)
+      const config = await store.findRelationConfig(
+        request.objectType,
+        request.relation,
+      );
+      const hasRelation = await checkBase(
+        store,
+        request,
+        config,
+        options,
+        depth,
+      );
+      if (!hasRelation) {
+        return false;
+      }
+    } else if (operand.type === "computedUserset") {
       const hasRelation = await check(
         store,
         {
