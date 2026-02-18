@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "lemuelroberto/tsfga",
+      "name": "tsfga",
       "devDependencies": {
         "@biomejs/biome": "2.4.2",
         "@changesets/cli": "2.29.8",
