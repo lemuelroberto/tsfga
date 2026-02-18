@@ -1,5 +1,15 @@
 {
   "$schema": "https://turborepo.dev/schema.v2.json",
+  "globalPassThroughEnv": [
+    "DATABASE_URL",
+    "FGA_API_URL",
+    "POSTGRES_DB",
+    "POSTGRES_HOST",
+    "POSTGRES_PASSWORD",
+    "POSTGRES_PORT",
+    "POSTGRES_USER",
+    "PREFIX"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
