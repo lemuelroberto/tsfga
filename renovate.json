@@ -1,0 +1,19 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    ":disableRateLimiting",
+    ":docker",
+    ":enableVulnerabilityAlerts",
+    ":pinAllExceptPeerDependencies",
+    ":rebaseStalePrs",
+    ":renovatePrefix",
+    ":timezone(America/Sao_Paulo)",
+    "config:best-practices",
+    "schedule:daily",
+    "security:openssf-scorecard"
+  ],
+  "commitMessageAction": "Bump",
+  "commitMessageExtra": "",
+  "commitMessageLowerCase": "never",
+  "commitMessageTopic": "{{depName}}"
+}
