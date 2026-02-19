@@ -1,0 +1,162 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Package to release
+        type: choice
+        required: true
+        options:
+          - "@tsfga/core"
+          - "@tsfga/kysely"
+      publish:
+        description: >-
+          Publish to npm (default: validate only)
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    if: github.repository == 'emfga/tsfga'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: step-security/harden-runner@5ef0c079ce82195b2a36a210272d6b661572d83e # v2.14.2
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@3d267786b128fe76c2f16a390aa2448b815359f3 # v2.1.2
+
+      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: "22"
+
+      - run: npm install -g npm@latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Map package to directory
+        id: pkg
+        run: |
+          case "${{ inputs.package }}" in
+            "@tsfga/core")  dir="packages/core" ;;
+            "@tsfga/kysely") dir="packages/kysely" ;;
+          esac
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
+      - name: Get current version
+        id: version
+        working-directory: ${{ steps.pkg.outputs.dir }}
+        run: |
+          version=$(jq -r .version package.json)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check if already published
+        run: |
+          pkg="${{ inputs.package }}"
+          ver="${{ steps.version.outputs.version }}"
+          if npm view "${pkg}@${ver}" version \
+            2>/dev/null; then
+            echo "::error::${pkg}@${ver} is already" \
+              " published on npm."
+            exit 1
+          fi
+          echo "${pkg}@${ver} is not yet published."
+
+      - name: Build all packages
+        run: bun run build
+
+      - name: Type check
+        run: bun run tsc
+
+      - name: Validate (dry run)
+        if: "!inputs.publish"
+        working-directory: ${{ steps.pkg.outputs.dir }}
+        run: |
+          npm pack --dry-run
+          echo "Validation complete. Skipping publish."
+
+      - name: Resolve workspace protocol
+        if: >-
+          inputs.publish
+          && inputs.package == '@tsfga/kysely'
+        run: |
+          dir="${{ steps.pkg.outputs.dir }}"
+          core_ver=$(
+            jq -r .version packages/core/package.json
+          )
+          jq --arg v "^$core_ver" \
+            '.peerDependencies["@tsfga/core"] = $v
+             | .devDependencies["@tsfga/core"] = $v' \
+            "${dir}/package.json" > "${dir}/package.tmp"
+          mv "${dir}/package.tmp" "${dir}/package.json"
+
+      - name: Publish to npm
+        if: inputs.publish
+        working-directory: ${{ steps.pkg.outputs.dir }}
+        run: npm publish --provenance --access public
+
+      - name: Revert workspace resolution
+        if: >-
+          inputs.publish
+          && inputs.package == '@tsfga/kysely'
+        run: |
+          dir="${{ steps.pkg.outputs.dir }}"
+          git checkout "${dir}/package.json"
+
+      - name: Create git tag
+        if: inputs.publish
+        run: |
+          tag="${{ inputs.package }}@${{ steps.version.outputs.version }}"
+          git tag "$tag"
+
+      - name: Push tag
+        if: inputs.publish
+        run: |
+          tag="${{ inputs.package }}@${{ steps.version.outputs.version }}"
+          git push origin "$tag"
+
+      - name: Find previous tag
+        if: inputs.publish
+        id: prev-tag
+        run: |
+          pkg="${{ inputs.package }}"
+          current="${{ steps.version.outputs.version }}"
+          prev=$(
+            git tag --list "${pkg}@*" --sort=-v:refname \
+              | grep -v "${pkg}@${current}" \
+              | head -n 1 || true
+          )
+          echo "tag=$prev" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release notes
+        if: inputs.publish
+        id: notes
+        run: |
+          notes=$(
+            bash scripts/release-notes.sh \
+              "${{ steps.prev-tag.outputs.tag }}"
+          )
+          {
+            echo "body<<NOTES_EOF"
+            echo "$notes"
+            echo "NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ inputs.package }}@${{ steps.version.outputs.version }}"
+          gh release create "$tag" \
+            --title "$tag" \
+            --notes "${{ steps.notes.outputs.body }}"

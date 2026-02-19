@@ -1,7 +1,30 @@
 {
   "name": "@tsfga/kysely",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
+  "author": "Lemuel Roberto Bonifacio <code@lemuelroberto.online>",
+  "description": "Kysely/PostgreSQL adapter for @tsfga/core",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/emfga/tsfga.git",
+    "directory": "packages/kysely"
+  },
+  "homepage": "https://github.com/emfga/tsfga/tree/main/packages/kysely",
+  "bugs": {
+    "url": "https://github.com/emfga/tsfga/issues"
+  },
+  "keywords": [
+    "openfga",
+    "rebac",
+    "authorization",
+    "kysely",
+    "postgresql",
+    "zanzibar"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

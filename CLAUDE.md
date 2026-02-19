@@ -859,6 +859,41 @@ bun run version                          # Apply changesets to versions
 bun run release                          # Build + publish
 ```
 
+### Releasing
+
+Each package is versioned independently. A manually triggered
+GitHub Actions workflow publishes one package at a time to npm.
+See `RELEASING.md` for the full step-by-step process.
+
+**Release workflow** (`.github/workflows/release.yml`):
+- Restricted to `emfga/tsfga` (`if: github.repository`)
+- `workflow_dispatch` with `package` choice and `publish` toggle
+  (default: validate only — opt in to publish)
+- Builds, type-checks, publishes the current version in the repo
+- No version bumps or commits — the version is already correct
+  from a prior PR
+- Creates a per-package git tag and pushes it (not main)
+- Generates release notes categorized by PR labels
+- Uses npm Trusted Publishing (OIDC) — no long-lived secret
+
+**Version bumps** happen in PRs before release:
+- `scripts/bump.sh <package-dir> [patch|minor|major]`
+- Changesets track what changed for PR review; the
+  `changeset-check` workflow enforces their presence
+
+**Release notes** (`scripts/release-notes.sh`):
+- Categorizes commits by PR labels: `breaking`, `feature`,
+  `bug`, `documentation`, `tooling`
+- Unlabeled commits go under "Other"
+
+**npm authentication:**
+- Uses npm Trusted Publishing (OIDC) — no long-lived secret
+- `id-token: write` permission lets npm verify the GitHub
+  Actions workflow identity via Sigstore
+- `--provenance` flag adds attestation linking the package
+  to its source repo and build
+- Requires npm >= 11.5.1 (workflow upgrades npm explicitly)
+
 ### Type Generation Workflow
 
 ```bash

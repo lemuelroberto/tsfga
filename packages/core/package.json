@@ -1,7 +1,29 @@
 {
   "name": "@tsfga/core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
+  "author": "Lemuel Roberto Bonifacio <code@lemuelroberto.online>",
+  "description": "OpenFGA-compatible relationship-based access control for TypeScript",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/emfga/tsfga.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/emfga/tsfga/tree/main/packages/core",
+  "bugs": {
+    "url": "https://github.com/emfga/tsfga/issues"
+  },
+  "keywords": [
+    "openfga",
+    "rebac",
+    "authorization",
+    "access-control",
+    "zanzibar"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
