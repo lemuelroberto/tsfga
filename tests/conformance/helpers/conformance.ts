@@ -205,6 +205,7 @@ async function runBoth(
       relation: params.relation,
       subjectType: params.subjectType,
       subjectId: params.subjectId,
+      subjectRelation: params.subjectRelation,
       context: params.context,
       contextualTuples,
     }),
@@ -224,6 +225,8 @@ export interface ListObjectsParams {
   relation: string;
   subjectType: string;
   subjectId: string;
+  /** Set to ask about a userset — `group:eng#member`. */
+  subjectRelation?: string | null;
   context?: Record<string, unknown>;
   contextualTuples?: AddTupleRequest[];
 }

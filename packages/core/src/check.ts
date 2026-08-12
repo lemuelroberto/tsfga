@@ -3,6 +3,7 @@ import { evaluateTupleCondition } from "./conditions.ts";
 import { ContextualTupleStore } from "./contextual-store.ts";
 import {
   DepthExceededError,
+  InvalidSubjectTypeError,
   RelationConfigNotFoundError,
   TsfgaError,
 } from "./errors.ts";
@@ -16,7 +17,11 @@ import {
   subjectShape,
   validateTupleWrite,
 } from "./tuple-validation.ts";
-import { createReachability, type Reachability } from "./type-graph.ts";
+import {
+  createReachability,
+  type Reachability,
+  type SubjectRef,
+} from "./type-graph.ts";
 import type {
   AddTupleRequest,
   CheckOptions,
@@ -144,21 +149,34 @@ interface MemoEntry {
  * the same reason, but nothing in the types enforces it, and a
  * future code path that varied the subject would make the path
  * key merely over-eager while making the memo *wrong*.
+ *
+ * The subject's *relation* is a level of its own, and it is not
+ * optional: `group:eng#member` and `group:eng` are different
+ * subjects that answer differently, so leaving it out of the key
+ * would hand one subject's answer back for the other's question the
+ * moment a scope is shared — which `listObjects` and `checkMany`
+ * both do by construction. It keys `null` directly rather than a
+ * sentinel string, because a relation name is unconstrained and any
+ * stand-in for "none" could be one.
  */
 type MemoMap<V> = Map<string, V>;
-type NodeMap<V> = MemoMap<MemoMap<MemoMap<MemoMap<MemoMap<V>>>>>;
+type NodeMap<V> = Map<
+  string | null,
+  MemoMap<MemoMap<MemoMap<MemoMap<MemoMap<V>>>>>
+>;
 type NodeMemo = NodeMap<MemoEntry>;
 
 function nodeGet<V>(map: NodeMap<V>, request: CheckRequest): V | undefined {
   return map
-    .get(request.subjectType)
+    .get(request.subjectRelation ?? null)
+    ?.get(request.subjectType)
     ?.get(request.subjectId)
     ?.get(request.objectType)
     ?.get(request.objectId)
     ?.get(request.relation);
 }
 
-function memoLevel<V>(map: MemoMap<MemoMap<V>>, key: string): MemoMap<V> {
+function memoLevel<K, V>(map: Map<K, MemoMap<V>>, key: K): MemoMap<V> {
   let level = map.get(key);
   if (!level) {
     level = new Map();
@@ -168,7 +186,8 @@ function memoLevel<V>(map: MemoMap<MemoMap<V>>, key: string): MemoMap<V> {
 }
 
 function nodeSet<V>(map: NodeMap<V>, request: CheckRequest, value: V): void {
-  const bySubjectId = memoLevel(map, request.subjectType);
+  const bySubjectType = memoLevel(map, request.subjectRelation ?? null);
+  const bySubjectId = memoLevel(bySubjectType, request.subjectType);
   const byObjectType = memoLevel(bySubjectId, request.subjectId);
   const byObjectId = memoLevel(byObjectType, request.objectType);
   const byRelation = memoLevel(byObjectId, request.objectId);
@@ -183,7 +202,8 @@ function nodeSet<V>(map: NodeMap<V>, request: CheckRequest, value: V): void {
 function nodeDelete<V>(map: NodeMap<V>, request: CheckRequest, value: V): void {
   if (nodeGet(map, request) === value) {
     map
-      .get(request.subjectType)
+      .get(request.subjectRelation ?? null)
+      ?.get(request.subjectType)
       ?.get(request.subjectId)
       ?.get(request.objectType)
       ?.get(request.objectId)
@@ -312,6 +332,16 @@ function wouldDeadlock(entry: InflightEntry, waiter: WaitNode | null): boolean {
  * - Contextual tuples are validated against relation configs
  *   exactly like `addTuple` (RelationConfigNotFoundError,
  *   InvalidSubjectTypeError, InvalidConditionalTupleError).
+ * - The request's own subject is validated first, before any of it
+ *   is resolved: a subject the request cannot be asking about
+ *   raises rather than resolving to `false`. See
+ *   `validateCheckSubject`.
+ *
+ * The subject may be a **userset** — `request.subjectRelation` set
+ * — which asks whether that whole userset holds the relation
+ * rather than expanding it. See `CheckRequest` for the three
+ * consequences that follow, and `checkBase` for where the ref is
+ * matched.
  *
  * Depth accounting: only steps that move to a *different object*
  * — userset expansion and tuple-to-userset expansion — cost
@@ -544,12 +574,111 @@ export async function validateContextualTuples(
   }
 }
 
+/**
+ * The subject fields a request must have for its subject to be
+ * validated. Narrower than `CheckRequest` so `listObjects`, which
+ * has no `objectId`, can be validated by the same function.
+ */
+interface SubjectRequest {
+  readonly objectType: string;
+  readonly relation: string;
+  readonly subjectType: string;
+  readonly subjectId: string;
+  readonly subjectRelation?: string | null;
+}
+
+/**
+ * Refuse a subject the request cannot be asking about, before any
+ * of it is resolved.
+ *
+ * Upstream validates the `user` field at the command layer
+ * (`validation.ValidateUser`) and answers a 400 rather than a
+ * boolean, so a caller learns their request was not understood.
+ * tsfga spells the subject as three fields instead of one string,
+ * which removes most of the ways to malform it and adds one: a
+ * caller forwarding an OpenFGA-shaped `user` has only `subjectId`
+ * to put it in, and `subjectId: "eng#member"` used to resolve
+ * quietly to `false`. A silent deny is the worst answer available
+ * — it is indistinguishable from a real one — so the shapes below
+ * raise.
+ *
+ * The subject relation is also required to be **defined**. Probed
+ * against v1.18.2: a check for `group:eng#nonexistent` is refused
+ * with `relation 'group#nonexistent' not found`, and so is one for
+ * a type the model does not define; a single config lookup covers
+ * both, since a type with no relations has no config either.
+ *
+ * `allowed` is empty on the error rather than the relation's
+ * restriction list: nothing has read a relation config at this
+ * point, and upstream's refusal is likewise about the request
+ * rather than about what the relation admits.
+ */
+export async function validateCheckSubject(
+  store: TupleStore,
+  request: SubjectRequest,
+): Promise<void> {
+  const subjectRelation = request.subjectRelation ?? null;
+  const shape = subjectShape(
+    request.subjectType,
+    request.subjectId,
+    subjectRelation,
+  );
+  // Explicitly typed so TypeScript treats it as never-returning.
+  const refuse: (detail: string) => never = (detail) => {
+    throw new InvalidSubjectTypeError(
+      shape,
+      request.objectType,
+      request.relation,
+      [],
+      "malformed subject",
+      detail,
+    );
+  };
+
+  // Upstream's `userIDRegex` is `^[^:#\s\x00\p{Cc}]+$`, so neither
+  // character can occur in an id. Only these two are refused here:
+  // they are the ones a `type:id` or `type:id#relation` string
+  // carries, and so the ones that turn a mis-shaped request into a
+  // plausible-looking denial.
+  if (request.subjectId.includes(":") || request.subjectId.includes("#")) {
+    refuse("a subject id may not contain ':' or '#'");
+  }
+
+  if (subjectRelation === null) return;
+
+  if (subjectRelation === "") {
+    refuse("a subject relation may not be empty");
+  }
+  // `team:*#member` is not a userset, not a wildcard and not a
+  // concrete subject — the check-path half of the same rule the
+  // write path applies in `validateTupleWrite`.
+  if (request.subjectId === "*") {
+    refuse("a wildcard subject has no subject relation");
+  }
+
+  const config = await store.findRelationConfig(
+    request.subjectType,
+    subjectRelation,
+  );
+  if (config === null) {
+    throw new RelationConfigNotFoundError(request.subjectType, subjectRelation);
+  }
+}
+
 /** Run one check in a scope. Internal; see `CheckScope`. */
 export async function runCheck(
   scope: CheckScope,
   request: CheckRequest,
 ): Promise<boolean> {
   let resolution = scope;
+
+  // Before the contextual tuples, which is upstream's order:
+  // `validateCheckRequest` validates the request's own tuple key
+  // and only then loops the contextual ones
+  // (`pkg/server/commands/check_command.go:186-205`). The read this
+  // costs goes through the scope's config cache, so a `checkMany`
+  // or `listObjects` pays for it once.
+  await validateCheckSubject(scope.store, request);
 
   // Wrap store with contextual tuples for the whole request.
   // Contextual tuples must pass the same validation as addTuple.
@@ -606,6 +735,29 @@ async function checkNode(
     // Not an error: an indeterminate `false` that the set
     // operators above interpret for themselves.
     return CYCLE;
+  }
+
+  // A userset subject standing on its own node — is
+  // `group:eng#member` a `member` of `group:eng`? — holds by
+  // definition, whatever the model says. Upstream answers it in
+  // `IsSelfDefining` between the cycle guard and `GetRelation`
+  // (`internal/graph/check.go:433-437`), so the answer arrives
+  // before the relation is looked up and before the type graph is
+  // consulted: measured on v1.18.2, the check is `true` even where
+  // the relation admits no userset at all and `PathExists` would
+  // have pruned it.
+  //
+  // Unreachable while the subject relation is absent, which is
+  // every request tsfga could express before it was added: a
+  // relation name is never `null`.
+  if (
+    request.subjectRelation !== null &&
+    request.subjectRelation !== undefined &&
+    request.subjectRelation === request.relation &&
+    request.subjectType === request.objectType &&
+    request.subjectId === request.objectId
+  ) {
+    return GRANTED;
   }
 
   // Consulted *after* the cycle guard: a node already on this path
@@ -830,7 +982,16 @@ async function resolveNode(
   // That matters beyond speed: an extra await here reorders the
   // node's read against its siblings', and which branch of a union
   // reads first decides which one wins a race.
-  const subject = { type: request.subjectType };
+  //
+  // A userset subject asks the question about its own ref:
+  // upstream passes the whole `user` string to `PathExists`, which
+  // walks from `team#member` rather than from `team` — and skips
+  // the wildcard retry, since a userset can never be a wildcard
+  // (`pkg/typesystem/typesystem.go:708-729`).
+  const subject: SubjectRef =
+    request.subjectRelation === null || request.subjectRelation === undefined
+      ? { type: request.subjectType }
+      : { type: request.subjectType, relation: request.subjectRelation };
   let reachable = scope.reachability.settledReaches(
     subject,
     request.objectType,
@@ -956,10 +1117,26 @@ async function readNodeTuples(
   // `clampToQuery` do the exact match once the rows are in hand.
   // Anything narrower would have to fetch conditioned and bare
   // rows separately.
-  const directRefs = admittedRefsForShape(
-    config,
-    subjectShape(request.subjectType, request.subjectId, null),
-  );
+  //
+  // Both probes are for a subject with no subject relation, so a
+  // **userset** subject excludes them outright rather than
+  // narrowing them. Upstream reaches the same two exclusions
+  // separately: `shouldCheckPublicAssignable` returns false the
+  // moment the user is an object-relation, and its direct read is
+  // for the exact `type:id#relation` ref, which is a row the
+  // userset scan already returns. `checkBase` picks that row out of
+  // the scan, so nothing is lost by not asking for it twice —
+  // asking would mean a `subjectRelation` on `CheckTuplesQuery`
+  // that every store had to honour to be correct, when the clamp
+  // can do the same match on rows already in hand.
+  const subjectRelation = request.subjectRelation ?? null;
+  const directRefs =
+    subjectRelation === null
+      ? admittedRefsForShape(
+          config,
+          subjectShape(request.subjectType, request.subjectId, null),
+        )
+      : [];
   // Checking the wildcard subject itself makes the two probes the
   // same query, and `subjectShape` folds `subjectId === "*"` into
   // the wildcard shape, so the direct slot already carries the
@@ -967,7 +1144,7 @@ async function readNodeTuples(
   // identically, so folding it into `direct` loses nothing and
   // saves a duplicate condition evaluation.
   const wildcardRefs =
-    request.subjectId === "*"
+    subjectRelation !== null || request.subjectId === "*"
       ? []
       : admittedRefsForShape(config, {
           type: request.subjectType,
@@ -1152,12 +1329,39 @@ async function checkBase(
     usersets: usersetTuples,
   } = await reads;
 
+  // The userset row that *is* the subject, when the subject is a
+  // userset: `doc:1#viewer@group:eng#member` answering a check for
+  // `group:eng#member`.
+  //
+  // It is a direct hit, not a hop. Upstream finds the same row
+  // through `checkDirectUserTuple` — gated by
+  // `shouldCheckDirectTuple`, which builds the source ref out of
+  // the user's own type *and relation*, so it is exactly the
+  // userset restriction — and answers at this node's depth.
+  // Reaching it only through the userset scan's dispatch would
+  // still grant, via the self-defining rule one level down, but it
+  // would cost a depth the model does not spend and evaluate the
+  // row's condition twice.
+  const subjectRelation = request.subjectRelation ?? null;
+  const selfTuple =
+    subjectRelation === null
+      ? null
+      : (usersetTuples.find(
+          (tuple) =>
+            tuple.subjectType === request.subjectType &&
+            tuple.subjectId === request.subjectId &&
+            tuple.subjectRelation === subjectRelation,
+        ) ?? null);
+
   // Steps 1/1b: an unconditioned direct or wildcard hit answers
   // immediately, before any sub-check is launched
   if (directTuple && !directTuple.conditionName) {
     return GRANTED;
   }
   if (wildcardTuple && !wildcardTuple.conditionName) {
+    return GRANTED;
+  }
+  if (selfTuple && !selfTuple.conditionName) {
     return GRANTED;
   }
 
@@ -1176,6 +1380,13 @@ async function checkBase(
       evaluateCondition(store, wildcardTuple, request.context),
     );
   }
+  // Its own branch, outside the userset stash below: upstream reads
+  // it separately from the userset scan, so its condition error
+  // carries its own decision rather than being weighed against the
+  // scan's other rows.
+  if (selfTuple) {
+    handlers.push(() => evaluateCondition(store, selfTuple, request.context));
+  }
 
   // Step 2: Userset expansion handlers. This moves to another
   // object, so it is a dispatch and costs one depth.
@@ -1190,6 +1401,9 @@ async function checkBase(
   let usersetHeld = false;
   for (const userset of usersetTuples) {
     if (!userset.subjectRelation) continue;
+    // Already answered above, at this node's depth. Dispatching it
+    // as well would resolve the same row a second time.
+    if (userset === selfTuple) continue;
     const relation = userset.subjectRelation;
     handlers.push(async (branch) => {
       // The condition can cost a condition-definition fetch, so it
@@ -1216,6 +1430,7 @@ async function checkBase(
           relation,
           subjectType: request.subjectType,
           subjectId: request.subjectId,
+          subjectRelation: request.subjectRelation,
           context: request.context,
         },
         depth + 1,
@@ -1299,6 +1514,7 @@ async function checkBase(
                 relation: computedUserset,
                 subjectType: request.subjectType,
                 subjectId: request.subjectId,
+                subjectRelation: request.subjectRelation,
                 context: request.context,
               },
               depth + 1,
@@ -1391,6 +1607,7 @@ async function checkIntersection(
                 relation: operand.computedUserset,
                 subjectType: request.subjectType,
                 subjectId: request.subjectId,
+                subjectRelation: request.subjectRelation,
                 context: request.context,
               },
               depth + 1,

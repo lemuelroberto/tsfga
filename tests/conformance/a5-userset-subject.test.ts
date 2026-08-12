@@ -1,9 +1,10 @@
-import { afterAll, beforeAll, describe, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
   type AddTupleRequest,
   createTsfga,
   type RelationConfig,
   type TsfgaClient,
+  TsfgaError,
 } from "@tsfga/core";
 import type { DB } from "@tsfga/kysely";
 import { KyselyTupleStore } from "@tsfga/kysely";
@@ -37,17 +38,23 @@ import {
  * `check_userset.go` (v1.18.2) assert it in almost every case, as
  * `User: "ttus:...#direct_pa_direct_ch"`.
  *
- * tsfga's `CheckRequest` and `ListObjectsRequest` carry
- * `subjectType` and `subjectId` and no `subjectRelation`, so the
- * request cannot be spelled at all. The tests below pass the ref
- * the only way the type allows — `subjectId` holding
- * `"<id>#member"` — which is what makes them fail rather than
- * silently answer something else.
+ * tsfga spells the subject as three fields, so the form is
+ * `subjectRelation`. The question it asks is a comparison, not an
+ * expansion: `us_group_a5:eng#member` holds `viewer` iff a row
+ * grants that exact userset or a rewrite of `viewer` reaches one.
+ * The tests below fix the three edges of that, each measured
+ * against the v1.18.2 container:
+ *
+ * - `team#member` and `team` are different subjects, in both
+ *   directions;
+ * - a typed wildcard never grants a userset;
+ * - a userset whose relation the model does not define is refused,
+ *   not denied.
  *
  * See `tmp/openfga-parity/issues/080-check-subject-userset.md`.
  */
 
-const NAMES = ["1", "eng", "other", "alice"] as const;
+const NAMES = ["1", "2", "eng", "other", "alice", "f1"] as const;
 
 const uuidMap = new Map<string, string>(
   NAMES.map((name, index) => [
@@ -64,6 +71,7 @@ function uuid(name: string): string {
 
 const USER = "user_a5";
 const GROUP = "us_group_a5";
+const FOLDER = "us_folder_a5";
 const DOC = "us_document_a5";
 
 function cfg(
@@ -84,12 +92,35 @@ function cfg(
   };
 }
 
+// In dependency order: a rewrite's premises are written before it,
+// so the tupleset gates in `writeRelationConfig` see them.
 const CONFIGS: RelationConfig[] = [
   cfg(GROUP, "member", { directlyAssignable: [{ type: USER }] }),
+  cfg(GROUP, "admin", { directlyAssignable: [{ type: USER }] }),
+  cfg(FOLDER, "viewer", {
+    directlyAssignable: [{ type: GROUP, relation: "member" }],
+  }),
+  cfg(DOC, "parent", { directlyAssignable: [{ type: FOLDER }] }),
   cfg(DOC, "viewer", {
     directlyAssignable: [{ type: GROUP, relation: "member" }],
   }),
   cfg(DOC, "can_view", { computedUserset: "viewer" }),
+  // A bare-type restriction, so a userset subject is not admitted.
+  cfg(DOC, "owner", { directlyAssignable: [{ type: GROUP }] }),
+  // A typed wildcard, which a userset subject never matches.
+  cfg(DOC, "anyone", {
+    directlyAssignable: [{ type: GROUP, wildcard: true }],
+  }),
+  cfg(DOC, "inherited", {
+    tupleToUserset: [{ tupleset: "parent", computedUserset: "viewer" }],
+  }),
+  cfg(DOC, "blocked", {
+    directlyAssignable: [{ type: GROUP, relation: "member" }],
+  }),
+  cfg(DOC, "restricted", {
+    computedUserset: "viewer",
+    excludedBy: "blocked",
+  }),
 ];
 
 const TUPLES: AddTupleRequest[] = [
@@ -102,11 +133,56 @@ const TUPLES: AddTupleRequest[] = [
     subjectRelation: "member",
   },
   {
+    objectType: DOC,
+    objectId: uuid("2"),
+    relation: "viewer",
+    subjectType: GROUP,
+    subjectId: uuid("eng"),
+    subjectRelation: "member",
+  },
+  {
     objectType: GROUP,
     objectId: uuid("eng"),
     relation: "member",
     subjectType: USER,
     subjectId: uuid("alice"),
+  },
+  {
+    objectType: DOC,
+    objectId: uuid("1"),
+    relation: "owner",
+    subjectType: GROUP,
+    subjectId: uuid("eng"),
+  },
+  {
+    objectType: DOC,
+    objectId: uuid("1"),
+    relation: "anyone",
+    subjectType: GROUP,
+    subjectId: "*",
+  },
+  {
+    objectType: FOLDER,
+    objectId: uuid("f1"),
+    relation: "viewer",
+    subjectType: GROUP,
+    subjectId: uuid("eng"),
+    subjectRelation: "member",
+  },
+  {
+    objectType: DOC,
+    objectId: uuid("1"),
+    relation: "parent",
+    subjectType: FOLDER,
+    subjectId: uuid("f1"),
+  },
+  {
+    objectType: DOC,
+    objectId: uuid("2"),
+    relation: "blocked",
+    subjectType: GROUP,
+    subjectId: uuid("other"),
+    subjectRelation: "member",
   },
 ];
 
@@ -197,7 +273,8 @@ describe("A5 userset as the check subject", () => {
         objectId: uuid("1"),
         relation: "viewer",
         subjectType: GROUP,
-        subjectId: `${uuid("eng")}#member`,
+        subjectId: uuid("eng"),
+        subjectRelation: "member",
       },
       true,
     );
@@ -213,7 +290,8 @@ describe("A5 userset as the check subject", () => {
         objectId: uuid("1"),
         relation: "can_view",
         subjectType: GROUP,
-        subjectId: `${uuid("eng")}#member`,
+        subjectId: uuid("eng"),
+        subjectRelation: "member",
       },
       true,
     );
@@ -229,7 +307,8 @@ describe("A5 userset as the check subject", () => {
         objectId: uuid("1"),
         relation: "viewer",
         subjectType: GROUP,
-        subjectId: `${uuid("other")}#member`,
+        subjectId: uuid("other"),
+        subjectRelation: "member",
       },
       false,
     );
@@ -244,7 +323,318 @@ describe("A5 userset as the check subject", () => {
         objectType: DOC,
         relation: "viewer",
         subjectType: GROUP,
+        subjectId: uuid("eng"),
+        subjectRelation: "member",
+      },
+      [uuid("1"), uuid("2")],
+    );
+  });
+
+  test("a userset subject reaches through a tuple-to-userset", async () => {
+    await expectConformance(
+      storeId,
+      authorizationModelId,
+      tsfgaClient,
+      {
+        objectType: DOC,
+        objectId: uuid("1"),
+        relation: "inherited",
+        subjectType: GROUP,
+        subjectId: uuid("eng"),
+        subjectRelation: "member",
+      },
+      true,
+    );
+  });
+
+  test("a userset subject on the base side of an exclusion", async () => {
+    await expectConformance(
+      storeId,
+      authorizationModelId,
+      tsfgaClient,
+      {
+        objectType: DOC,
+        objectId: uuid("2"),
+        relation: "restricted",
+        subjectType: GROUP,
+        subjectId: uuid("eng"),
+        subjectRelation: "member",
+      },
+      true,
+    );
+  });
+
+  test("a userset subject the subtrahend excludes", async () => {
+    await expectConformance(
+      storeId,
+      authorizationModelId,
+      tsfgaClient,
+      {
+        objectType: DOC,
+        objectId: uuid("2"),
+        relation: "restricted",
+        subjectType: GROUP,
+        subjectId: uuid("other"),
+        subjectRelation: "member",
+      },
+      false,
+    );
+  });
+
+  // The userset ref and the bare type are matched exactly and in
+  // both directions, exactly as `formatRestriction` writes them.
+  test("a restriction naming team#member denies the bare team", async () => {
+    await expectConformance(
+      storeId,
+      authorizationModelId,
+      tsfgaClient,
+      {
+        objectType: DOC,
+        objectId: uuid("1"),
+        relation: "viewer",
+        subjectType: GROUP,
+        subjectId: uuid("eng"),
+      },
+      false,
+    );
+  });
+
+  test("a restriction naming team denies the userset team#member", async () => {
+    await expectConformance(
+      storeId,
+      authorizationModelId,
+      tsfgaClient,
+      {
+        objectType: DOC,
+        objectId: uuid("1"),
+        relation: "owner",
+        subjectType: GROUP,
+        subjectId: uuid("eng"),
+        subjectRelation: "member",
+      },
+      false,
+    );
+  });
+
+  test("control: the bare team holds the bare restriction", async () => {
+    await expectConformance(
+      storeId,
+      authorizationModelId,
+      tsfgaClient,
+      {
+        objectType: DOC,
+        objectId: uuid("1"),
+        relation: "owner",
+        subjectType: GROUP,
+        subjectId: uuid("eng"),
+      },
+      true,
+    );
+  });
+
+  // A userset can never be a wildcard, so neither the wildcard row
+  // nor the wildcard retry in the type graph applies to it.
+  test("a typed wildcard does not grant a userset subject", async () => {
+    await expectConformance(
+      storeId,
+      authorizationModelId,
+      tsfgaClient,
+      {
+        objectType: DOC,
+        objectId: uuid("1"),
+        relation: "anyone",
+        subjectType: GROUP,
+        subjectId: uuid("eng"),
+        subjectRelation: "member",
+      },
+      false,
+    );
+  });
+
+  test("control: the same wildcard grants the bare subject", async () => {
+    await expectConformance(
+      storeId,
+      authorizationModelId,
+      tsfgaClient,
+      {
+        objectType: DOC,
+        objectId: uuid("1"),
+        relation: "anyone",
+        subjectType: GROUP,
+        subjectId: uuid("eng"),
+      },
+      true,
+    );
+  });
+
+  test("a userset naming a relation it was not granted is denied", async () => {
+    await expectConformance(
+      storeId,
+      authorizationModelId,
+      tsfgaClient,
+      {
+        objectType: DOC,
+        objectId: uuid("1"),
+        relation: "viewer",
+        subjectType: GROUP,
+        subjectId: uuid("eng"),
+        subjectRelation: "admin",
+      },
+      false,
+    );
+  });
+
+  // A userset holds its own relation on its own object by
+  // definition, ahead of the model: upstream answers this in
+  // `IsSelfDefining`, before the relation's restrictions or the
+  // type graph are consulted, and `member` admits no userset at
+  // all.
+  test("a userset holds its own relation on its own object", async () => {
+    await expectConformance(
+      storeId,
+      authorizationModelId,
+      tsfgaClient,
+      {
+        objectType: GROUP,
+        objectId: uuid("eng"),
+        relation: "member",
+        subjectType: GROUP,
+        subjectId: uuid("eng"),
+        subjectRelation: "member",
+      },
+      true,
+    );
+  });
+
+  // Refusals. Each is a refusal on *both* engines: upstream
+  // validates the `user` field before resolving anything and
+  // answers a validation error rather than `false`.
+  test("a subject relation the type does not define is refused", async () => {
+    await expectConformance(
+      storeId,
+      authorizationModelId,
+      tsfgaClient,
+      {
+        objectType: DOC,
+        objectId: uuid("1"),
+        relation: "viewer",
+        subjectType: GROUP,
+        subjectId: uuid("eng"),
+        subjectRelation: "nonexistent_a5",
+      },
+      "refused",
+    );
+  });
+
+  test("a subject type the model does not define is refused", async () => {
+    await expectConformance(
+      storeId,
+      authorizationModelId,
+      tsfgaClient,
+      {
+        objectType: DOC,
+        objectId: uuid("1"),
+        relation: "viewer",
+        subjectType: "nonexistent_type_a5",
+        subjectId: uuid("eng"),
+        subjectRelation: "member",
+      },
+      "refused",
+    );
+  });
+
+  test("a wildcard subject carrying a subject relation is refused", async () => {
+    await expectConformance(
+      storeId,
+      authorizationModelId,
+      tsfgaClient,
+      {
+        objectType: DOC,
+        objectId: uuid("1"),
+        relation: "viewer",
+        subjectType: GROUP,
+        subjectId: "*",
+        subjectRelation: "member",
+      },
+      "refused",
+    );
+  });
+
+  /**
+   * One-sided on purpose. `subjectId: "<id>#member"` is a valid
+   * `user` string on OpenFGA's wire, which has one field for the
+   * whole subject, and upstream answers `true` for it. tsfga has
+   * three fields, so the same spelling is a caller forwarding a
+   * ref into the wrong one — and before this landed it resolved
+   * quietly to `false`, which is indistinguishable from a real
+   * denial. There is no divergence to pin here: the two engines
+   * are being handed different requests.
+   */
+  test("a ref smuggled through the subject id is refused", async () => {
+    await expect(
+      tsfgaClient.check({
+        objectType: DOC,
+        objectId: uuid("1"),
+        relation: "viewer",
+        subjectType: GROUP,
         subjectId: `${uuid("eng")}#member`,
+      }),
+    ).rejects.toBeInstanceOf(TsfgaError);
+  });
+
+  /**
+   * The node memo keys on the subject *relation* as well as on the
+   * subject's type and id.
+   *
+   * `checkMany` answers a whole batch in one resolution scope, so
+   * two requests differing only in the subject relation resolve
+   * against one memo. Leave the relation out of the key and the
+   * first answer is handed back for the second question — here,
+   * `true` for a subject the model denies.
+   */
+  test("the userset and the bare subject do not share a memo entry", async () => {
+    const node = {
+      objectType: DOC,
+      objectId: uuid("1"),
+      relation: "viewer",
+      subjectType: GROUP,
+      subjectId: uuid("eng"),
+    };
+    const outcomes = await tsfgaClient.checkMany([
+      { ...node, subjectRelation: "member" },
+      node,
+      { ...node, subjectRelation: "admin" },
+    ]);
+    expect(outcomes.map((outcome) => outcome.allowed)).toEqual([
+      true,
+      false,
+      false,
+    ]);
+  });
+
+  test("listObjects tells the userset and the bare subject apart", async () => {
+    await expectListObjectsConformance(
+      storeId,
+      authorizationModelId,
+      tsfgaClient,
+      {
+        objectType: DOC,
+        relation: "owner",
+        subjectType: GROUP,
+        subjectId: uuid("eng"),
+        subjectRelation: "member",
+      },
+      [],
+    );
+    await expectListObjectsConformance(
+      storeId,
+      authorizationModelId,
+      tsfgaClient,
+      {
+        objectType: DOC,
+        relation: "owner",
+        subjectType: GROUP,
+        subjectId: uuid("eng"),
       },
       [uuid("1")],
     );

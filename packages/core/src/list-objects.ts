@@ -1,6 +1,7 @@
 import {
   createCheckScope,
   runCheck,
+  validateCheckSubject,
   validateContextualTuples,
 } from "./check.ts";
 import { ContextualTupleStore } from "./contextual-store.ts";
@@ -31,7 +32,12 @@ import type { CheckOptions, ListObjectsRequest } from "./types.ts";
  * the same two gates this way — contextual tuples first, then
  * `GetRelation` on the target
  * (`pkg/server/commands/list_objects.go`) — and the order is
- * observable, so it is kept.
+ * observable, so it is kept. The subject is gated third, after
+ * both.
+ *
+ * The subject may be a userset (`request.subjectRelation`), and
+ * then the objects returned are the ones that whole userset
+ * reaches — not the ones its members reach. See `CheckRequest`.
  *
  * Errors: the first failing candidate *in candidate order* is
  * thrown, not the first to fail in wall-clock order — no candidate
@@ -69,6 +75,7 @@ export async function listObjects(
   options: CheckOptions = {},
 ): Promise<string[]> {
   const { objectType, relation, subjectType, subjectId, context } = request;
+  const subjectRelation = request.subjectRelation;
   const contextualTuples = request.contextualTuples ?? [];
   if (contextualTuples.length > 0) {
     await validateContextualTuples(store, contextualTuples);
@@ -85,6 +92,15 @@ export async function listObjects(
   if (config === null) {
     throw new RelationConfigNotFoundError(objectType, relation);
   }
+  // Last of the three gates, which is upstream's order: contextual
+  // tuples, then the target relation, then the subject
+  // (`pkg/server/commands/list_objects.go:534-555`). Check orders
+  // the subject *first* instead — the two commands genuinely
+  // differ, and both orders are observable, so neither is
+  // normalised away. Doing it here rather than leaving it to the
+  // per-candidate `runCheck` is what makes a malformed subject a
+  // refusal even when the candidate pool is empty.
+  await validateCheckSubject(scope.store, request);
   const candidateIds = await resolutionStore.listCandidateObjectIds(objectType);
 
   return resolveCandidates(candidateIds, scope.maxBreadth, (objectId) =>
@@ -94,6 +110,7 @@ export async function listObjects(
       relation,
       subjectType,
       subjectId,
+      subjectRelation,
       context,
     }).catch((error: unknown) => {
       // A candidate the budget could not resolve is dropped, not

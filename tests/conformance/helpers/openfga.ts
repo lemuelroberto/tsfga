@@ -194,12 +194,32 @@ export interface FgaContextualTuple {
   condition?: { name: string; context?: Record<string, unknown> };
 }
 
+/**
+ * The subject as OpenFGA's `user` field spells it.
+ *
+ * A subject relation makes it a userset — `group:eng#member` —
+ * which is one of the two forms `TupleKey.user` takes. Dropping it
+ * would ask OpenFGA about the bare `group:eng`, a *different*
+ * subject that the same model answers differently, so the
+ * assertion would compare two questions rather than two engines.
+ */
+function fgaUser(subject: {
+  subjectType: string;
+  subjectId: string;
+  subjectRelation?: string | null;
+}): string {
+  return subject.subjectRelation
+    ? `${subject.subjectType}:${subject.subjectId}#${subject.subjectRelation}`
+    : `${subject.subjectType}:${subject.subjectId}`;
+}
+
 export interface FgaCheckParams {
   objectType: string;
   objectId: string;
   relation: string;
   subjectType: string;
   subjectId: string;
+  subjectRelation?: string | null;
   context?: Record<string, unknown>;
   contextualTuples?: FgaContextualTuple[];
 }
@@ -213,7 +233,7 @@ export async function fgaCheck(
   try {
     const response = await client.check(
       {
-        user: `${params.subjectType}:${params.subjectId}`,
+        user: fgaUser(params),
         relation: params.relation,
         object: `${params.objectType}:${params.objectId}`,
         context: params.context,
@@ -234,6 +254,7 @@ export interface FgaListObjectsParams {
   relation: string;
   subjectType: string;
   subjectId: string;
+  subjectRelation?: string | null;
   context?: Record<string, unknown>;
   contextualTuples?: FgaContextualTuple[];
 }
@@ -260,7 +281,7 @@ export async function fgaListObjects(
   const client = createClient(storeId);
   const response = await client.listObjects(
     {
-      user: `${params.subjectType}:${params.subjectId}`,
+      user: fgaUser(params),
       relation: params.relation,
       type: params.objectType,
       context: params.context,

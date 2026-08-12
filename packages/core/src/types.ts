@@ -204,13 +204,47 @@ export type ConditionParameterType =
   | `list<${ConditionParameterScalarType}>`
   | `map<${ConditionParameterScalarType}>`;
 
+/**
+ * The subject a check or a list-objects request asks about.
+ *
+ * `subjectRelation` makes it a **userset** — `team:eng#member`,
+ * upstream's `object#relation` form of `TupleKey.user`. The
+ * question is then whether that whole userset holds the relation,
+ * and it is answered by comparing the ref: `team:eng#member` holds
+ * `viewer` iff a row grants that exact userset, or a rewrite of
+ * `viewer` reaches one. It does **not** expand — a check for
+ * `team:eng#member` is not a check for each member of the team.
+ *
+ * Three consequences, all measured against v1.18.2:
+ *
+ * - `team#member` and `team` are distinct subjects. A relation
+ *   admitting `[team#member]` denies the bare `team:eng`, and one
+ *   admitting `[team]` denies `team:eng#member`.
+ * - A typed wildcard never grants a userset. `team:*` is a row
+ *   about concrete `team` subjects, and upstream skips both the
+ *   public-assignability probe and the wildcard retry in
+ *   `PathExists` when the subject is a userset.
+ * - `type:*#relation` is not a subject at all, and neither is a
+ *   subject id holding `:` or `#`. Both are refused rather than
+ *   answered.
+ */
+interface SubjectRequest {
+  subjectType: string;
+  subjectId: string;
+  /**
+   * Set to ask about the userset `subjectType:subjectId#relation`
+   * rather than about the concrete subject. The relation must be
+   * one the subject's type defines, or the request is refused with
+   * `RelationConfigNotFoundError`, as upstream refuses it.
+   */
+  subjectRelation?: string | null;
+}
+
 /** Parameters for a check request */
-export interface CheckRequest {
+export interface CheckRequest extends SubjectRequest {
   objectType: string;
   objectId: string;
   relation: string;
-  subjectType: string;
-  subjectId: string;
   context?: Record<string, unknown>;
   contextualTuples?: AddTupleRequest[];
 }
@@ -222,11 +256,9 @@ export interface CheckRequest {
  * upstream's `ListObjectsRequest` carries `contextual_tuples` and
  * the flat form had nowhere to put them.
  */
-export interface ListObjectsRequest {
+export interface ListObjectsRequest extends SubjectRequest {
   objectType: string;
   relation: string;
-  subjectType: string;
-  subjectId: string;
   /** Forwarded to every per-candidate check. */
   context?: Record<string, unknown>;
   /**
