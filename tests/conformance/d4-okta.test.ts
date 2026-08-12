@@ -35,6 +35,11 @@ import {
   fgaWriteModel,
   fgaWriteTuples,
 } from "./helpers/openfga.ts";
+import { strictIdStore } from "./helpers/strict-ids.ts";
+import {
+  assertUuidMapCovers,
+  assertUuidMapInjective,
+} from "./helpers/uuid-map.ts";
 
 /**
  * An Okta/Entra-shaped identity provider: org units, nested
@@ -86,6 +91,32 @@ const SMS = { mfa_level: "sms" };
 const GOOD_DEVICE = { device_id: "dev-0a1b2c3d" };
 const BAD_DEVICE = { device_id: "dev-0a1b2c" };
 
+const uuidMap = new Map<string, string>([
+  ["alice", "00000000-0000-4000-d584-000000000001"],
+  ["g_eng", "00000000-0000-4000-d584-000000000002"],
+  ["bob", "00000000-0000-4000-d584-000000000003"],
+  ["g_all", "00000000-0000-4000-d584-000000000004"],
+  ["carol", "00000000-0000-4000-d584-000000000005"],
+  ["ou_root", "00000000-0000-4000-d584-000000000006"],
+  ["ou_eu", "00000000-0000-4000-d584-000000000007"],
+  ["ou_eu_sales", "00000000-0000-4000-d584-000000000008"],
+  ["dan", "00000000-0000-4000-d584-000000000009"],
+  ["app_crm", "00000000-0000-4000-d584-000000000010"],
+  ["app_hr", "00000000-0000-4000-d584-000000000011"],
+  ["app_wiki", "00000000-0000-4000-d584-000000000012"],
+  ["frank", "00000000-0000-4000-d584-000000000013"],
+  ["s1", "00000000-0000-4000-d584-000000000014"],
+  ["s2", "00000000-0000-4000-d584-000000000015"],
+  ["zed", "00000000-0000-4000-d584-000000000016"],
+  ["yara", "00000000-0000-4000-d584-000000000017"],
+]);
+
+function uuid(name: string): string {
+  const id = uuidMap.get(name);
+  if (!id) throw new Error(`No UUID for ${name}`);
+  return id;
+}
+
 describe("Okta Model Conformance", () => {
   let db: Kysely<DB>;
   let storeId: string;
@@ -111,10 +142,10 @@ describe("Okta Model Conformance", () => {
       tsfga,
       {
         objectType,
-        objectId,
+        objectId: uuid(objectId),
         relation,
         subjectType: "user_d4o",
-        subjectId: subject,
+        subjectId: uuid(subject),
         ...(extra?.context ? { context: extra.context } : {}),
         ...(extra?.contextualTuples
           ? { contextualTuples: extra.contextualTuples }
@@ -164,10 +195,13 @@ describe("Okta Model Conformance", () => {
   }
 
   beforeAll(async () => {
+    assertUuidMapInjective(uuidMap);
+    assertUuidMapCovers("./d4-okta/tuples.yaml", uuidMap);
+
     db = getDb();
     await beginTransaction(db);
 
-    tsfga = createTsfga(new KyselyTupleStore(db));
+    tsfga = createTsfga(strictIdStore(new KyselyTupleStore(db)));
     fixture = recordFixture(tsfga);
 
     for (const condition of CONDITIONS) {
@@ -344,179 +378,179 @@ describe("Okta Model Conformance", () => {
     const tuples: AddTupleRequest[] = [
       {
         objectType: "group_d4o",
-        objectId: "g_eng",
+        objectId: uuid("g_eng"),
         relation: "direct_member",
         subjectType: "user_d4o",
-        subjectId: "alice",
+        subjectId: uuid("alice"),
       },
       {
         objectType: "group_d4o",
-        objectId: "g_eng",
+        objectId: uuid("g_eng"),
         relation: "direct_member",
         subjectType: "user_d4o",
-        subjectId: "bob",
+        subjectId: uuid("bob"),
       },
       {
         objectType: "group_d4o",
-        objectId: "g_all",
+        objectId: uuid("g_all"),
         relation: "direct_member",
         subjectType: "group_d4o",
-        subjectId: "g_eng",
+        subjectId: uuid("g_eng"),
         subjectRelation: "direct_member",
       },
       {
         objectType: "group_d4o",
-        objectId: "g_all",
+        objectId: uuid("g_all"),
         relation: "direct_member",
         subjectType: "user_d4o",
-        subjectId: "carol",
+        subjectId: uuid("carol"),
       },
       {
         objectType: "group_d4o",
-        objectId: "g_all",
+        objectId: uuid("g_all"),
         relation: "excluded",
         subjectType: "user_d4o",
-        subjectId: "bob",
+        subjectId: uuid("bob"),
       },
       {
         objectType: "ou_d4o",
-        objectId: "ou_eu",
+        objectId: uuid("ou_eu"),
         relation: "parent_ou",
         subjectType: "ou_d4o",
-        subjectId: "ou_root",
+        subjectId: uuid("ou_root"),
       },
       {
         objectType: "ou_d4o",
-        objectId: "ou_eu_sales",
+        objectId: uuid("ou_eu_sales"),
         relation: "parent_ou",
         subjectType: "ou_d4o",
-        subjectId: "ou_eu",
+        subjectId: uuid("ou_eu"),
       },
       {
         objectType: "ou_d4o",
-        objectId: "ou_root",
+        objectId: uuid("ou_root"),
         relation: "admin",
         subjectType: "group_d4o",
-        subjectId: "g_all",
+        subjectId: uuid("g_all"),
         subjectRelation: "member",
       },
       {
         objectType: "ou_d4o",
-        objectId: "ou_eu",
+        objectId: uuid("ou_eu"),
         relation: "helpdesk",
         subjectType: "user_d4o",
-        subjectId: "dan",
+        subjectId: uuid("dan"),
       },
       {
         objectType: "ou_d4o",
-        objectId: "ou_eu_sales",
+        objectId: uuid("ou_eu_sales"),
         relation: "suspended",
         subjectType: "user_d4o",
-        subjectId: "carol",
+        subjectId: uuid("carol"),
       },
       {
         objectType: "app_d4o",
-        objectId: "app_crm",
+        objectId: uuid("app_crm"),
         relation: "owner_ou",
         subjectType: "ou_d4o",
-        subjectId: "ou_eu_sales",
+        subjectId: uuid("ou_eu_sales"),
       },
       {
         objectType: "app_d4o",
-        objectId: "app_hr",
+        objectId: uuid("app_hr"),
         relation: "owner_ou",
         subjectType: "ou_d4o",
-        subjectId: "ou_root",
+        subjectId: uuid("ou_root"),
       },
       {
         objectType: "app_d4o",
-        objectId: "app_wiki",
+        objectId: uuid("app_wiki"),
         relation: "owner_ou",
         subjectType: "ou_d4o",
-        subjectId: "ou_eu",
+        subjectId: uuid("ou_eu"),
       },
       {
         objectType: "app_d4o",
-        objectId: "app_crm",
+        objectId: uuid("app_crm"),
         relation: "assigned",
         subjectType: "group_d4o",
-        subjectId: "g_all",
+        subjectId: uuid("g_all"),
         subjectRelation: "member",
       },
       {
         objectType: "app_d4o",
-        objectId: "app_crm",
+        objectId: uuid("app_crm"),
         relation: "assigned",
         subjectType: "user_d4o",
-        subjectId: "dan",
+        subjectId: uuid("dan"),
       },
       {
         objectType: "app_d4o",
-        objectId: "app_crm",
+        objectId: uuid("app_crm"),
         relation: "assigned",
         subjectType: "user_d4o",
-        subjectId: "frank",
+        subjectId: uuid("frank"),
         conditionName: "mfa_ok_d4o",
         conditionContext: { required_levels: ["otp", "fido"] },
       },
       {
         objectType: "app_d4o",
-        objectId: "app_hr",
+        objectId: uuid("app_hr"),
         relation: "assigned",
         subjectType: "group_d4o",
-        subjectId: "g_all",
+        subjectId: uuid("g_all"),
         subjectRelation: "member",
       },
       {
         objectType: "app_d4o",
-        objectId: "app_hr",
+        objectId: uuid("app_hr"),
         relation: "deprovisioned",
         subjectType: "user_d4o",
-        subjectId: "carol",
+        subjectId: uuid("carol"),
       },
       {
         objectType: "app_d4o",
-        objectId: "app_wiki",
+        objectId: uuid("app_wiki"),
         relation: "assigned",
         subjectType: "group_d4o",
-        subjectId: "g_all",
+        subjectId: uuid("g_all"),
         subjectRelation: "member",
       },
       {
         objectType: "app_d4o",
-        objectId: "app_wiki",
+        objectId: uuid("app_wiki"),
         relation: "deprovisioned",
         subjectType: "user_d4o",
         subjectId: "*",
       },
       {
         objectType: "session_d4o",
-        objectId: "s1",
+        objectId: uuid("s1"),
         relation: "app",
         subjectType: "app_d4o",
-        subjectId: "app_crm",
+        subjectId: uuid("app_crm"),
       },
       {
         objectType: "session_d4o",
-        objectId: "s1",
+        objectId: uuid("s1"),
         relation: "principal",
         subjectType: "user_d4o",
-        subjectId: "alice",
+        subjectId: uuid("alice"),
         conditionName: "device_trusted_d4o",
       },
       {
         objectType: "session_d4o",
-        objectId: "s2",
+        objectId: uuid("s2"),
         relation: "app",
         subjectType: "app_d4o",
-        subjectId: "app_wiki",
+        subjectId: uuid("app_wiki"),
       },
       {
         objectType: "session_d4o",
-        objectId: "s2",
+        objectId: uuid("s2"),
         relation: "principal",
         subjectType: "user_d4o",
-        subjectId: "alice",
+        subjectId: uuid("alice"),
         conditionName: "device_trusted_d4o",
       },
     ];
@@ -529,6 +563,7 @@ describe("Okta Model Conformance", () => {
       storeId,
       "./d4-okta/tuples.yaml",
       authorizationModelId,
+      uuidMap,
     );
   });
 
@@ -706,10 +741,10 @@ describe("Okta Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "app_d4o",
-          objectId: "app_crm",
+          objectId: uuid("app_crm"),
           relation: "assigned",
           subjectType: "user_d4o",
-          subjectId: "zed",
+          subjectId: uuid("zed"),
         },
       ],
     });
@@ -721,10 +756,10 @@ describe("Okta Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "app_d4o",
-          objectId: "app_hr",
+          objectId: uuid("app_hr"),
           relation: "assigned",
           subjectType: "group_d4o",
-          subjectId: "g_eng",
+          subjectId: uuid("g_eng"),
           subjectRelation: "member",
         },
       ],
@@ -734,10 +769,10 @@ describe("Okta Model Conformance", () => {
   test("30: a conditioned contextual row answers on the request", async () => {
     const tuple: AddTupleRequest = {
       objectType: "app_d4o",
-      objectId: "app_hr",
+      objectId: uuid("app_hr"),
       relation: "assigned",
       subjectType: "user_d4o",
-      subjectId: "zed",
+      subjectId: uuid("zed"),
       conditionName: "mfa_ok_d4o",
       conditionContext: { required_levels: ["fido"] },
     };
@@ -756,7 +791,7 @@ describe("Okta Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "app_d4o",
-          objectId: "app_crm",
+          objectId: uuid("app_crm"),
           relation: "deprovisioned",
           subjectType: "user_d4o",
           subjectId: "*",
@@ -770,7 +805,7 @@ describe("Okta Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "app_d4o",
-          objectId: "app_crm",
+          objectId: uuid("app_crm"),
           relation: "assigned",
           subjectType: "user_d4o",
           subjectId: "*",
@@ -789,10 +824,10 @@ describe("Okta Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "app_d4o",
-          objectId: "app_crm",
+          objectId: uuid("app_crm"),
           relation: "assigned",
           subjectType: "user_d4o",
-          subjectId: "frank",
+          subjectId: uuid("frank"),
         },
       ],
     });
@@ -809,10 +844,10 @@ describe("Okta Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "app_d4o",
-          objectId: "app_crm",
+          objectId: uuid("app_crm"),
           relation: "assigned",
           subjectType: "user_d4o",
-          subjectId: "dan",
+          subjectId: uuid("dan"),
           conditionName: "mfa_ok_d4o",
           conditionContext: { required_levels: ["fido"] },
         },
@@ -827,10 +862,10 @@ describe("Okta Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "ou_d4o",
-          objectId: "ou_root",
+          objectId: uuid("ou_root"),
           relation: "admin",
           subjectType: "group_d4o",
-          subjectId: "g_eng",
+          subjectId: uuid("g_eng"),
           subjectRelation: "member",
         },
       ],
@@ -839,10 +874,10 @@ describe("Okta Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "ou_d4o",
-          objectId: "ou_root",
+          objectId: uuid("ou_root"),
           relation: "admin",
           subjectType: "group_d4o",
-          subjectId: "g_eng",
+          subjectId: uuid("g_eng"),
           subjectRelation: "member",
         },
       ],
@@ -860,9 +895,9 @@ describe("Okta Model Conformance", () => {
         objectType: "app_d4o",
         relation: "can_use",
         subjectType: "user_d4o",
-        subjectId: "alice",
+        subjectId: uuid("alice"),
       },
-      ["app_crm", "app_hr"],
+      [uuid("app_crm"), uuid("app_hr")],
     );
   });
 
@@ -875,9 +910,9 @@ describe("Okta Model Conformance", () => {
         objectType: "app_d4o",
         relation: "can_use",
         subjectType: "user_d4o",
-        subjectId: "carol",
+        subjectId: uuid("carol"),
       },
-      ["app_crm"],
+      [uuid("app_crm")],
     );
   });
 
@@ -890,7 +925,7 @@ describe("Okta Model Conformance", () => {
         objectType: "app_d4o",
         relation: "can_use",
         subjectType: "user_d4o",
-        subjectId: "bob",
+        subjectId: uuid("bob"),
       },
       [],
     );
@@ -905,10 +940,10 @@ describe("Okta Model Conformance", () => {
         objectType: "app_d4o",
         relation: "can_use",
         subjectType: "user_d4o",
-        subjectId: "frank",
+        subjectId: uuid("frank"),
         context: FIDO,
       },
-      ["app_crm"],
+      [uuid("app_crm")],
     );
     await expectListObjectsConformance(
       storeId,
@@ -918,7 +953,7 @@ describe("Okta Model Conformance", () => {
         objectType: "app_d4o",
         relation: "can_use",
         subjectType: "user_d4o",
-        subjectId: "frank",
+        subjectId: uuid("frank"),
         context: SMS,
       },
       [],
@@ -934,9 +969,9 @@ describe("Okta Model Conformance", () => {
         objectType: "ou_d4o",
         relation: "can_reset_password",
         subjectType: "user_d4o",
-        subjectId: "dan",
+        subjectId: uuid("dan"),
       },
-      ["ou_eu", "ou_eu_sales"],
+      [uuid("ou_eu"), uuid("ou_eu_sales")],
     );
   });
 
@@ -949,25 +984,25 @@ describe("Okta Model Conformance", () => {
         objectType: "app_d4o",
         relation: "can_use",
         subjectType: "user_d4o",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
         contextualTuples: [
           {
             objectType: "app_d4o",
-            objectId: "app_crm",
+            objectId: uuid("app_crm"),
             relation: "assigned",
             subjectType: "user_d4o",
-            subjectId: "zed",
+            subjectId: uuid("zed"),
           },
           {
             objectType: "app_d4o",
-            objectId: "app_wiki",
+            objectId: uuid("app_wiki"),
             relation: "assigned",
             subjectType: "user_d4o",
-            subjectId: "zed",
+            subjectId: uuid("zed"),
           },
         ],
       },
-      ["app_crm"],
+      [uuid("app_crm")],
     );
   });
 
@@ -975,16 +1010,19 @@ describe("Okta Model Conformance", () => {
 
   test("42: the direct rows on an assignment", async () => {
     const ours = (
-      await tsfga.listSubjects("app_d4o", "app_crm", "assigned", {
+      await tsfga.listSubjects("app_d4o", uuid("app_crm"), "assigned", {
         context: FIDO,
       })
     )
       .map(renderSubject)
       .sort();
+    // Sorted, and the order is the one the assigned UUIDs sort
+    // into: the group ref sorts before both user refs, and dan's
+    // id before frank's.
     expect(ours).toEqual([
-      "group_d4o:g_all#member",
-      "user_d4o:dan",
-      "user_d4o:frank",
+      `group_d4o:${uuid("g_all")}#member`,
+      `user_d4o:${uuid("dan")}`,
+      `user_d4o:${uuid("frank")}`,
     ]);
     // Upstream resolves the userset rather than reporting it, so
     // the comparison is a containment over both filters.
@@ -992,7 +1030,7 @@ describe("Okta Model Conformance", () => {
       ...(
         await fgaListUsers(storeId, authorizationModelId, {
           objectType: "app_d4o",
-          objectId: "app_crm",
+          objectId: uuid("app_crm"),
           relation: "assigned",
           filters: [{ type: "user_d4o" }],
           context: FIDO,
@@ -1001,7 +1039,7 @@ describe("Okta Model Conformance", () => {
       ...(
         await fgaListUsers(storeId, authorizationModelId, {
           objectType: "app_d4o",
-          objectId: "app_crm",
+          objectId: uuid("app_crm"),
           relation: "assigned",
           filters: [{ type: "group_d4o", relation: "member" }],
           context: FIDO,
@@ -1013,34 +1051,42 @@ describe("Okta Model Conformance", () => {
 
   test("43: a factor the condition rejects drops the conditioned row", async () => {
     const ours = (
-      await tsfga.listSubjects("app_d4o", "app_crm", "assigned", {
+      await tsfga.listSubjects("app_d4o", uuid("app_crm"), "assigned", {
         context: SMS,
       })
     )
       .map(renderSubject)
       .sort();
-    expect(ours).toEqual(["group_d4o:g_all#member", "user_d4o:dan"]);
+    expect(ours).toEqual([
+      `group_d4o:${uuid("g_all")}#member`,
+      `user_d4o:${uuid("dan")}`,
+    ]);
     const upstream = (
       await fgaListUsers(storeId, authorizationModelId, {
         objectType: "app_d4o",
-        objectId: "app_crm",
+        objectId: uuid("app_crm"),
         relation: "assigned",
         filters: [{ type: "user_d4o" }],
         context: SMS,
       })
     ).map(renderSubject);
-    expect(upstream).not.toContain("user_d4o:frank");
+    // The one assertion in this file that no gate can police: it
+    // is a literal compared against upstream's output, so it never
+    // reaches tsfga as an id, and the residue would be a substring
+    // of a longer ref rather than a quoted id. Left as a slug it
+    // would be vacuously true forever.
+    expect(upstream).not.toContain(`user_d4o:${uuid("frank")}`);
   });
 
   test("44: the wildcard row on a subtrahend is reported as one", async () => {
     const ours = (
-      await tsfga.listSubjects("app_d4o", "app_wiki", "deprovisioned")
+      await tsfga.listSubjects("app_d4o", uuid("app_wiki"), "deprovisioned")
     ).map(renderSubject);
     expect(ours).toEqual(["user_d4o:*"]);
     const upstream = (
       await fgaListUsers(storeId, authorizationModelId, {
         objectType: "app_d4o",
-        objectId: "app_wiki",
+        objectId: uuid("app_wiki"),
         relation: "deprovisioned",
         filters: [{ type: "user_d4o" }],
       })
@@ -1054,62 +1100,62 @@ describe("Okta Model Conformance", () => {
     const items = [
       {
         objectType: "app_d4o",
-        objectId: "app_crm",
+        objectId: uuid("app_crm"),
         relation: "can_use",
         subjectType: "user_d4o",
-        subjectId: "alice",
+        subjectId: uuid("alice"),
       },
       {
         objectType: "app_d4o",
-        objectId: "app_wiki",
+        objectId: uuid("app_wiki"),
         relation: "can_use",
         subjectType: "user_d4o",
-        subjectId: "alice",
+        subjectId: uuid("alice"),
       },
       {
         objectType: "app_d4o",
-        objectId: "app_crm",
+        objectId: uuid("app_crm"),
         relation: "can_use",
         subjectType: "user_d4o",
-        subjectId: "frank",
+        subjectId: uuid("frank"),
         context: FIDO,
       },
       {
         objectType: "app_d4o",
-        objectId: "app_crm",
+        objectId: uuid("app_crm"),
         relation: "can_use",
         subjectType: "user_d4o",
-        subjectId: "frank",
+        subjectId: uuid("frank"),
         context: SMS,
       },
       {
         objectType: "group_d4o",
-        objectId: "g_all",
+        objectId: uuid("g_all"),
         relation: "member",
         subjectType: "user_d4o",
-        subjectId: "bob",
+        subjectId: uuid("bob"),
       },
       {
         objectType: "ou_d4o",
-        objectId: "ou_eu_sales",
+        objectId: uuid("ou_eu_sales"),
         relation: "can_administer",
         subjectType: "user_d4o",
-        subjectId: "carol",
+        subjectId: uuid("carol"),
       },
       {
         objectType: "session_d4o",
-        objectId: "s1",
+        objectId: uuid("s1"),
         relation: "can_open",
         subjectType: "user_d4o",
-        subjectId: "alice",
+        subjectId: uuid("alice"),
         context: GOOD_DEVICE,
       },
       {
         objectType: "app_d4o",
-        objectId: "app_crm",
+        objectId: uuid("app_crm"),
         relation: "can_audit",
         subjectType: "user_d4o",
-        subjectId: "dan",
+        subjectId: uuid("dan"),
       },
     ];
     const [ours, theirs] = await Promise.all([
@@ -1135,10 +1181,10 @@ describe("Okta Model Conformance", () => {
       tsfga,
       {
         objectType: "app_d4o",
-        objectId: "app_hr",
+        objectId: uuid("app_hr"),
         relation: "assigned",
         subjectType: "user_d4o",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       "accepted",
     );
@@ -1148,10 +1194,10 @@ describe("Okta Model Conformance", () => {
       tsfga,
       {
         objectType: "app_d4o",
-        objectId: "app_hr",
+        objectId: uuid("app_hr"),
         relation: "assigned",
         subjectType: "user_d4o",
-        subjectId: "yara",
+        subjectId: uuid("yara"),
         conditionName: "mfa_ok_d4o",
         conditionContext: { required_levels: ["otp"] },
       },
@@ -1166,10 +1212,10 @@ describe("Okta Model Conformance", () => {
       tsfga,
       {
         objectType: "app_d4o",
-        objectId: "app_hr",
+        objectId: uuid("app_hr"),
         relation: "assigned",
         subjectType: "user_d4o",
-        subjectId: "yara",
+        subjectId: uuid("yara"),
         conditionName: "device_trusted_d4o",
       },
       "refused",
@@ -1183,10 +1229,10 @@ describe("Okta Model Conformance", () => {
       tsfga,
       {
         objectType: "session_d4o",
-        objectId: "s1",
+        objectId: uuid("s1"),
         relation: "principal",
         subjectType: "user_d4o",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       "refused",
     );
@@ -1199,7 +1245,7 @@ describe("Okta Model Conformance", () => {
       tsfga,
       {
         objectType: "app_d4o",
-        objectId: "app_hr",
+        objectId: uuid("app_hr"),
         relation: "assigned",
         subjectType: "user_d4o",
         subjectId: "*",
@@ -1212,7 +1258,7 @@ describe("Okta Model Conformance", () => {
       tsfga,
       {
         objectType: "app_d4o",
-        objectId: "app_crm",
+        objectId: uuid("app_crm"),
         relation: "deprovisioned",
         subjectType: "user_d4o",
         subjectId: "*",
@@ -1228,10 +1274,10 @@ describe("Okta Model Conformance", () => {
       tsfga,
       {
         objectType: "ou_d4o",
-        objectId: "ou_eu",
+        objectId: uuid("ou_eu"),
         relation: "admin",
         subjectType: "group_d4o",
-        subjectId: "g_eng",
+        subjectId: uuid("g_eng"),
         subjectRelation: "direct_member",
       },
       "refused",
@@ -1242,10 +1288,10 @@ describe("Okta Model Conformance", () => {
       tsfga,
       {
         objectType: "ou_d4o",
-        objectId: "ou_eu",
+        objectId: uuid("ou_eu"),
         relation: "admin",
         subjectType: "group_d4o",
-        subjectId: "g_eng",
+        subjectId: uuid("g_eng"),
         subjectRelation: "member",
       },
       "accepted",
@@ -1259,10 +1305,10 @@ describe("Okta Model Conformance", () => {
       tsfga,
       {
         objectType: "app_d4o",
-        objectId: "app_crm",
+        objectId: uuid("app_crm"),
         relation: "can_use",
         subjectType: "user_d4o",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       "refused",
     );
@@ -1272,10 +1318,10 @@ describe("Okta Model Conformance", () => {
       tsfga,
       {
         objectType: "group_d4o",
-        objectId: "g_all",
+        objectId: uuid("g_all"),
         relation: "member",
         subjectType: "user_d4o",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       "refused",
     );
@@ -1295,10 +1341,10 @@ describe("Okta Model Conformance", () => {
   test("53: revoking the exclusion restores bob everywhere", async () => {
     await revoke({
       objectType: "group_d4o",
-      objectId: "g_all",
+      objectId: uuid("g_all"),
       relation: "excluded",
       subjectType: "user_d4o",
-      subjectId: "bob",
+      subjectId: uuid("bob"),
     });
     await can("group_d4o", "g_all", "member", "bob", true);
     await can("ou_d4o", "ou_root", "can_administer", "bob", true);
@@ -1308,10 +1354,10 @@ describe("Okta Model Conformance", () => {
   test("54: revoking the nested userset edge cuts alice's group path", async () => {
     await revoke({
       objectType: "group_d4o",
-      objectId: "g_all",
+      objectId: uuid("g_all"),
       relation: "direct_member",
       subjectType: "group_d4o",
-      subjectId: "g_eng",
+      subjectId: uuid("g_eng"),
       subjectRelation: "direct_member",
     });
     await can("group_d4o", "g_all", "member", "alice", false);
@@ -1322,7 +1368,7 @@ describe("Okta Model Conformance", () => {
   test("55: revoking the wildcard deprovision reopens the app", async () => {
     await revoke({
       objectType: "app_d4o",
-      objectId: "app_wiki",
+      objectId: uuid("app_wiki"),
       relation: "deprovisioned",
       subjectType: "user_d4o",
       subjectId: "*",
@@ -1333,10 +1379,10 @@ describe("Okta Model Conformance", () => {
   test("56: revoking the TTU parent link cuts the inherited role", async () => {
     await revoke({
       objectType: "ou_d4o",
-      objectId: "ou_eu_sales",
+      objectId: uuid("ou_eu_sales"),
       relation: "parent_ou",
       subjectType: "ou_d4o",
-      subjectId: "ou_eu",
+      subjectId: uuid("ou_eu"),
     });
     await can("ou_d4o", "ou_eu_sales", "can_administer", "carol", false);
     await can("app_d4o", "app_crm", "admin_access", "carol", false);

@@ -31,6 +31,11 @@ import {
   fgaWriteModel,
   fgaWriteTuples,
 } from "./helpers/openfga.ts";
+import { strictIdStore } from "./helpers/strict-ids.ts";
+import {
+  assertUuidMapCovers,
+  assertUuidMapInjective,
+} from "./helpers/uuid-map.ts";
 
 /**
  * Slack Connect: a channel shared across an organisation boundary,
@@ -83,6 +88,30 @@ const WRONG_EMAIL = { email: "bea@evil.com" };
 /** Everything any arm of the model may ask for. */
 const ALL = { ...IN_GUEST_WINDOW, ...GOOD_EMAIL };
 
+const uuidMap = new Map<string, string>([
+  ["ann", "00000000-0000-4000-d580-000000000001"],
+  ["acme", "00000000-0000-4000-d580-000000000002"],
+  ["bea", "00000000-0000-4000-d580-000000000003"],
+  ["gus", "00000000-0000-4000-d580-000000000004"],
+  ["vic", "00000000-0000-4000-d580-000000000005"],
+  ["vendor", "00000000-0000-4000-d580-000000000006"],
+  ["wes", "00000000-0000-4000-d580-000000000007"],
+  ["rob", "00000000-0000-4000-d580-000000000008"],
+  ["rogue", "00000000-0000-4000-d580-000000000009"],
+  ["c_general", "00000000-0000-4000-d580-000000000010"],
+  ["c_ops", "00000000-0000-4000-d580-000000000011"],
+  ["c_ann", "00000000-0000-4000-d580-000000000012"],
+  ["m1", "00000000-0000-4000-d580-000000000013"],
+  ["m2", "00000000-0000-4000-d580-000000000014"],
+  ["zed", "00000000-0000-4000-d580-000000000015"],
+]);
+
+function uuid(name: string): string {
+  const id = uuidMap.get(name);
+  if (!id) throw new Error(`No UUID for ${name}`);
+  return id;
+}
+
 describe("Slack Connect Model Conformance", () => {
   let db: Kysely<DB>;
   let storeId: string;
@@ -108,10 +137,10 @@ describe("Slack Connect Model Conformance", () => {
       tsfga,
       {
         objectType,
-        objectId,
+        objectId: uuid(objectId),
         relation,
         subjectType: "user_d4x",
-        subjectId: subject,
+        subjectId: uuid(subject),
         ...(extra?.context ? { context: extra.context } : {}),
         ...(extra?.contextualTuples
           ? { contextualTuples: extra.contextualTuples }
@@ -161,10 +190,13 @@ describe("Slack Connect Model Conformance", () => {
   }
 
   beforeAll(async () => {
+    assertUuidMapInjective(uuidMap);
+    assertUuidMapCovers("./d4-connect/tuples.yaml", uuidMap);
+
     db = getDb();
     await beginTransaction(db);
 
-    tsfga = createTsfga(new KyselyTupleStore(db));
+    tsfga = createTsfga(strictIdStore(new KyselyTupleStore(db)));
     fixture = recordFixture(tsfga);
 
     for (const condition of CONDITIONS) {
@@ -379,201 +411,201 @@ describe("Slack Connect Model Conformance", () => {
     const tuples: AddTupleRequest[] = [
       {
         objectType: "org_d4x",
-        objectId: "acme",
+        objectId: uuid("acme"),
         relation: "member",
         subjectType: "user_d4x",
-        subjectId: "ann",
+        subjectId: uuid("ann"),
       },
       {
         objectType: "org_d4x",
-        objectId: "acme",
+        objectId: uuid("acme"),
         relation: "member",
         subjectType: "user_d4x",
-        subjectId: "bea",
+        subjectId: uuid("bea"),
         conditionName: "verified_domain_d4x",
         conditionContext: { domain: "acme.com" },
       },
       {
         objectType: "org_d4x",
-        objectId: "acme",
+        objectId: uuid("acme"),
         relation: "admin",
         subjectType: "user_d4x",
-        subjectId: "ann",
+        subjectId: uuid("ann"),
       },
       {
         objectType: "org_d4x",
-        objectId: "acme",
+        objectId: uuid("acme"),
         relation: "guest",
         subjectType: "user_d4x",
-        subjectId: "gus",
+        subjectId: uuid("gus"),
         conditionName: "guest_window_d4x",
         conditionContext: { expires_at: GUEST_EXPIRY },
       },
       {
         objectType: "org_d4x",
-        objectId: "vendor",
+        objectId: uuid("vendor"),
         relation: "member",
         subjectType: "user_d4x",
-        subjectId: "vic",
+        subjectId: uuid("vic"),
       },
       {
         objectType: "org_d4x",
-        objectId: "vendor",
+        objectId: uuid("vendor"),
         relation: "member",
         subjectType: "user_d4x",
-        subjectId: "wes",
+        subjectId: uuid("wes"),
       },
       {
         objectType: "org_d4x",
-        objectId: "vendor",
+        objectId: uuid("vendor"),
         relation: "suspended",
         subjectType: "user_d4x",
-        subjectId: "wes",
+        subjectId: uuid("wes"),
       },
       {
         objectType: "org_d4x",
-        objectId: "rogue",
+        objectId: uuid("rogue"),
         relation: "member",
         subjectType: "user_d4x",
-        subjectId: "rob",
+        subjectId: uuid("rob"),
       },
       {
         objectType: "channel_d4x",
-        objectId: "c_general",
+        objectId: uuid("c_general"),
         relation: "owner_org",
         subjectType: "org_d4x",
-        subjectId: "acme",
+        subjectId: uuid("acme"),
       },
       {
         objectType: "channel_d4x",
-        objectId: "c_general",
+        objectId: uuid("c_general"),
         relation: "shared_org",
         subjectType: "org_d4x",
-        subjectId: "vendor",
+        subjectId: uuid("vendor"),
       },
       {
         objectType: "channel_d4x",
-        objectId: "c_general",
+        objectId: uuid("c_general"),
         relation: "invited",
         subjectType: "org_d4x",
-        subjectId: "acme",
+        subjectId: uuid("acme"),
         subjectRelation: "member",
       },
       {
         objectType: "channel_d4x",
-        objectId: "c_general",
+        objectId: uuid("c_general"),
         relation: "invited",
         subjectType: "org_d4x",
-        subjectId: "vendor",
+        subjectId: uuid("vendor"),
         subjectRelation: "active_principal",
       },
       {
         objectType: "channel_d4x",
-        objectId: "c_general",
+        objectId: uuid("c_general"),
         relation: "invited",
         subjectType: "user_d4x",
-        subjectId: "gus",
+        subjectId: uuid("gus"),
       },
       {
         objectType: "channel_d4x",
-        objectId: "c_general",
+        objectId: uuid("c_general"),
         relation: "banned",
         subjectType: "user_d4x",
-        subjectId: "bea",
+        subjectId: uuid("bea"),
       },
       {
         objectType: "channel_d4x",
-        objectId: "c_ops",
+        objectId: uuid("c_ops"),
         relation: "owner_org",
         subjectType: "org_d4x",
-        subjectId: "acme",
+        subjectId: uuid("acme"),
       },
       {
         objectType: "channel_d4x",
-        objectId: "c_ops",
+        objectId: uuid("c_ops"),
         relation: "shared_org",
         subjectType: "org_d4x",
-        subjectId: "vendor",
+        subjectId: uuid("vendor"),
       },
       {
         objectType: "channel_d4x",
-        objectId: "c_ops",
+        objectId: uuid("c_ops"),
         relation: "invited",
         subjectType: "org_d4x",
-        subjectId: "acme",
+        subjectId: uuid("acme"),
         subjectRelation: "member",
       },
       {
         objectType: "channel_d4x",
-        objectId: "c_ops",
+        objectId: uuid("c_ops"),
         relation: "invited",
         subjectType: "org_d4x",
-        subjectId: "vendor",
+        subjectId: uuid("vendor"),
         subjectRelation: "active_principal",
       },
       {
         objectType: "channel_d4x",
-        objectId: "c_ops",
+        objectId: uuid("c_ops"),
         relation: "internal_only",
         subjectType: "user_d4x",
         subjectId: "*",
       },
       {
         objectType: "channel_d4x",
-        objectId: "c_ann",
+        objectId: uuid("c_ann"),
         relation: "owner_org",
         subjectType: "org_d4x",
-        subjectId: "acme",
+        subjectId: uuid("acme"),
       },
       {
         objectType: "channel_d4x",
-        objectId: "c_ann",
+        objectId: uuid("c_ann"),
         relation: "shared_org",
         subjectType: "org_d4x",
-        subjectId: "vendor",
+        subjectId: uuid("vendor"),
       },
       {
         objectType: "channel_d4x",
-        objectId: "c_ann",
+        objectId: uuid("c_ann"),
         relation: "invited",
         subjectType: "org_d4x",
-        subjectId: "acme",
+        subjectId: uuid("acme"),
         subjectRelation: "member",
       },
       {
         objectType: "channel_d4x",
-        objectId: "c_ann",
+        objectId: uuid("c_ann"),
         relation: "readonly",
         subjectType: "user_d4x",
         subjectId: "*",
       },
       {
         objectType: "message_d4x",
-        objectId: "m1",
+        objectId: uuid("m1"),
         relation: "channel",
         subjectType: "channel_d4x",
-        subjectId: "c_general",
+        subjectId: uuid("c_general"),
       },
       {
         objectType: "message_d4x",
-        objectId: "m1",
+        objectId: uuid("m1"),
         relation: "author",
         subjectType: "user_d4x",
-        subjectId: "ann",
+        subjectId: uuid("ann"),
       },
       {
         objectType: "message_d4x",
-        objectId: "m2",
+        objectId: uuid("m2"),
         relation: "channel",
         subjectType: "channel_d4x",
-        subjectId: "c_general",
+        subjectId: uuid("c_general"),
       },
       {
         objectType: "message_d4x",
-        objectId: "m2",
+        objectId: uuid("m2"),
         relation: "author",
         subjectType: "user_d4x",
-        subjectId: "vic",
+        subjectId: uuid("vic"),
       },
     ];
     for (const tuple of tuples) await tsfga.addTuple(tuple);
@@ -588,6 +620,7 @@ describe("Slack Connect Model Conformance", () => {
       storeId,
       "./d4-connect/tuples.yaml",
       authorizationModelId,
+      uuidMap,
     );
   });
 
@@ -779,17 +812,17 @@ describe("Slack Connect Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "channel_d4x",
-          objectId: "c_general",
+          objectId: uuid("c_general"),
           relation: "invited",
           subjectType: "user_d4x",
-          subjectId: "zed",
+          subjectId: uuid("zed"),
         },
         {
           objectType: "org_d4x",
-          objectId: "acme",
+          objectId: uuid("acme"),
           relation: "member",
           subjectType: "user_d4x",
-          subjectId: "zed",
+          subjectId: uuid("zed"),
         },
       ],
     });
@@ -800,10 +833,10 @@ describe("Slack Connect Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "channel_d4x",
-          objectId: "c_ann",
+          objectId: uuid("c_ann"),
           relation: "invited",
           subjectType: "org_d4x",
-          subjectId: "vendor",
+          subjectId: uuid("vendor"),
           subjectRelation: "active_principal",
         },
       ],
@@ -813,10 +846,10 @@ describe("Slack Connect Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "channel_d4x",
-          objectId: "c_ann",
+          objectId: uuid("c_ann"),
           relation: "invited",
           subjectType: "org_d4x",
-          subjectId: "vendor",
+          subjectId: uuid("vendor"),
           subjectRelation: "active_principal",
         },
       ],
@@ -826,19 +859,19 @@ describe("Slack Connect Model Conformance", () => {
   test("25: a conditioned contextual membership answers on the clock", async () => {
     const tuple: AddTupleRequest = {
       objectType: "org_d4x",
-      objectId: "acme",
+      objectId: uuid("acme"),
       relation: "guest",
       subjectType: "user_d4x",
-      subjectId: "zed",
+      subjectId: uuid("zed"),
       conditionName: "guest_window_d4x",
       conditionContext: { expires_at: GUEST_EXPIRY },
     };
     const invite: AddTupleRequest = {
       objectType: "channel_d4x",
-      objectId: "c_general",
+      objectId: uuid("c_general"),
       relation: "invited",
       subjectType: "user_d4x",
-      subjectId: "zed",
+      subjectId: uuid("zed"),
     };
     await can("channel_d4x", "c_general", "can_view", "zed", true, {
       context: IN_GUEST_WINDOW,
@@ -855,7 +888,7 @@ describe("Slack Connect Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "channel_d4x",
-          objectId: "c_general",
+          objectId: uuid("c_general"),
           relation: "internal_only",
           subjectType: "user_d4x",
           subjectId: "*",
@@ -868,7 +901,7 @@ describe("Slack Connect Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "channel_d4x",
-          objectId: "c_general",
+          objectId: uuid("c_general"),
           relation: "internal_only",
           subjectType: "user_d4x",
           subjectId: "*",
@@ -885,10 +918,10 @@ describe("Slack Connect Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "org_d4x",
-          objectId: "acme",
+          objectId: uuid("acme"),
           relation: "member",
           subjectType: "user_d4x",
-          subjectId: "bea",
+          subjectId: uuid("bea"),
         },
       ],
     });
@@ -899,10 +932,10 @@ describe("Slack Connect Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "org_d4x",
-          objectId: "acme",
+          objectId: uuid("acme"),
           relation: "member",
           subjectType: "user_d4x",
-          subjectId: "ann",
+          subjectId: uuid("ann"),
           conditionName: "verified_domain_d4x",
           conditionContext: { domain: "acme.com" },
         },
@@ -916,7 +949,7 @@ describe("Slack Connect Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "channel_d4x",
-          objectId: "c_general",
+          objectId: uuid("c_general"),
           relation: "invited",
           subjectType: "user_d4x",
           subjectId: "*",
@@ -936,9 +969,9 @@ describe("Slack Connect Model Conformance", () => {
         objectType: "channel_d4x",
         relation: "can_view",
         subjectType: "user_d4x",
-        subjectId: "ann",
+        subjectId: uuid("ann"),
       },
-      ["c_general", "c_ops", "c_ann"],
+      [uuid("c_general"), uuid("c_ops"), uuid("c_ann")],
     );
   });
 
@@ -951,9 +984,9 @@ describe("Slack Connect Model Conformance", () => {
         objectType: "channel_d4x",
         relation: "can_view",
         subjectType: "user_d4x",
-        subjectId: "vic",
+        subjectId: uuid("vic"),
       },
-      ["c_general"],
+      [uuid("c_general")],
     );
   });
 
@@ -966,7 +999,7 @@ describe("Slack Connect Model Conformance", () => {
         objectType: "channel_d4x",
         relation: "can_view",
         subjectType: "user_d4x",
-        subjectId: "wes",
+        subjectId: uuid("wes"),
       },
       [],
     );
@@ -981,10 +1014,10 @@ describe("Slack Connect Model Conformance", () => {
         objectType: "channel_d4x",
         relation: "can_view",
         subjectType: "user_d4x",
-        subjectId: "bea",
+        subjectId: uuid("bea"),
         context: GOOD_EMAIL,
       },
-      ["c_ops", "c_ann"],
+      [uuid("c_ops"), uuid("c_ann")],
     );
     await expectListObjectsConformance(
       storeId,
@@ -994,7 +1027,7 @@ describe("Slack Connect Model Conformance", () => {
         objectType: "channel_d4x",
         relation: "can_view",
         subjectType: "user_d4x",
-        subjectId: "bea",
+        subjectId: uuid("bea"),
         context: WRONG_EMAIL,
       },
       [],
@@ -1010,10 +1043,10 @@ describe("Slack Connect Model Conformance", () => {
         objectType: "channel_d4x",
         relation: "can_view",
         subjectType: "user_d4x",
-        subjectId: "gus",
+        subjectId: uuid("gus"),
         context: IN_GUEST_WINDOW,
       },
-      ["c_general"],
+      [uuid("c_general")],
     );
     await expectListObjectsConformance(
       storeId,
@@ -1023,7 +1056,7 @@ describe("Slack Connect Model Conformance", () => {
         objectType: "channel_d4x",
         relation: "can_view",
         subjectType: "user_d4x",
-        subjectId: "gus",
+        subjectId: uuid("gus"),
         context: PAST_GUEST_WINDOW,
       },
       [],
@@ -1039,9 +1072,9 @@ describe("Slack Connect Model Conformance", () => {
         objectType: "message_d4x",
         relation: "can_delete",
         subjectType: "user_d4x",
-        subjectId: "vic",
+        subjectId: uuid("vic"),
       },
-      ["m2"],
+      [uuid("m2")],
     );
   });
 
@@ -1054,19 +1087,19 @@ describe("Slack Connect Model Conformance", () => {
         objectType: "channel_d4x",
         relation: "can_view",
         subjectType: "user_d4x",
-        subjectId: "vic",
+        subjectId: uuid("vic"),
         contextualTuples: [
           {
             objectType: "channel_d4x",
-            objectId: "c_ann",
+            objectId: uuid("c_ann"),
             relation: "invited",
             subjectType: "org_d4x",
-            subjectId: "vendor",
+            subjectId: uuid("vendor"),
             subjectRelation: "active_principal",
           },
         ],
       },
-      ["c_general", "c_ann"],
+      [uuid("c_general"), uuid("c_ann")],
     );
   });
 
@@ -1076,61 +1109,61 @@ describe("Slack Connect Model Conformance", () => {
     const items = [
       {
         objectType: "channel_d4x",
-        objectId: "c_general",
+        objectId: uuid("c_general"),
         relation: "can_view",
         subjectType: "user_d4x",
-        subjectId: "ann",
+        subjectId: uuid("ann"),
       },
       {
         objectType: "channel_d4x",
-        objectId: "c_ops",
+        objectId: uuid("c_ops"),
         relation: "can_view",
         subjectType: "user_d4x",
-        subjectId: "vic",
+        subjectId: uuid("vic"),
       },
       {
         objectType: "channel_d4x",
-        objectId: "c_general",
+        objectId: uuid("c_general"),
         relation: "can_view",
         subjectType: "user_d4x",
-        subjectId: "vic",
+        subjectId: uuid("vic"),
       },
       {
         objectType: "org_d4x",
-        objectId: "acme",
+        objectId: uuid("acme"),
         relation: "member",
         subjectType: "user_d4x",
-        subjectId: "bea",
+        subjectId: uuid("bea"),
       },
       {
         objectType: "org_d4x",
-        objectId: "acme",
+        objectId: uuid("acme"),
         relation: "member",
         subjectType: "user_d4x",
-        subjectId: "bea",
+        subjectId: uuid("bea"),
         context: GOOD_EMAIL,
       },
       {
         objectType: "channel_d4x",
-        objectId: "c_general",
+        objectId: uuid("c_general"),
         relation: "can_view",
         subjectType: "user_d4x",
-        subjectId: "gus",
+        subjectId: uuid("gus"),
         context: IN_GUEST_WINDOW,
       },
       {
         objectType: "message_d4x",
-        objectId: "m2",
+        objectId: uuid("m2"),
         relation: "can_delete",
         subjectType: "user_d4x",
-        subjectId: "ann",
+        subjectId: uuid("ann"),
       },
       {
         objectType: "channel_d4x",
-        objectId: "c_ann",
+        objectId: uuid("c_ann"),
         relation: "can_post",
         subjectType: "user_d4x",
-        subjectId: "ann",
+        subjectId: uuid("ann"),
       },
     ];
     const [ours, theirs] = await Promise.all([
@@ -1165,10 +1198,10 @@ describe("Slack Connect Model Conformance", () => {
       tsfga,
       {
         objectType: "channel_d4x",
-        objectId: "c_ann",
+        objectId: uuid("c_ann"),
         relation: "invited",
         subjectType: "org_d4x",
-        subjectId: "vendor",
+        subjectId: uuid("vendor"),
         subjectRelation: "member",
       },
       "accepted",
@@ -1179,10 +1212,10 @@ describe("Slack Connect Model Conformance", () => {
       tsfga,
       {
         objectType: "channel_d4x",
-        objectId: "c_ann",
+        objectId: uuid("c_ann"),
         relation: "invited",
         subjectType: "org_d4x",
-        subjectId: "vendor",
+        subjectId: uuid("vendor"),
         subjectRelation: "admin",
       },
       "refused",
@@ -1196,10 +1229,10 @@ describe("Slack Connect Model Conformance", () => {
       tsfga,
       {
         objectType: "org_d4x",
-        objectId: "acme",
+        objectId: uuid("acme"),
         relation: "guest",
         subjectType: "user_d4x",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       "refused",
     );
@@ -1209,10 +1242,10 @@ describe("Slack Connect Model Conformance", () => {
       tsfga,
       {
         objectType: "org_d4x",
-        objectId: "acme",
+        objectId: uuid("acme"),
         relation: "guest",
         subjectType: "user_d4x",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
         conditionName: "verified_domain_d4x",
         conditionContext: { domain: "acme.com" },
       },
@@ -1227,10 +1260,10 @@ describe("Slack Connect Model Conformance", () => {
       tsfga,
       {
         objectType: "channel_d4x",
-        objectId: "c_ann",
+        objectId: uuid("c_ann"),
         relation: "internal_only",
         subjectType: "user_d4x",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       "refused",
     );
@@ -1240,7 +1273,7 @@ describe("Slack Connect Model Conformance", () => {
       tsfga,
       {
         objectType: "channel_d4x",
-        objectId: "c_ann",
+        objectId: uuid("c_ann"),
         relation: "internal_only",
         subjectType: "user_d4x",
         subjectId: "*",
@@ -1256,7 +1289,7 @@ describe("Slack Connect Model Conformance", () => {
       tsfga,
       {
         objectType: "channel_d4x",
-        objectId: "c_general",
+        objectId: uuid("c_general"),
         relation: "banned",
         subjectType: "user_d4x",
         subjectId: "*",
@@ -1269,10 +1302,10 @@ describe("Slack Connect Model Conformance", () => {
       tsfga,
       {
         objectType: "channel_d4x",
-        objectId: "c_general",
+        objectId: uuid("c_general"),
         relation: "banned",
         subjectType: "org_d4x",
-        subjectId: "rogue",
+        subjectId: uuid("rogue"),
         subjectRelation: "member",
       },
       "accepted",
@@ -1286,10 +1319,10 @@ describe("Slack Connect Model Conformance", () => {
       tsfga,
       {
         objectType: "channel_d4x",
-        objectId: "c_general",
+        objectId: uuid("c_general"),
         relation: "can_view",
         subjectType: "user_d4x",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       "refused",
     );
@@ -1299,10 +1332,10 @@ describe("Slack Connect Model Conformance", () => {
       tsfga,
       {
         objectType: "org_d4x",
-        objectId: "acme",
+        objectId: uuid("acme"),
         relation: "active_principal",
         subjectType: "user_d4x",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       "refused",
     );
@@ -1325,7 +1358,7 @@ describe("Slack Connect Model Conformance", () => {
   test("44: revoking the internal-only flag lets the partner back in", async () => {
     await revoke({
       objectType: "channel_d4x",
-      objectId: "c_ops",
+      objectId: uuid("c_ops"),
       relation: "internal_only",
       subjectType: "user_d4x",
       subjectId: "*",
@@ -1337,10 +1370,10 @@ describe("Slack Connect Model Conformance", () => {
   test("45: revoking the partner's invitation closes it again", async () => {
     await revoke({
       objectType: "channel_d4x",
-      objectId: "c_ops",
+      objectId: uuid("c_ops"),
       relation: "invited",
       subjectType: "org_d4x",
-      subjectId: "vendor",
+      subjectId: uuid("vendor"),
       subjectRelation: "active_principal",
     });
     await can("channel_d4x", "c_ops", "can_view", "vic", false);
@@ -1350,10 +1383,10 @@ describe("Slack Connect Model Conformance", () => {
   test("46: revoking the suspension restores the partner member", async () => {
     await revoke({
       objectType: "org_d4x",
-      objectId: "vendor",
+      objectId: uuid("vendor"),
       relation: "suspended",
       subjectType: "user_d4x",
-      subjectId: "wes",
+      subjectId: uuid("wes"),
     });
     await can("org_d4x", "vendor", "active_principal", "wes", true);
     await can("channel_d4x", "c_general", "can_view", "wes", true);
@@ -1362,10 +1395,10 @@ describe("Slack Connect Model Conformance", () => {
   test("47: revoking the shared-org link cuts every external member", async () => {
     await revoke({
       objectType: "channel_d4x",
-      objectId: "c_general",
+      objectId: uuid("c_general"),
       relation: "shared_org",
       subjectType: "org_d4x",
-      subjectId: "vendor",
+      subjectId: uuid("vendor"),
     });
     await can("channel_d4x", "c_general", "can_view", "vic", false);
     await can("channel_d4x", "c_general", "can_view", "ann", true);

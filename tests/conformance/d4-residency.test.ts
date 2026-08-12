@@ -32,6 +32,11 @@ import {
   fgaWriteModel,
   fgaWriteTuples,
 } from "./helpers/openfga.ts";
+import { strictIdStore } from "./helpers/strict-ids.ts";
+import {
+  assertUuidMapCovers,
+  assertUuidMapInjective,
+} from "./helpers/uuid-map.ts";
 
 /**
  * Data residency: a tenant's records may be read only *from* an
@@ -116,6 +121,40 @@ function without(key: string): Record<string, unknown> {
   return full;
 }
 
+const uuidMap = new Map<string, string>([
+  ["mira", "00000000-0000-4000-d586-000000000001"],
+  ["g_eu", "00000000-0000-4000-d586-000000000002"],
+  ["g_all", "00000000-0000-4000-d586-000000000003"],
+  ["noah", "00000000-0000-4000-d586-000000000004"],
+  ["tenant_eu", "00000000-0000-4000-d586-000000000005"],
+  ["ines", "00000000-0000-4000-d586-000000000006"],
+  ["pia", "00000000-0000-4000-d586-000000000007"],
+  ["quinn", "00000000-0000-4000-d586-000000000008"],
+  ["sam", "00000000-0000-4000-d586-000000000009"],
+  ["tenant_us", "00000000-0000-4000-d586-000000000010"],
+  ["ds_eu", "00000000-0000-4000-d586-000000000011"],
+  ["ds_eu2", "00000000-0000-4000-d586-000000000012"],
+  ["ds_us", "00000000-0000-4000-d586-000000000013"],
+  ["tess", "00000000-0000-4000-d586-000000000014"],
+  ["ds_orphan", "00000000-0000-4000-d586-000000000015"],
+  ["ollie", "00000000-0000-4000-d586-000000000016"],
+  ["rec1", "00000000-0000-4000-d586-000000000017"],
+  ["rec2", "00000000-0000-4000-d586-000000000018"],
+  ["rec3", "00000000-0000-4000-d586-000000000019"],
+  ["rec4", "00000000-0000-4000-d586-000000000020"],
+  ["rec6", "00000000-0000-4000-d586-000000000021"],
+  ["rec7", "00000000-0000-4000-d586-000000000022"],
+  ["rec5", "00000000-0000-4000-d586-000000000023"],
+  ["rob", "00000000-0000-4000-d586-000000000024"],
+  ["zed", "00000000-0000-4000-d586-000000000025"],
+]);
+
+function uuid(name: string): string {
+  const id = uuidMap.get(name);
+  if (!id) throw new Error(`No UUID for ${name}`);
+  return id;
+}
+
 describe("Data Residency Model Conformance", () => {
   let db: Kysely<DB>;
   let storeId: string;
@@ -138,10 +177,10 @@ describe("Data Residency Model Conformance", () => {
       tsfga,
       {
         objectType,
-        objectId,
+        objectId: uuid(objectId),
         relation,
         subjectType: "user_d4r",
-        subjectId: subject,
+        subjectId: uuid(subject),
         ...(context ? { context } : {}),
       },
       expected,
@@ -188,10 +227,13 @@ describe("Data Residency Model Conformance", () => {
   }
 
   beforeAll(async () => {
+    assertUuidMapInjective(uuidMap);
+    assertUuidMapCovers("./d4-residency/tuples.yaml", uuidMap);
+
     db = getDb();
     await beginTransaction(db);
 
-    tsfga = createTsfga(new KyselyTupleStore(db));
+    tsfga = createTsfga(strictIdStore(new KyselyTupleStore(db)));
     fixture = recordFixture(tsfga);
 
     for (const condition of CONDITIONS) {
@@ -343,184 +385,184 @@ describe("Data Residency Model Conformance", () => {
     const tuples: AddTupleRequest[] = [
       {
         objectType: "group_d4r",
-        objectId: "g_eu",
+        objectId: uuid("g_eu"),
         relation: "member",
         subjectType: "user_d4r",
-        subjectId: "mira",
+        subjectId: uuid("mira"),
       },
       {
         objectType: "group_d4r",
-        objectId: "g_all",
+        objectId: uuid("g_all"),
         relation: "member",
         subjectType: "group_d4r",
-        subjectId: "g_eu",
+        subjectId: uuid("g_eu"),
         subjectRelation: "member",
       },
       {
         objectType: "group_d4r",
-        objectId: "g_all",
+        objectId: uuid("g_all"),
         relation: "member",
         subjectType: "user_d4r",
-        subjectId: "noah",
+        subjectId: uuid("noah"),
       },
       {
         objectType: "tenant_d4r",
-        objectId: "tenant_eu",
+        objectId: uuid("tenant_eu"),
         relation: "steward",
         subjectType: "group_d4r",
-        subjectId: "g_all",
+        subjectId: uuid("g_all"),
         subjectRelation: "member",
       },
       {
         objectType: "tenant_d4r",
-        objectId: "tenant_eu",
+        objectId: uuid("tenant_eu"),
         relation: "steward",
         subjectType: "user_d4r",
-        subjectId: "ines",
+        subjectId: uuid("ines"),
       },
       {
         objectType: "tenant_d4r",
-        objectId: "tenant_eu",
+        objectId: uuid("tenant_eu"),
         relation: "auditor",
         subjectType: "user_d4r",
-        subjectId: "pia",
+        subjectId: uuid("pia"),
       },
       {
         objectType: "tenant_d4r",
-        objectId: "tenant_eu",
+        objectId: uuid("tenant_eu"),
         relation: "auditor",
         subjectType: "user_d4r",
-        subjectId: "quinn",
+        subjectId: uuid("quinn"),
         conditionName: "class_ok_d4r",
         conditionContext: { required: 3 },
       },
       {
         objectType: "tenant_d4r",
-        objectId: "tenant_eu",
+        objectId: uuid("tenant_eu"),
         relation: "embargoed",
         subjectType: "user_d4r",
-        subjectId: "noah",
+        subjectId: uuid("noah"),
         conditionName: "retained_d4r",
         conditionContext: { expires_at: "2026-06-01T00:00:00Z" },
       },
       {
         objectType: "tenant_d4r",
-        objectId: "tenant_us",
+        objectId: uuid("tenant_us"),
         relation: "steward",
         subjectType: "user_d4r",
-        subjectId: "sam",
+        subjectId: uuid("sam"),
       },
       {
         objectType: "dataset_d4r",
-        objectId: "ds_eu",
+        objectId: uuid("ds_eu"),
         relation: "tenant",
         subjectType: "tenant_d4r",
-        subjectId: "tenant_eu",
+        subjectId: uuid("tenant_eu"),
         conditionName: "region_ok_d4r",
         conditionContext: { allowed_regions: ["eu-west", "eu-north"] },
       },
       {
         objectType: "dataset_d4r",
-        objectId: "ds_eu2",
+        objectId: uuid("ds_eu2"),
         relation: "tenant",
         subjectType: "tenant_d4r",
-        subjectId: "tenant_eu",
+        subjectId: uuid("tenant_eu"),
         conditionName: "region_ok_d4r",
         conditionContext: { allowed_regions: ["eu-north"] },
       },
       {
         objectType: "dataset_d4r",
-        objectId: "ds_us",
+        objectId: uuid("ds_us"),
         relation: "tenant",
         subjectType: "tenant_d4r",
-        subjectId: "tenant_us",
+        subjectId: uuid("tenant_us"),
         conditionName: "region_ok_d4r",
         conditionContext: { allowed_regions: ["us-east"] },
       },
       {
         objectType: "dataset_d4r",
-        objectId: "ds_eu",
+        objectId: uuid("ds_eu"),
         relation: "curator",
         subjectType: "group_d4r",
-        subjectId: "g_eu",
+        subjectId: uuid("g_eu"),
         subjectRelation: "member",
       },
       {
         objectType: "dataset_d4r",
-        objectId: "ds_eu",
+        objectId: uuid("ds_eu"),
         relation: "curator",
         subjectType: "user_d4r",
-        subjectId: "mira",
+        subjectId: uuid("mira"),
         conditionName: "eu_principal_d4r",
       },
       {
         objectType: "dataset_d4r",
-        objectId: "ds_orphan",
+        objectId: uuid("ds_orphan"),
         relation: "curator",
         subjectType: "user_d4r",
-        subjectId: "tess",
+        subjectId: uuid("tess"),
         conditionName: "eu_principal_d4r",
       },
       {
         objectType: "dataset_d4r",
-        objectId: "ds_eu",
+        objectId: uuid("ds_eu"),
         relation: "classified",
         subjectType: "user_d4r",
-        subjectId: "ollie",
+        subjectId: uuid("ollie"),
         conditionName: "class_ok_d4r",
         conditionContext: { required: 5 },
       },
       {
         objectType: "dataset_d4r",
-        objectId: "ds_eu",
+        objectId: uuid("ds_eu"),
         relation: "can_manage",
         subjectType: "user_d4r",
-        subjectId: "ines",
+        subjectId: uuid("ines"),
         conditionName: "residency_d4r",
         conditionContext: { tenant_key: "acme" },
       },
       {
         objectType: "record_d4r",
-        objectId: "rec1",
+        objectId: uuid("rec1"),
         relation: "dataset",
         subjectType: "dataset_d4r",
-        subjectId: "ds_eu",
+        subjectId: uuid("ds_eu"),
         conditionName: "region_ok_d4r",
         conditionContext: { allowed_regions: ["eu-west"] },
       },
       {
         objectType: "record_d4r",
-        objectId: "rec2",
+        objectId: uuid("rec2"),
         relation: "dataset",
         subjectType: "dataset_d4r",
-        subjectId: "ds_eu",
+        subjectId: uuid("ds_eu"),
         conditionName: "region_ok_d4r",
         conditionContext: { allowed_regions: ["eu-west", "eu-north"] },
       },
       {
         objectType: "record_d4r",
-        objectId: "rec3",
+        objectId: uuid("rec3"),
         relation: "dataset",
         subjectType: "dataset_d4r",
-        subjectId: "ds_eu2",
+        subjectId: uuid("ds_eu2"),
         conditionName: "region_ok_d4r",
         conditionContext: { allowed_regions: ["eu-west", "eu-north"] },
       },
       {
         objectType: "record_d4r",
-        objectId: "rec4",
+        objectId: uuid("rec4"),
         relation: "dataset",
         subjectType: "dataset_d4r",
-        subjectId: "ds_us",
+        subjectId: uuid("ds_us"),
         conditionName: "region_ok_d4r",
         conditionContext: { allowed_regions: ["us-east"] },
       },
       {
         objectType: "record_d4r",
-        objectId: "rec6",
+        objectId: uuid("rec6"),
         relation: "dataset",
         subjectType: "dataset_d4r",
-        subjectId: "ds_eu",
+        subjectId: uuid("ds_eu"),
         conditionName: "region_ok_d4r",
         conditionContext: {
           allowed_regions: ["eu-west"],
@@ -529,42 +571,42 @@ describe("Data Residency Model Conformance", () => {
       },
       {
         objectType: "record_d4r",
-        objectId: "rec7",
+        objectId: uuid("rec7"),
         relation: "dataset",
         subjectType: "dataset_d4r",
-        subjectId: "ds_eu",
+        subjectId: uuid("ds_eu"),
         conditionName: "region_ok_d4r",
         conditionContext: { allowed_regions: [] },
       },
       {
         objectType: "record_d4r",
-        objectId: "rec5",
+        objectId: uuid("rec5"),
         relation: "owner",
         subjectType: "user_d4r",
-        subjectId: "pia",
+        subjectId: uuid("pia"),
       },
       {
         objectType: "record_d4r",
-        objectId: "rec1",
+        objectId: uuid("rec1"),
         relation: "reviewer",
         subjectType: "user_d4r",
-        subjectId: "rob",
+        subjectId: uuid("rob"),
         conditionName: "retained_d4r",
         conditionContext: { expires_at: "2027-01-01T00:00:00Z" },
       },
       {
         objectType: "record_d4r",
-        objectId: "rec2",
+        objectId: uuid("rec2"),
         relation: "embargoed",
         subjectType: "user_d4r",
         subjectId: "*",
       },
       {
         objectType: "record_d4r",
-        objectId: "rec3",
+        objectId: uuid("rec3"),
         relation: "embargoed",
         subjectType: "user_d4r",
-        subjectId: "pia",
+        subjectId: uuid("pia"),
         conditionName: "retained_d4r",
         conditionContext: { expires_at: "2026-06-01T00:00:00Z" },
       },
@@ -581,6 +623,7 @@ describe("Data Residency Model Conformance", () => {
       storeId,
       "./d4-residency/tuples.yaml",
       authorizationModelId,
+      uuidMap,
     );
   });
 
@@ -900,18 +943,18 @@ describe("Data Residency Model Conformance", () => {
       tsfga,
       {
         objectType: "record_d4r",
-        objectId: "rec5",
+        objectId: uuid("rec5"),
         relation: "can_view",
         subjectType: "user_d4r",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
         context: ctx(),
         contextualTuples: [
           {
             objectType: "record_d4r",
-            objectId: "rec5",
+            objectId: uuid("rec5"),
             relation: "owner",
             subjectType: "user_d4r",
-            subjectId: "zed",
+            subjectId: uuid("zed"),
           },
         ],
       },
@@ -926,18 +969,18 @@ describe("Data Residency Model Conformance", () => {
       tsfga,
       {
         objectType: "record_d4r",
-        objectId: "rec5",
+        objectId: uuid("rec5"),
         relation: "can_view",
         subjectType: "user_d4r",
-        subjectId: "mira",
+        subjectId: uuid("mira"),
         context: ctx(),
         contextualTuples: [
           {
             objectType: "record_d4r",
-            objectId: "rec5",
+            objectId: uuid("rec5"),
             relation: "reviewer",
             subjectType: "group_d4r",
-            subjectId: "g_eu",
+            subjectId: uuid("g_eu"),
             subjectRelation: "member",
           },
         ],
@@ -950,10 +993,10 @@ describe("Data Residency Model Conformance", () => {
     const contextualTuples: AddTupleRequest[] = [
       {
         objectType: "record_d4r",
-        objectId: "rec5",
+        objectId: uuid("rec5"),
         relation: "reviewer",
         subjectType: "user_d4r",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
         conditionName: "retained_d4r",
         conditionContext: { expires_at: "2027-01-01T00:00:00Z" },
       },
@@ -964,10 +1007,10 @@ describe("Data Residency Model Conformance", () => {
       tsfga,
       {
         objectType: "record_d4r",
-        objectId: "rec5",
+        objectId: uuid("rec5"),
         relation: "can_view",
         subjectType: "user_d4r",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
         context: ctx(),
         contextualTuples,
       },
@@ -979,10 +1022,10 @@ describe("Data Residency Model Conformance", () => {
       tsfga,
       {
         objectType: "record_d4r",
-        objectId: "rec5",
+        objectId: uuid("rec5"),
         relation: "can_view",
         subjectType: "user_d4r",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
         context: ctx({ now: EXPIRED }),
         contextualTuples,
       },
@@ -997,15 +1040,15 @@ describe("Data Residency Model Conformance", () => {
       tsfga,
       {
         objectType: "record_d4r",
-        objectId: "rec5",
+        objectId: uuid("rec5"),
         relation: "can_view",
         subjectType: "user_d4r",
-        subjectId: "pia",
+        subjectId: uuid("pia"),
         context: ctx(),
         contextualTuples: [
           {
             objectType: "record_d4r",
-            objectId: "rec5",
+            objectId: uuid("rec5"),
             relation: "embargoed",
             subjectType: "user_d4r",
             subjectId: "*",
@@ -1026,18 +1069,18 @@ describe("Data Residency Model Conformance", () => {
       tsfga,
       {
         objectType: "record_d4r",
-        objectId: "rec3",
+        objectId: uuid("rec3"),
         relation: "can_view",
         subjectType: "user_d4r",
-        subjectId: "pia",
+        subjectId: uuid("pia"),
         context: ctx({ region: "eu-north", now: LATE }),
         contextualTuples: [
           {
             objectType: "record_d4r",
-            objectId: "rec3",
+            objectId: uuid("rec3"),
             relation: "embargoed",
             subjectType: "user_d4r",
-            subjectId: "pia",
+            subjectId: uuid("pia"),
             conditionName: "retained_d4r",
             conditionContext: { expires_at: "2027-06-01T00:00:00Z" },
           },
@@ -1054,18 +1097,18 @@ describe("Data Residency Model Conformance", () => {
       tsfga,
       {
         objectType: "record_d4r",
-        objectId: "rec5",
+        objectId: uuid("rec5"),
         relation: "can_view",
         subjectType: "user_d4r",
-        subjectId: "mira",
+        subjectId: uuid("mira"),
         context: ctx(),
         contextualTuples: [
           {
             objectType: "record_d4r",
-            objectId: "rec5",
+            objectId: uuid("rec5"),
             relation: "owner",
             subjectType: "group_d4r",
-            subjectId: "g_eu",
+            subjectId: uuid("g_eu"),
             subjectRelation: "member",
           },
         ],
@@ -1085,10 +1128,10 @@ describe("Data Residency Model Conformance", () => {
         objectType: "record_d4r",
         relation: "can_view",
         subjectType: "user_d4r",
-        subjectId: "mira",
+        subjectId: uuid("mira"),
         context: ctx(),
       },
-      ["rec1", "rec6"],
+      [uuid("rec1"), uuid("rec6")],
     );
   });
 
@@ -1101,10 +1144,10 @@ describe("Data Residency Model Conformance", () => {
         objectType: "record_d4r",
         relation: "can_view",
         subjectType: "user_d4r",
-        subjectId: "mira",
+        subjectId: uuid("mira"),
         context: ctx({ region: "eu-north" }),
       },
-      ["rec3", "rec6"],
+      [uuid("rec3"), uuid("rec6")],
     );
   });
 
@@ -1117,10 +1160,10 @@ describe("Data Residency Model Conformance", () => {
         objectType: "record_d4r",
         relation: "can_view",
         subjectType: "user_d4r",
-        subjectId: "pia",
+        subjectId: uuid("pia"),
         context: ctx({ region: "eu-north" }),
       },
-      ["rec5", "rec6"],
+      [uuid("rec5"), uuid("rec6")],
     );
   });
 
@@ -1133,10 +1176,10 @@ describe("Data Residency Model Conformance", () => {
         objectType: "record_d4r",
         relation: "can_view",
         subjectType: "user_d4r",
-        subjectId: "pia",
+        subjectId: uuid("pia"),
         context: ctx({ region: "eu-north", now: LATE }),
       },
-      ["rec3", "rec5", "rec6"],
+      [uuid("rec3"), uuid("rec5"), uuid("rec6")],
     );
   });
 
@@ -1149,10 +1192,10 @@ describe("Data Residency Model Conformance", () => {
         objectType: "dataset_d4r",
         relation: "can_read",
         subjectType: "user_d4r",
-        subjectId: "mira",
+        subjectId: uuid("mira"),
         context: ctx({ region: "eu-north" }),
       },
-      ["ds_eu", "ds_eu2"],
+      [uuid("ds_eu"), uuid("ds_eu2")],
     );
   });
 
@@ -1165,19 +1208,19 @@ describe("Data Residency Model Conformance", () => {
         objectType: "record_d4r",
         relation: "can_view",
         subjectType: "user_d4r",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
         context: ctx(),
         contextualTuples: [
           {
             objectType: "record_d4r",
-            objectId: "rec5",
+            objectId: uuid("rec5"),
             relation: "owner",
             subjectType: "user_d4r",
-            subjectId: "zed",
+            subjectId: uuid("zed"),
           },
         ],
       },
-      ["rec5"],
+      [uuid("rec5")],
     );
   });
 
@@ -1225,10 +1268,10 @@ describe("Data Residency Model Conformance", () => {
         objectType: "record_d4r",
         relation: "can_view",
         subjectType: "user_d4r",
-        subjectId: "mira",
+        subjectId: uuid("mira"),
         context: without("region"),
       },
-      { openfga: "refused", tsfga: ["rec6"] },
+      { openfga: "refused", tsfga: [uuid("rec6")] },
     );
   });
 
@@ -1243,10 +1286,10 @@ describe("Data Residency Model Conformance", () => {
         objectType: "record_d4r",
         relation: "can_view",
         subjectType: "user_d4r",
-        subjectId: "mira",
+        subjectId: uuid("mira"),
         context: ctx(),
       },
-      ["rec1", "rec6"],
+      [uuid("rec1"), uuid("rec6")],
     );
   });
 
@@ -1256,58 +1299,58 @@ describe("Data Residency Model Conformance", () => {
     const items = [
       {
         objectType: "record_d4r",
-        objectId: "rec1",
+        objectId: uuid("rec1"),
         relation: "can_view",
         subjectType: "user_d4r",
-        subjectId: "mira",
+        subjectId: uuid("mira"),
         context: ctx(),
       },
       {
         objectType: "record_d4r",
-        objectId: "rec2",
+        objectId: uuid("rec2"),
         relation: "can_view",
         subjectType: "user_d4r",
-        subjectId: "mira",
+        subjectId: uuid("mira"),
         context: ctx(),
       },
       {
         objectType: "record_d4r",
-        objectId: "rec3",
+        objectId: uuid("rec3"),
         relation: "can_view",
         subjectType: "user_d4r",
-        subjectId: "mira",
+        subjectId: uuid("mira"),
         context: ctx({ region: "eu-north" }),
       },
       {
         objectType: "record_d4r",
-        objectId: "rec1",
+        objectId: uuid("rec1"),
         relation: "can_view",
         subjectType: "user_d4r",
-        subjectId: "mira",
+        subjectId: uuid("mira"),
         context: without("region"),
       },
       {
         objectType: "record_d4r",
-        objectId: "rec5",
+        objectId: uuid("rec5"),
         relation: "can_view",
         subjectType: "user_d4r",
-        subjectId: "pia",
+        subjectId: uuid("pia"),
         context: ctx(),
       },
       {
         objectType: "dataset_d4r",
-        objectId: "ds_eu",
+        objectId: uuid("ds_eu"),
         relation: "can_read",
         subjectType: "user_d4r",
-        subjectId: "ollie",
+        subjectId: uuid("ollie"),
         context: ctx({ clearance: 5 }),
       },
       {
         objectType: "tenant_d4r",
-        objectId: "tenant_eu",
+        objectId: uuid("tenant_eu"),
         relation: "reader",
         subjectType: "user_d4r",
-        subjectId: "noah",
+        subjectId: uuid("noah"),
         context: ctx(),
       },
     ];
@@ -1334,10 +1377,10 @@ describe("Data Residency Model Conformance", () => {
       tsfga,
       {
         objectType: "dataset_d4r",
-        objectId: "ds_eu2",
+        objectId: uuid("ds_eu2"),
         relation: "tenant",
         subjectType: "tenant_d4r",
-        subjectId: "tenant_us",
+        subjectId: uuid("tenant_us"),
       },
       "refused",
     );
@@ -1350,10 +1393,10 @@ describe("Data Residency Model Conformance", () => {
       tsfga,
       {
         objectType: "record_d4r",
-        objectId: "rec1",
+        objectId: uuid("rec1"),
         relation: "reviewer",
         subjectType: "user_d4r",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
         conditionName: "class_ok_d4r",
       },
       "refused",
@@ -1367,7 +1410,7 @@ describe("Data Residency Model Conformance", () => {
       tsfga,
       {
         objectType: "record_d4r",
-        objectId: "rec5",
+        objectId: uuid("rec5"),
         relation: "owner",
         subjectType: "user_d4r",
         subjectId: "*",
@@ -1383,10 +1426,10 @@ describe("Data Residency Model Conformance", () => {
       tsfga,
       {
         objectType: "record_d4r",
-        objectId: "rec5",
+        objectId: uuid("rec5"),
         relation: "owner",
         subjectType: "group_d4r",
-        subjectId: "g_eu",
+        subjectId: uuid("g_eu"),
         subjectRelation: "member",
       },
       "refused",
@@ -1400,10 +1443,10 @@ describe("Data Residency Model Conformance", () => {
       tsfga,
       {
         objectType: "record_d4r",
-        objectId: "rec1",
+        objectId: uuid("rec1"),
         relation: "inherited_read",
         subjectType: "user_d4r",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       "refused",
     );
@@ -1416,10 +1459,10 @@ describe("Data Residency Model Conformance", () => {
       tsfga,
       {
         objectType: "record_d4r",
-        objectId: "rec4",
+        objectId: uuid("rec4"),
         relation: "reviewer",
         subjectType: "user_d4r",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
         conditionName: "retained_d4r",
         conditionContext: { expires_at: "2027-01-01T00:00:00Z" },
       },
@@ -1431,10 +1474,10 @@ describe("Data Residency Model Conformance", () => {
       tsfga,
       {
         objectType: "tenant_d4r",
-        objectId: "tenant_eu",
+        objectId: uuid("tenant_eu"),
         relation: "auditor",
         subjectType: "user_d4r",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       "accepted",
     );
@@ -1445,10 +1488,10 @@ describe("Data Residency Model Conformance", () => {
   test("47: revoking the conditioned tupleset row cuts it off", async () => {
     await revoke({
       objectType: "record_d4r",
-      objectId: "rec1",
+      objectId: uuid("rec1"),
       relation: "dataset",
       subjectType: "dataset_d4r",
-      subjectId: "ds_eu",
+      subjectId: uuid("ds_eu"),
     });
     await can("record_d4r", "rec1", "can_view", "mira", false, ctx());
     // rob's reviewer row is local to the record, so it survives.
@@ -1458,10 +1501,10 @@ describe("Data Residency Model Conformance", () => {
   test("48: revoking the nested group edge cuts the tenant grant", async () => {
     await revoke({
       objectType: "group_d4r",
-      objectId: "g_all",
+      objectId: uuid("g_all"),
       relation: "member",
       subjectType: "group_d4r",
-      subjectId: "g_eu",
+      subjectId: uuid("g_eu"),
       subjectRelation: "member",
     });
     await can("tenant_d4r", "tenant_eu", "reader", "mira", false, ctx());
@@ -1481,10 +1524,10 @@ describe("Data Residency Model Conformance", () => {
   test("49: revoking the conditioned embargo restores the reader", async () => {
     await revoke({
       objectType: "record_d4r",
-      objectId: "rec3",
+      objectId: uuid("rec3"),
       relation: "embargoed",
       subjectType: "user_d4r",
-      subjectId: "pia",
+      subjectId: uuid("pia"),
     });
     await can(
       "record_d4r",

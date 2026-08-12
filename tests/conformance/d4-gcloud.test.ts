@@ -31,6 +31,11 @@ import {
   fgaWriteModel,
   fgaWriteTuples,
 } from "./helpers/openfga.ts";
+import { strictIdStore } from "./helpers/strict-ids.ts";
+import {
+  assertUuidMapCovers,
+  assertUuidMapInjective,
+} from "./helpers/uuid-map.ts";
 
 /**
  * Google Cloud IAM: an allow policy that *inherits down* the
@@ -90,6 +95,32 @@ const PROD_TAGS = { resource_tags: ["env:prod", "team:web"] };
 const DEV_TAGS = { resource_tags: ["env:dev"] };
 const SVC = { principal: "svc-etl@ex.io" };
 
+const uuidMap = new Map<string, string>([
+  ["alice", "00000000-0000-4000-d581-000000000001"],
+  ["g_sre", "00000000-0000-4000-d581-000000000002"],
+  ["g_eng", "00000000-0000-4000-d581-000000000003"],
+  ["bob", "00000000-0000-4000-d581-000000000004"],
+  ["acme", "00000000-0000-4000-d581-000000000005"],
+  ["carol", "00000000-0000-4000-d581-000000000006"],
+  ["f_prod", "00000000-0000-4000-d581-000000000007"],
+  ["f_team", "00000000-0000-4000-d581-000000000008"],
+  ["dan", "00000000-0000-4000-d581-000000000009"],
+  ["p_web", "00000000-0000-4000-d581-000000000010"],
+  ["p_data", "00000000-0000-4000-d581-000000000011"],
+  ["erin", "00000000-0000-4000-d581-000000000012"],
+  ["b_logs", "00000000-0000-4000-d581-000000000013"],
+  ["b_raw", "00000000-0000-4000-d581-000000000014"],
+  ["svc", "00000000-0000-4000-d581-000000000015"],
+  ["frank", "00000000-0000-4000-d581-000000000016"],
+  ["zed", "00000000-0000-4000-d581-000000000017"],
+]);
+
+function uuid(name: string): string {
+  const id = uuidMap.get(name);
+  if (!id) throw new Error(`No UUID for ${name}`);
+  return id;
+}
+
 describe("Google Cloud IAM Model Conformance", () => {
   let db: Kysely<DB>;
   let storeId: string;
@@ -112,10 +143,10 @@ describe("Google Cloud IAM Model Conformance", () => {
       tsfga,
       {
         objectType,
-        objectId,
+        objectId: uuid(objectId),
         relation,
         subjectType: "user_d4g",
-        subjectId: subject,
+        subjectId: uuid(subject),
         ...(context ? { context } : {}),
       },
       expected,
@@ -162,10 +193,13 @@ describe("Google Cloud IAM Model Conformance", () => {
   }
 
   beforeAll(async () => {
+    assertUuidMapInjective(uuidMap);
+    assertUuidMapCovers("./d4-gcloud/tuples.yaml", uuidMap);
+
     db = getDb();
     await beginTransaction(db);
 
-    tsfga = createTsfga(new KyselyTupleStore(db));
+    tsfga = createTsfga(strictIdStore(new KyselyTupleStore(db)));
     fixture = recordFixture(tsfga);
 
     for (const condition of CONDITIONS) {
@@ -378,143 +412,143 @@ describe("Google Cloud IAM Model Conformance", () => {
     const tuples: AddTupleRequest[] = [
       {
         objectType: "group_d4g",
-        objectId: "g_sre",
+        objectId: uuid("g_sre"),
         relation: "member",
         subjectType: "user_d4g",
-        subjectId: "alice",
+        subjectId: uuid("alice"),
       },
       {
         objectType: "group_d4g",
-        objectId: "g_eng",
+        objectId: uuid("g_eng"),
         relation: "member",
         subjectType: "group_d4g",
-        subjectId: "g_sre",
+        subjectId: uuid("g_sre"),
         subjectRelation: "member",
       },
       {
         objectType: "group_d4g",
-        objectId: "g_eng",
+        objectId: uuid("g_eng"),
         relation: "member",
         subjectType: "user_d4g",
-        subjectId: "bob",
+        subjectId: uuid("bob"),
       },
       {
         objectType: "org_d4g",
-        objectId: "acme",
+        objectId: uuid("acme"),
         relation: "viewer",
         subjectType: "group_d4g",
-        subjectId: "g_eng",
+        subjectId: uuid("g_eng"),
         subjectRelation: "member",
       },
       {
         objectType: "org_d4g",
-        objectId: "acme",
+        objectId: uuid("acme"),
         relation: "admin",
         subjectType: "user_d4g",
-        subjectId: "carol",
+        subjectId: uuid("carol"),
       },
       {
         objectType: "folder_d4g",
-        objectId: "f_prod",
+        objectId: uuid("f_prod"),
         relation: "parent_org",
         subjectType: "org_d4g",
-        subjectId: "acme",
+        subjectId: uuid("acme"),
       },
       {
         objectType: "folder_d4g",
-        objectId: "f_team",
+        objectId: uuid("f_team"),
         relation: "parent_folder",
         subjectType: "folder_d4g",
-        subjectId: "f_prod",
+        subjectId: uuid("f_prod"),
       },
       {
         objectType: "folder_d4g",
-        objectId: "f_prod",
+        objectId: uuid("f_prod"),
         relation: "denied",
         subjectType: "user_d4g",
-        subjectId: "bob",
+        subjectId: uuid("bob"),
       },
       {
         objectType: "folder_d4g",
-        objectId: "f_team",
+        objectId: uuid("f_team"),
         relation: "viewer",
         subjectType: "user_d4g",
-        subjectId: "dan",
+        subjectId: uuid("dan"),
         conditionName: "tag_scope_d4g",
         conditionContext: { required_tag: "env:prod" },
       },
       {
         objectType: "project_d4g",
-        objectId: "p_web",
+        objectId: uuid("p_web"),
         relation: "parent",
         subjectType: "folder_d4g",
-        subjectId: "f_team",
+        subjectId: uuid("f_team"),
       },
       {
         objectType: "project_d4g",
-        objectId: "p_data",
+        objectId: uuid("p_data"),
         relation: "parent",
         subjectType: "folder_d4g",
-        subjectId: "f_prod",
+        subjectId: uuid("f_prod"),
       },
       {
         objectType: "project_d4g",
-        objectId: "p_web",
+        objectId: uuid("p_web"),
         relation: "owner",
         subjectType: "user_d4g",
-        subjectId: "erin",
+        subjectId: uuid("erin"),
       },
       {
         objectType: "bucket_d4g",
-        objectId: "b_logs",
+        objectId: uuid("b_logs"),
         relation: "project",
         subjectType: "project_d4g",
-        subjectId: "p_web",
+        subjectId: uuid("p_web"),
       },
       {
         objectType: "bucket_d4g",
-        objectId: "b_raw",
+        objectId: uuid("b_raw"),
         relation: "project",
         subjectType: "project_d4g",
-        subjectId: "p_data",
+        subjectId: uuid("p_data"),
       },
       {
         objectType: "bucket_d4g",
-        objectId: "b_logs",
+        objectId: uuid("b_logs"),
         relation: "reader",
         subjectType: "group_d4g",
-        subjectId: "g_sre",
+        subjectId: uuid("g_sre"),
         subjectRelation: "member",
       },
       {
         objectType: "bucket_d4g",
-        objectId: "b_logs",
+        objectId: uuid("b_logs"),
         relation: "reader",
         subjectType: "user_d4g",
-        subjectId: "svc",
+        subjectId: uuid("svc"),
         conditionName: "svc_account_d4g",
       },
       {
         objectType: "bucket_d4g",
-        objectId: "b_logs",
+        objectId: uuid("b_logs"),
         relation: "writer",
         subjectType: "user_d4g",
-        subjectId: "frank",
+        subjectId: uuid("frank"),
         conditionName: "in_window_d4g",
         conditionContext: WINDOW,
       },
       {
         objectType: "bucket_d4g",
-        objectId: "b_logs",
+        objectId: uuid("b_logs"),
         relation: "writer",
         subjectType: "user_d4g",
-        subjectId: "erin",
+        subjectId: uuid("erin"),
         conditionName: "in_window_d4g",
         conditionContext: WINDOW,
       },
       {
         objectType: "bucket_d4g",
-        objectId: "b_raw",
+        objectId: uuid("b_raw"),
         relation: "quarantined",
         subjectType: "user_d4g",
         subjectId: "*",
@@ -532,6 +566,7 @@ describe("Google Cloud IAM Model Conformance", () => {
       storeId,
       "./d4-gcloud/tuples.yaml",
       authorizationModelId,
+      uuidMap,
     );
   });
 
@@ -730,9 +765,9 @@ describe("Google Cloud IAM Model Conformance", () => {
         objectType: "bucket_d4g",
         relation: "can_read",
         subjectType: "user_d4g",
-        subjectId: "alice",
+        subjectId: uuid("alice"),
       },
-      ["b_logs"],
+      [uuid("b_logs")],
     );
   });
 
@@ -745,7 +780,7 @@ describe("Google Cloud IAM Model Conformance", () => {
         objectType: "project_d4g",
         relation: "can_view",
         subjectType: "user_d4g",
-        subjectId: "bob",
+        subjectId: uuid("bob"),
       },
       [],
     );
@@ -760,10 +795,10 @@ describe("Google Cloud IAM Model Conformance", () => {
         objectType: "folder_d4g",
         relation: "can_view",
         subjectType: "user_d4g",
-        subjectId: "dan",
+        subjectId: uuid("dan"),
         context: PROD_TAGS,
       },
-      ["f_team"],
+      [uuid("f_team")],
     );
   });
 
@@ -776,7 +811,7 @@ describe("Google Cloud IAM Model Conformance", () => {
         objectType: "folder_d4g",
         relation: "can_view",
         subjectType: "user_d4g",
-        subjectId: "dan",
+        subjectId: uuid("dan"),
         context: DEV_TAGS,
       },
       [],
@@ -792,9 +827,9 @@ describe("Google Cloud IAM Model Conformance", () => {
         objectType: "bucket_d4g",
         relation: "can_write",
         subjectType: "user_d4g",
-        subjectId: "carol",
+        subjectId: uuid("carol"),
       },
-      ["b_logs"],
+      [uuid("b_logs")],
     );
   });
 
@@ -807,18 +842,18 @@ describe("Google Cloud IAM Model Conformance", () => {
         objectType: "bucket_d4g",
         relation: "can_read",
         subjectType: "user_d4g",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
         contextualTuples: [
           {
             objectType: "project_d4g",
-            objectId: "p_web",
+            objectId: uuid("p_web"),
             relation: "viewer",
             subjectType: "user_d4g",
-            subjectId: "zed",
+            subjectId: uuid("zed"),
           },
         ],
       },
-      ["b_logs"],
+      [uuid("b_logs")],
     );
   });
 
@@ -828,55 +863,55 @@ describe("Google Cloud IAM Model Conformance", () => {
     const items = [
       {
         objectType: "bucket_d4g",
-        objectId: "b_logs",
+        objectId: uuid("b_logs"),
         relation: "can_read",
         subjectType: "user_d4g",
-        subjectId: "alice",
+        subjectId: uuid("alice"),
       },
       {
         objectType: "bucket_d4g",
-        objectId: "b_raw",
+        objectId: uuid("b_raw"),
         relation: "can_read",
         subjectType: "user_d4g",
-        subjectId: "alice",
+        subjectId: uuid("alice"),
       },
       {
         objectType: "bucket_d4g",
-        objectId: "b_logs",
+        objectId: uuid("b_logs"),
         relation: "can_read",
         subjectType: "user_d4g",
-        subjectId: "svc",
+        subjectId: uuid("svc"),
         context: SVC,
       },
       {
         objectType: "bucket_d4g",
-        objectId: "b_logs",
+        objectId: uuid("b_logs"),
         relation: "can_read",
         subjectType: "user_d4g",
-        subjectId: "svc",
+        subjectId: uuid("svc"),
         context: { principal: "nope@ex.io" },
       },
       {
         objectType: "folder_d4g",
-        objectId: "f_team",
+        objectId: uuid("f_team"),
         relation: "can_view",
         subjectType: "user_d4g",
-        subjectId: "dan",
+        subjectId: uuid("dan"),
         context: PROD_TAGS,
       },
       {
         objectType: "folder_d4g",
-        objectId: "f_team",
+        objectId: uuid("f_team"),
         relation: "can_view",
         subjectType: "user_d4g",
-        subjectId: "bob",
+        subjectId: uuid("bob"),
       },
       {
         objectType: "bucket_d4g",
-        objectId: "b_logs",
+        objectId: uuid("b_logs"),
         relation: "can_write",
         subjectType: "user_d4g",
-        subjectId: "erin",
+        subjectId: uuid("erin"),
         context: IN_WINDOW,
       },
     ];
@@ -903,10 +938,10 @@ describe("Google Cloud IAM Model Conformance", () => {
       tsfga,
       {
         objectType: "bucket_d4g",
-        objectId: "b_logs",
+        objectId: uuid("b_logs"),
         relation: "quarantined",
         subjectType: "user_d4g",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       "refused",
     );
@@ -919,10 +954,10 @@ describe("Google Cloud IAM Model Conformance", () => {
       tsfga,
       {
         objectType: "bucket_d4g",
-        objectId: "b_logs",
+        objectId: uuid("b_logs"),
         relation: "writer",
         subjectType: "user_d4g",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       "refused",
     );
@@ -935,10 +970,10 @@ describe("Google Cloud IAM Model Conformance", () => {
       tsfga,
       {
         objectType: "bucket_d4g",
-        objectId: "b_logs",
+        objectId: uuid("b_logs"),
         relation: "reader",
         subjectType: "user_d4g",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       "accepted",
     );
@@ -948,10 +983,10 @@ describe("Google Cloud IAM Model Conformance", () => {
       tsfga,
       {
         objectType: "bucket_d4g",
-        objectId: "b_raw",
+        objectId: uuid("b_raw"),
         relation: "reader",
         subjectType: "user_d4g",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
         conditionName: "svc_account_d4g",
       },
       "accepted",
@@ -965,10 +1000,10 @@ describe("Google Cloud IAM Model Conformance", () => {
       tsfga,
       {
         objectType: "bucket_d4g",
-        objectId: "b_logs",
+        objectId: uuid("b_logs"),
         relation: "reader",
         subjectType: "user_d4g",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
         conditionName: "in_window_d4g",
       },
       "refused",
@@ -982,10 +1017,10 @@ describe("Google Cloud IAM Model Conformance", () => {
       tsfga,
       {
         objectType: "project_d4g",
-        objectId: "p_web",
+        objectId: uuid("p_web"),
         relation: "owner",
         subjectType: "group_d4g",
-        subjectId: "g_eng",
+        subjectId: uuid("g_eng"),
         subjectRelation: "member",
       },
       "refused",
@@ -999,10 +1034,10 @@ describe("Google Cloud IAM Model Conformance", () => {
       tsfga,
       {
         objectType: "folder_d4g",
-        objectId: "f_team",
+        objectId: uuid("f_team"),
         relation: "parent_org",
         subjectType: "folder_d4g",
-        subjectId: "f_prod",
+        subjectId: uuid("f_prod"),
       },
       "refused",
     );
@@ -1015,10 +1050,10 @@ describe("Google Cloud IAM Model Conformance", () => {
       tsfga,
       {
         objectType: "bucket_d4g",
-        objectId: "b_logs",
+        objectId: uuid("b_logs"),
         relation: "can_read",
         subjectType: "user_d4g",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       "refused",
     );
@@ -1029,10 +1064,10 @@ describe("Google Cloud IAM Model Conformance", () => {
   test("49: revoking the deny gives bob the whole tree back", async () => {
     await revoke({
       objectType: "folder_d4g",
-      objectId: "f_prod",
+      objectId: uuid("f_prod"),
       relation: "denied",
       subjectType: "user_d4g",
-      subjectId: "bob",
+      subjectId: uuid("bob"),
     });
     await can("folder_d4g", "f_prod", "can_view", "bob", true);
     await can("folder_d4g", "f_team", "can_view", "bob", true);
@@ -1043,10 +1078,10 @@ describe("Google Cloud IAM Model Conformance", () => {
   test("50: revoking the nested group edge cuts alice off", async () => {
     await revoke({
       objectType: "group_d4g",
-      objectId: "g_eng",
+      objectId: uuid("g_eng"),
       relation: "member",
       subjectType: "group_d4g",
-      subjectId: "g_sre",
+      subjectId: uuid("g_sre"),
       subjectRelation: "member",
     });
     await can("org_d4g", "acme", "can_view", "alice", false);
@@ -1059,7 +1094,7 @@ describe("Google Cloud IAM Model Conformance", () => {
   test("51: revoking the quarantine reopens the bucket", async () => {
     await revoke({
       objectType: "bucket_d4g",
-      objectId: "b_raw",
+      objectId: uuid("b_raw"),
       relation: "quarantined",
       subjectType: "user_d4g",
       subjectId: "*",

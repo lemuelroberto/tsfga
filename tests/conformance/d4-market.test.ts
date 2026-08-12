@@ -35,6 +35,11 @@ import {
   fgaWriteModel,
   fgaWriteTuples,
 } from "./helpers/openfga.ts";
+import { strictIdStore } from "./helpers/strict-ids.ts";
+import {
+  assertUuidMapCovers,
+  assertUuidMapInjective,
+} from "./helpers/uuid-map.ts";
 
 /**
  * An online marketplace with escrow and disputes.
@@ -79,6 +84,42 @@ const SOLD = { state: "sold" };
 const FUNDED = { state: "funded" };
 const GOOD_REF = { ref: "ord-1234.web" };
 
+const uuidMap = new Map<string, string>([
+  ["ivy", "00000000-0000-4000-d583-000000000001"],
+  ["g_ops", "00000000-0000-4000-d583-000000000002"],
+  ["g_staff", "00000000-0000-4000-d583-000000000003"],
+  ["hank", "00000000-0000-4000-d583-000000000004"],
+  ["judy", "00000000-0000-4000-d583-000000000005"],
+  ["g_arb", "00000000-0000-4000-d583-000000000006"],
+  ["mona", "00000000-0000-4000-d583-000000000007"],
+  ["m_acme", "00000000-0000-4000-d583-000000000008"],
+  ["nate", "00000000-0000-4000-d583-000000000009"],
+  ["m_bad", "00000000-0000-4000-d583-000000000010"],
+  ["quinn", "00000000-0000-4000-d583-000000000011"],
+  ["s_alpha", "00000000-0000-4000-d583-000000000012"],
+  ["pete", "00000000-0000-4000-d583-000000000013"],
+  ["s_beta", "00000000-0000-4000-d583-000000000014"],
+  ["l_boots", "00000000-0000-4000-d583-000000000015"],
+  ["l_hat", "00000000-0000-4000-d583-000000000016"],
+  ["rita", "00000000-0000-4000-d583-000000000017"],
+  ["sam", "00000000-0000-4000-d583-000000000018"],
+  ["ord1", "00000000-0000-4000-d583-000000000019"],
+  ["tina", "00000000-0000-4000-d583-000000000020"],
+  ["umar", "00000000-0000-4000-d583-000000000021"],
+  ["wes", "00000000-0000-4000-d583-000000000022"],
+  ["vera", "00000000-0000-4000-d583-000000000023"],
+  ["ord2", "00000000-0000-4000-d583-000000000024"],
+  ["d1", "00000000-0000-4000-d583-000000000025"],
+  ["d2", "00000000-0000-4000-d583-000000000026"],
+  ["zed", "00000000-0000-4000-d583-000000000027"],
+]);
+
+function uuid(name: string): string {
+  const id = uuidMap.get(name);
+  if (!id) throw new Error(`No UUID for ${name}`);
+  return id;
+}
+
 describe("Marketplace Escrow Model Conformance", () => {
   let db: Kysely<DB>;
   let storeId: string;
@@ -101,10 +142,10 @@ describe("Marketplace Escrow Model Conformance", () => {
       tsfga,
       {
         objectType,
-        objectId,
+        objectId: uuid(objectId),
         relation,
         subjectType: "user_d4m",
-        subjectId: subject,
+        subjectId: uuid(subject),
         ...(context ? { context } : {}),
       },
       expected,
@@ -127,10 +168,10 @@ describe("Marketplace Escrow Model Conformance", () => {
       tsfga,
       {
         objectType,
-        objectId,
+        objectId: uuid(objectId),
         relation,
         subjectType: "user_d4m",
-        subjectId: subject,
+        subjectId: uuid(subject),
         contextualTuples,
         ...(context ? { context } : {}),
       },
@@ -178,10 +219,13 @@ describe("Marketplace Escrow Model Conformance", () => {
   }
 
   beforeAll(async () => {
+    assertUuidMapInjective(uuidMap);
+    assertUuidMapCovers("./d4-market/tuples.yaml", uuidMap);
+
     db = getDb();
     await beginTransaction(db);
 
-    tsfga = createTsfga(new KyselyTupleStore(db));
+    tsfga = createTsfga(strictIdStore(new KyselyTupleStore(db)));
     fixture = recordFixture(tsfga);
 
     for (const condition of CONDITIONS) {
@@ -423,245 +467,245 @@ describe("Marketplace Escrow Model Conformance", () => {
     const tuples: AddTupleRequest[] = [
       {
         objectType: "group_d4m",
-        objectId: "g_ops",
+        objectId: uuid("g_ops"),
         relation: "member",
         subjectType: "user_d4m",
-        subjectId: "ivy",
+        subjectId: uuid("ivy"),
       },
       {
         objectType: "group_d4m",
-        objectId: "g_staff",
+        objectId: uuid("g_staff"),
         relation: "member",
         subjectType: "group_d4m",
-        subjectId: "g_ops",
+        subjectId: uuid("g_ops"),
         subjectRelation: "member",
       },
       {
         objectType: "group_d4m",
-        objectId: "g_staff",
+        objectId: uuid("g_staff"),
         relation: "member",
         subjectType: "user_d4m",
-        subjectId: "hank",
+        subjectId: uuid("hank"),
       },
       {
         objectType: "group_d4m",
-        objectId: "g_arb",
+        objectId: uuid("g_arb"),
         relation: "member",
         subjectType: "user_d4m",
-        subjectId: "judy",
+        subjectId: uuid("judy"),
       },
       {
         objectType: "merchant_d4m",
-        objectId: "m_acme",
+        objectId: uuid("m_acme"),
         relation: "owner",
         subjectType: "user_d4m",
-        subjectId: "mona",
+        subjectId: uuid("mona"),
       },
       {
         objectType: "merchant_d4m",
-        objectId: "m_acme",
+        objectId: uuid("m_acme"),
         relation: "staff",
         subjectType: "group_d4m",
-        subjectId: "g_staff",
+        subjectId: uuid("g_staff"),
         subjectRelation: "member",
       },
       {
         objectType: "merchant_d4m",
-        objectId: "m_acme",
+        objectId: uuid("m_acme"),
         relation: "banned",
         subjectType: "user_d4m",
-        subjectId: "hank",
+        subjectId: uuid("hank"),
       },
       {
         objectType: "merchant_d4m",
-        objectId: "m_bad",
+        objectId: uuid("m_bad"),
         relation: "owner",
         subjectType: "user_d4m",
-        subjectId: "nate",
+        subjectId: uuid("nate"),
       },
       {
         objectType: "merchant_d4m",
-        objectId: "m_bad",
+        objectId: uuid("m_bad"),
         relation: "staff",
         subjectType: "user_d4m",
-        subjectId: "quinn",
+        subjectId: uuid("quinn"),
       },
       {
         objectType: "merchant_d4m",
-        objectId: "m_bad",
+        objectId: uuid("m_bad"),
         relation: "banned",
         subjectType: "user_d4m",
         subjectId: "*",
       },
       {
         objectType: "seller_d4m",
-        objectId: "s_alpha",
+        objectId: uuid("s_alpha"),
         relation: "merchant",
         subjectType: "merchant_d4m",
-        subjectId: "m_acme",
+        subjectId: uuid("m_acme"),
       },
       {
         objectType: "seller_d4m",
-        objectId: "s_alpha",
+        objectId: uuid("s_alpha"),
         relation: "operator",
         subjectType: "user_d4m",
-        subjectId: "pete",
+        subjectId: uuid("pete"),
       },
       {
         objectType: "seller_d4m",
-        objectId: "s_beta",
+        objectId: uuid("s_beta"),
         relation: "merchant",
         subjectType: "merchant_d4m",
-        subjectId: "m_bad",
+        subjectId: uuid("m_bad"),
       },
       {
         objectType: "seller_d4m",
-        objectId: "s_beta",
+        objectId: uuid("s_beta"),
         relation: "operator",
         subjectType: "user_d4m",
-        subjectId: "quinn",
+        subjectId: uuid("quinn"),
       },
       {
         objectType: "listing_d4m",
-        objectId: "l_boots",
+        objectId: uuid("l_boots"),
         relation: "seller",
         subjectType: "seller_d4m",
-        subjectId: "s_alpha",
+        subjectId: uuid("s_alpha"),
       },
       {
         objectType: "listing_d4m",
-        objectId: "l_hat",
+        objectId: uuid("l_hat"),
         relation: "seller",
         subjectType: "seller_d4m",
-        subjectId: "s_beta",
+        subjectId: uuid("s_beta"),
       },
       {
         objectType: "listing_d4m",
-        objectId: "l_boots",
+        objectId: uuid("l_boots"),
         relation: "editor",
         subjectType: "user_d4m",
-        subjectId: "rita",
+        subjectId: uuid("rita"),
       },
       {
         objectType: "listing_d4m",
-        objectId: "l_boots",
+        objectId: uuid("l_boots"),
         relation: "editor",
         subjectType: "user_d4m",
-        subjectId: "sam",
+        subjectId: uuid("sam"),
         conditionName: "escrow_state_d4m",
         conditionContext: { allowed: ["draft", "live"] },
       },
       {
         objectType: "listing_d4m",
-        objectId: "l_boots",
+        objectId: uuid("l_boots"),
         relation: "verified",
         subjectType: "user_d4m",
-        subjectId: "pete",
+        subjectId: uuid("pete"),
       },
       {
         objectType: "listing_d4m",
-        objectId: "l_hat",
+        objectId: uuid("l_hat"),
         relation: "verified",
         subjectType: "group_d4m",
-        subjectId: "g_ops",
+        subjectId: uuid("g_ops"),
         subjectRelation: "member",
       },
       {
         objectType: "order_d4m",
-        objectId: "ord1",
+        objectId: uuid("ord1"),
         relation: "listing",
         subjectType: "listing_d4m",
-        subjectId: "l_boots",
+        subjectId: uuid("l_boots"),
       },
       {
         objectType: "order_d4m",
-        objectId: "ord1",
+        objectId: uuid("ord1"),
         relation: "buyer",
         subjectType: "user_d4m",
-        subjectId: "tina",
+        subjectId: uuid("tina"),
       },
       {
         objectType: "order_d4m",
-        objectId: "ord1",
+        objectId: uuid("ord1"),
         relation: "buyer",
         subjectType: "user_d4m",
-        subjectId: "hank",
+        subjectId: uuid("hank"),
       },
       {
         objectType: "order_d4m",
-        objectId: "ord1",
+        objectId: uuid("ord1"),
         relation: "buyer",
         subjectType: "user_d4m",
-        subjectId: "umar",
+        subjectId: uuid("umar"),
         conditionName: "escrow_state_d4m",
         conditionContext: { allowed: ["funded", "shipped"] },
       },
       {
         objectType: "order_d4m",
-        objectId: "ord1",
+        objectId: uuid("ord1"),
         relation: "buyer",
         subjectType: "user_d4m",
-        subjectId: "wes",
+        subjectId: uuid("wes"),
         conditionName: "escrow_state_d4m",
         conditionContext: { allowed: [] },
       },
       {
         objectType: "order_d4m",
-        objectId: "ord1",
+        objectId: uuid("ord1"),
         relation: "auditor",
         subjectType: "user_d4m",
-        subjectId: "vera",
+        subjectId: uuid("vera"),
         conditionName: "order_ref_d4m",
       },
       {
         objectType: "order_d4m",
-        objectId: "ord2",
+        objectId: uuid("ord2"),
         relation: "listing",
         subjectType: "listing_d4m",
-        subjectId: "l_hat",
+        subjectId: uuid("l_hat"),
       },
       {
         objectType: "order_d4m",
-        objectId: "ord2",
+        objectId: uuid("ord2"),
         relation: "buyer",
         subjectType: "user_d4m",
-        subjectId: "tina",
+        subjectId: uuid("tina"),
       },
       {
         objectType: "order_d4m",
-        objectId: "ord2",
+        objectId: uuid("ord2"),
         relation: "blocked",
         subjectType: "user_d4m",
         subjectId: "*",
       },
       {
         objectType: "dispute_d4m",
-        objectId: "d1",
+        objectId: uuid("d1"),
         relation: "order",
         subjectType: "order_d4m",
-        subjectId: "ord1",
+        subjectId: uuid("ord1"),
       },
       {
         objectType: "dispute_d4m",
-        objectId: "d1",
+        objectId: uuid("d1"),
         relation: "arbiter",
         subjectType: "group_d4m",
-        subjectId: "g_arb",
+        subjectId: uuid("g_arb"),
         subjectRelation: "member",
       },
       {
         objectType: "dispute_d4m",
-        objectId: "d2",
+        objectId: uuid("d2"),
         relation: "order",
         subjectType: "order_d4m",
-        subjectId: "ord2",
+        subjectId: uuid("ord2"),
       },
       {
         objectType: "dispute_d4m",
-        objectId: "d2",
+        objectId: uuid("d2"),
         relation: "arbiter",
         subjectType: "user_d4m",
-        subjectId: "judy",
+        subjectId: uuid("judy"),
       },
     ];
     for (const tuple of tuples) await tsfga.addTuple(tuple);
@@ -676,6 +720,7 @@ describe("Marketplace Escrow Model Conformance", () => {
       storeId,
       "./d4-market/tuples.yaml",
       authorizationModelId,
+      uuidMap,
     );
   });
 
@@ -866,10 +911,10 @@ describe("Marketplace Escrow Model Conformance", () => {
       [
         {
           objectType: "order_d4m",
-          objectId: "ord1",
+          objectId: uuid("ord1"),
           relation: "buyer",
           subjectType: "user_d4m",
-          subjectId: "zed",
+          subjectId: uuid("zed"),
         },
       ],
       true,
@@ -886,10 +931,10 @@ describe("Marketplace Escrow Model Conformance", () => {
       [
         {
           objectType: "listing_d4m",
-          objectId: "l_boots",
+          objectId: uuid("l_boots"),
           relation: "verified",
           subjectType: "group_d4m",
-          subjectId: "g_staff",
+          subjectId: uuid("g_staff"),
           subjectRelation: "member",
         },
       ],
@@ -901,10 +946,10 @@ describe("Marketplace Escrow Model Conformance", () => {
     const overlay: AddTupleRequest[] = [
       {
         objectType: "order_d4m",
-        objectId: "ord1",
+        objectId: uuid("ord1"),
         relation: "buyer",
         subjectType: "user_d4m",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
         conditionName: "escrow_state_d4m",
         conditionContext: { allowed: ["funded"] },
       },
@@ -931,7 +976,7 @@ describe("Marketplace Escrow Model Conformance", () => {
       [
         {
           objectType: "order_d4m",
-          objectId: "ord1",
+          objectId: uuid("ord1"),
           relation: "blocked",
           subjectType: "user_d4m",
           subjectId: "*",
@@ -947,10 +992,10 @@ describe("Marketplace Escrow Model Conformance", () => {
     const overlay: AddTupleRequest[] = [
       {
         objectType: "order_d4m",
-        objectId: "ord1",
+        objectId: uuid("ord1"),
         relation: "buyer",
         subjectType: "user_d4m",
-        subjectId: "umar",
+        subjectId: uuid("umar"),
         conditionName: "escrow_state_d4m",
         conditionContext: { allowed: ["draft"] },
       },
@@ -968,10 +1013,10 @@ describe("Marketplace Escrow Model Conformance", () => {
       [
         {
           objectType: "order_d4m",
-          objectId: "ord1",
+          objectId: uuid("ord1"),
           relation: "blocked",
           subjectType: "user_d4m",
-          subjectId: "zed",
+          subjectId: uuid("zed"),
         },
       ],
       "refused",
@@ -989,9 +1034,9 @@ describe("Marketplace Escrow Model Conformance", () => {
         objectType: "listing_d4m",
         relation: "can_edit",
         subjectType: "user_d4m",
-        subjectId: "rita",
+        subjectId: uuid("rita"),
       },
-      ["l_boots"],
+      [uuid("l_boots")],
     );
     // ord2 is gone, four hops below the wildcard ban.
     await expectListObjectsConformance(
@@ -1002,9 +1047,9 @@ describe("Marketplace Escrow Model Conformance", () => {
         objectType: "order_d4m",
         relation: "can_view",
         subjectType: "user_d4m",
-        subjectId: "tina",
+        subjectId: uuid("tina"),
       },
-      ["ord1"],
+      [uuid("ord1")],
     );
   });
 
@@ -1017,9 +1062,9 @@ describe("Marketplace Escrow Model Conformance", () => {
         objectType: "dispute_d4m",
         relation: "can_comment",
         subjectType: "user_d4m",
-        subjectId: "judy",
+        subjectId: uuid("judy"),
       },
-      ["d1"],
+      [uuid("d1")],
     );
   });
 
@@ -1032,10 +1077,10 @@ describe("Marketplace Escrow Model Conformance", () => {
         objectType: "listing_d4m",
         relation: "can_edit",
         subjectType: "user_d4m",
-        subjectId: "sam",
+        subjectId: uuid("sam"),
         context: LIVE,
       },
-      ["l_boots"],
+      [uuid("l_boots")],
     );
     await expectListObjectsConformance(
       storeId,
@@ -1045,7 +1090,7 @@ describe("Marketplace Escrow Model Conformance", () => {
         objectType: "listing_d4m",
         relation: "can_edit",
         subjectType: "user_d4m",
-        subjectId: "sam",
+        subjectId: uuid("sam"),
         context: SOLD,
       },
       [],
@@ -1061,18 +1106,18 @@ describe("Marketplace Escrow Model Conformance", () => {
         objectType: "dispute_d4m",
         relation: "can_comment",
         subjectType: "user_d4m",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
         contextualTuples: [
           {
             objectType: "dispute_d4m",
-            objectId: "d1",
+            objectId: uuid("d1"),
             relation: "arbiter",
             subjectType: "user_d4m",
-            subjectId: "zed",
+            subjectId: uuid("zed"),
           },
         ],
       },
-      ["d1"],
+      [uuid("d1")],
     );
   });
 
@@ -1080,7 +1125,7 @@ describe("Marketplace Escrow Model Conformance", () => {
 
   test("31: the direct editors of a listing, under a context", async () => {
     const ours = (
-      await tsfga.listSubjects("listing_d4m", "l_boots", "editor", {
+      await tsfga.listSubjects("listing_d4m", uuid("l_boots"), "editor", {
         context: DRAFT,
       })
     )
@@ -1089,7 +1134,7 @@ describe("Marketplace Escrow Model Conformance", () => {
     const theirs = (
       await fgaListUsers(storeId, authorizationModelId, {
         objectType: "listing_d4m",
-        objectId: "l_boots",
+        objectId: uuid("l_boots"),
         relation: "editor",
         filters: [{ type: "user_d4m" }],
         context: DRAFT,
@@ -1097,22 +1142,26 @@ describe("Marketplace Escrow Model Conformance", () => {
     )
       .map(renderSubject)
       .sort();
-    expect(ours).toEqual(["user_d4m:rita", "user_d4m:sam"]);
+    // Sorted; rita's assigned id sorts before sam's.
+    expect(ours).toEqual([
+      `user_d4m:${uuid("rita")}`,
+      `user_d4m:${uuid("sam")}`,
+    ]);
     expect(ours).toEqual(theirs);
   });
 
   test("32: the arbiters of a dispute are a userset row", async () => {
-    const ours = (await tsfga.listSubjects("dispute_d4m", "d1", "arbiter")).map(
-      renderSubject,
-    );
-    expect(ours).toEqual(["group_d4m:g_arb#member"]);
+    const ours = (
+      await tsfga.listSubjects("dispute_d4m", uuid("d1"), "arbiter")
+    ).map(renderSubject);
+    expect(ours).toEqual([`group_d4m:${uuid("g_arb")}#member`]);
     // Upstream resolves the userset rather than reporting it, so
     // the comparison is containment over both filter shapes.
     const upstream = new Set([
       ...(
         await fgaListUsers(storeId, authorizationModelId, {
           objectType: "dispute_d4m",
-          objectId: "d1",
+          objectId: uuid("d1"),
           relation: "arbiter",
           filters: [{ type: "group_d4m", relation: "member" }],
         })
@@ -1120,7 +1169,7 @@ describe("Marketplace Escrow Model Conformance", () => {
       ...(
         await fgaListUsers(storeId, authorizationModelId, {
           objectType: "dispute_d4m",
-          objectId: "d1",
+          objectId: uuid("d1"),
           relation: "arbiter",
           filters: [{ type: "user_d4m" }],
         })
@@ -1130,13 +1179,15 @@ describe("Marketplace Escrow Model Conformance", () => {
   });
 
   test("33: the wildcard ban is reported as a wildcard by both", async () => {
-    const ours = (await tsfga.listSubjects("merchant_d4m", "m_bad", "banned"))
+    const ours = (
+      await tsfga.listSubjects("merchant_d4m", uuid("m_bad"), "banned")
+    )
       .map(renderSubject)
       .sort();
     const theirs = (
       await fgaListUsers(storeId, authorizationModelId, {
         objectType: "merchant_d4m",
-        objectId: "m_bad",
+        objectId: uuid("m_bad"),
         relation: "banned",
         filters: [{ type: "user_d4m" }],
       })
@@ -1153,63 +1204,63 @@ describe("Marketplace Escrow Model Conformance", () => {
     const items = [
       {
         objectType: "dispute_d4m",
-        objectId: "d1",
+        objectId: uuid("d1"),
         relation: "can_comment",
         subjectType: "user_d4m",
-        subjectId: "tina",
+        subjectId: uuid("tina"),
       },
       {
         objectType: "dispute_d4m",
-        objectId: "d2",
+        objectId: uuid("d2"),
         relation: "can_comment",
         subjectType: "user_d4m",
-        subjectId: "judy",
+        subjectId: uuid("judy"),
       },
       {
         objectType: "listing_d4m",
-        objectId: "l_boots",
+        objectId: uuid("l_boots"),
         relation: "can_edit",
         subjectType: "user_d4m",
-        subjectId: "sam",
+        subjectId: uuid("sam"),
         context: LIVE,
       },
       {
         objectType: "listing_d4m",
-        objectId: "l_boots",
+        objectId: uuid("l_boots"),
         relation: "can_edit",
         subjectType: "user_d4m",
-        subjectId: "sam",
+        subjectId: uuid("sam"),
         context: SOLD,
       },
       {
         objectType: "listing_d4m",
-        objectId: "l_boots",
+        objectId: uuid("l_boots"),
         relation: "can_edit",
         subjectType: "user_d4m",
-        subjectId: "sam",
+        subjectId: uuid("sam"),
       },
       {
         objectType: "order_d4m",
-        objectId: "ord1",
+        objectId: uuid("ord1"),
         relation: "can_release",
         subjectType: "user_d4m",
-        subjectId: "vera",
+        subjectId: uuid("vera"),
         context: GOOD_REF,
       },
       {
         objectType: "listing_d4m",
-        objectId: "l_hat",
+        objectId: uuid("l_hat"),
         relation: "verified",
         subjectType: "group_d4m",
-        subjectId: "g_ops",
+        subjectId: uuid("g_ops"),
         subjectRelation: "member",
       },
       {
         objectType: "order_d4m",
-        objectId: "ord1",
+        objectId: uuid("ord1"),
         relation: "can_view",
         subjectType: "user_d4m",
-        subjectId: "hank",
+        subjectId: uuid("hank"),
       },
     ];
     const [ours, theirs] = await Promise.all([
@@ -1244,10 +1295,10 @@ describe("Marketplace Escrow Model Conformance", () => {
       tsfga,
       {
         objectType: "order_d4m",
-        objectId: "ord1",
+        objectId: uuid("ord1"),
         relation: "auditor",
         subjectType: "user_d4m",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       "refused",
     );
@@ -1258,10 +1309,10 @@ describe("Marketplace Escrow Model Conformance", () => {
       tsfga,
       {
         objectType: "listing_d4m",
-        objectId: "l_boots",
+        objectId: uuid("l_boots"),
         relation: "editor",
         subjectType: "user_d4m",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
         conditionName: "order_ref_d4m",
       },
       "refused",
@@ -1275,7 +1326,7 @@ describe("Marketplace Escrow Model Conformance", () => {
       tsfga,
       {
         objectType: "order_d4m",
-        objectId: "ord1",
+        objectId: uuid("ord1"),
         relation: "buyer",
         subjectType: "user_d4m",
         subjectId: "*",
@@ -1288,10 +1339,10 @@ describe("Marketplace Escrow Model Conformance", () => {
       tsfga,
       {
         objectType: "order_d4m",
-        objectId: "ord1",
+        objectId: uuid("ord1"),
         relation: "blocked",
         subjectType: "user_d4m",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       "refused",
     );
@@ -1304,10 +1355,10 @@ describe("Marketplace Escrow Model Conformance", () => {
       tsfga,
       {
         objectType: "listing_d4m",
-        objectId: "l_boots",
+        objectId: uuid("l_boots"),
         relation: "editor",
         subjectType: "group_d4m",
-        subjectId: "g_ops",
+        subjectId: uuid("g_ops"),
         subjectRelation: "member",
       },
       "refused",
@@ -1321,10 +1372,10 @@ describe("Marketplace Escrow Model Conformance", () => {
       tsfga,
       {
         objectType: "merchant_d4m",
-        objectId: "m_acme",
+        objectId: uuid("m_acme"),
         relation: "can_administer",
         subjectType: "user_d4m",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       "refused",
     );
@@ -1337,10 +1388,10 @@ describe("Marketplace Escrow Model Conformance", () => {
       tsfga,
       {
         objectType: "listing_d4m",
-        objectId: "l_boots",
+        objectId: uuid("l_boots"),
         relation: "verified",
         subjectType: "user_d4m",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       "accepted",
     );
@@ -1350,10 +1401,10 @@ describe("Marketplace Escrow Model Conformance", () => {
       tsfga,
       {
         objectType: "order_d4m",
-        objectId: "ord1",
+        objectId: uuid("ord1"),
         relation: "auditor",
         subjectType: "user_d4m",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
         conditionName: "order_ref_d4m",
       },
       "accepted",
@@ -1365,7 +1416,7 @@ describe("Marketplace Escrow Model Conformance", () => {
   test("40: revoking the wildcard ban restores the whole branch", async () => {
     await revoke({
       objectType: "merchant_d4m",
-      objectId: "m_bad",
+      objectId: uuid("m_bad"),
       relation: "banned",
       subjectType: "user_d4m",
       subjectId: "*",
@@ -1381,10 +1432,10 @@ describe("Marketplace Escrow Model Conformance", () => {
   test("41: revoking the nested group edge cuts ivy off", async () => {
     await revoke({
       objectType: "group_d4m",
-      objectId: "g_staff",
+      objectId: uuid("g_staff"),
       relation: "member",
       subjectType: "group_d4m",
-      subjectId: "g_ops",
+      subjectId: uuid("g_ops"),
       subjectRelation: "member",
     });
     await can("merchant_d4m", "m_acme", "can_administer", "ivy", false);
@@ -1399,10 +1450,10 @@ describe("Marketplace Escrow Model Conformance", () => {
     await can("order_d4m", "ord1", "can_view", "mona", true);
     await revoke({
       objectType: "seller_d4m",
-      objectId: "s_alpha",
+      objectId: uuid("s_alpha"),
       relation: "merchant",
       subjectType: "merchant_d4m",
-      subjectId: "m_acme",
+      subjectId: uuid("m_acme"),
     });
     await can("order_d4m", "ord1", "can_view", "mona", false);
     await can("listing_d4m", "l_boots", "can_edit", "mona", false);

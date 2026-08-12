@@ -31,6 +31,11 @@ import {
   fgaWriteModel,
   fgaWriteTuples,
 } from "./helpers/openfga.ts";
+import { strictIdStore } from "./helpers/strict-ids.ts";
+import {
+  assertUuidMapCovers,
+  assertUuidMapInjective,
+} from "./helpers/uuid-map.ts";
 
 /**
  * An incident-response platform, Sentry/PagerDuty shaped:
@@ -100,6 +105,72 @@ function teamId(index: number): string {
   return `t${String(index).padStart(2, "0")}`;
 }
 
+const uuidMap = new Map<string, string>([
+  ["alice", "00000000-0000-4000-d585-000000000001"],
+  ["g_sre", "00000000-0000-4000-d585-000000000002"],
+  ["g_ops", "00000000-0000-4000-d585-000000000003"],
+  ["bob", "00000000-0000-4000-d585-000000000004"],
+  ["lena", "00000000-0000-4000-d585-000000000005"],
+  ["g_page", "00000000-0000-4000-d585-000000000006"],
+  ["carol", "00000000-0000-4000-d585-000000000007"],
+  ["acme", "00000000-0000-4000-d585-000000000008"],
+  ["t01", "00000000-0000-4000-d585-000000000009"],
+  ["t02", "00000000-0000-4000-d585-000000000010"],
+  ["t03", "00000000-0000-4000-d585-000000000011"],
+  ["t04", "00000000-0000-4000-d585-000000000012"],
+  ["t05", "00000000-0000-4000-d585-000000000013"],
+  ["t06", "00000000-0000-4000-d585-000000000014"],
+  ["t07", "00000000-0000-4000-d585-000000000015"],
+  ["t08", "00000000-0000-4000-d585-000000000016"],
+  ["t09", "00000000-0000-4000-d585-000000000017"],
+  ["t10", "00000000-0000-4000-d585-000000000018"],
+  ["t11", "00000000-0000-4000-d585-000000000019"],
+  ["t12", "00000000-0000-4000-d585-000000000020"],
+  ["t13", "00000000-0000-4000-d585-000000000021"],
+  ["t14", "00000000-0000-4000-d585-000000000022"],
+  ["t15", "00000000-0000-4000-d585-000000000023"],
+  ["t16", "00000000-0000-4000-d585-000000000024"],
+  ["t17", "00000000-0000-4000-d585-000000000025"],
+  ["t18", "00000000-0000-4000-d585-000000000026"],
+  ["t19", "00000000-0000-4000-d585-000000000027"],
+  ["t20", "00000000-0000-4000-d585-000000000028"],
+  ["t21", "00000000-0000-4000-d585-000000000029"],
+  ["t22", "00000000-0000-4000-d585-000000000030"],
+  ["t23", "00000000-0000-4000-d585-000000000031"],
+  ["t24", "00000000-0000-4000-d585-000000000032"],
+  ["t25", "00000000-0000-4000-d585-000000000033"],
+  ["t26", "00000000-0000-4000-d585-000000000034"],
+  ["t27", "00000000-0000-4000-d585-000000000035"],
+  ["t28", "00000000-0000-4000-d585-000000000036"],
+  ["t29", "00000000-0000-4000-d585-000000000037"],
+  ["t30", "00000000-0000-4000-d585-000000000038"],
+  ["dave", "00000000-0000-4000-d585-000000000039"],
+  ["erin", "00000000-0000-4000-d585-000000000040"],
+  ["svc_api", "00000000-0000-4000-d585-000000000041"],
+  ["svc_deep", "00000000-0000-4000-d585-000000000042"],
+  ["frank", "00000000-0000-4000-d585-000000000043"],
+  ["gina", "00000000-0000-4000-d585-000000000044"],
+  ["hank", "00000000-0000-4000-d585-000000000045"],
+  ["svc_edge", "00000000-0000-4000-d585-000000000046"],
+  ["r_cpu", "00000000-0000-4000-d585-000000000047"],
+  ["r_deep", "00000000-0000-4000-d585-000000000048"],
+  ["ivan", "00000000-0000-4000-d585-000000000049"],
+  ["hookbot", "00000000-0000-4000-d585-000000000050"],
+  ["inc1", "00000000-0000-4000-d585-000000000051"],
+  ["inc2", "00000000-0000-4000-d585-000000000052"],
+  ["inc_deep", "00000000-0000-4000-d585-000000000053"],
+  ["jill", "00000000-0000-4000-d585-000000000054"],
+  ["kim", "00000000-0000-4000-d585-000000000055"],
+  ["zed", "00000000-0000-4000-d585-000000000056"],
+  ["yara", "00000000-0000-4000-d585-000000000057"],
+]);
+
+function uuid(name: string): string {
+  const id = uuidMap.get(name);
+  if (!id) throw new Error(`No UUID for ${name}`);
+  return id;
+}
+
 describe("On-call Platform Model Conformance", () => {
   let db: Kysely<DB>;
   let storeId: string;
@@ -122,10 +193,10 @@ describe("On-call Platform Model Conformance", () => {
       tsfga,
       {
         objectType,
-        objectId,
+        objectId: uuid(objectId),
         relation,
         subjectType: "user_d4c",
-        subjectId: subject,
+        subjectId: uuid(subject),
         ...(context ? { context } : {}),
       },
       expected,
@@ -148,10 +219,10 @@ describe("On-call Platform Model Conformance", () => {
       tsfga,
       {
         objectType,
-        objectId,
+        objectId: uuid(objectId),
         relation,
         subjectType: "user_d4c",
-        subjectId: subject,
+        subjectId: uuid(subject),
         contextualTuples,
         ...(context ? { context } : {}),
       },
@@ -199,10 +270,13 @@ describe("On-call Platform Model Conformance", () => {
   }
 
   beforeAll(async () => {
+    assertUuidMapInjective(uuidMap);
+    assertUuidMapCovers("./d4-oncall/tuples.yaml", uuidMap);
+
     db = getDb();
     await beginTransaction(db);
 
-    tsfga = createTsfga(new KyselyTupleStore(db));
+    tsfga = createTsfga(strictIdStore(new KyselyTupleStore(db)));
     fixture = recordFixture(tsfga);
 
     for (const condition of CONDITIONS) {
@@ -437,235 +511,235 @@ describe("On-call Platform Model Conformance", () => {
     const tuples: AddTupleRequest[] = [
       {
         objectType: "group_d4c",
-        objectId: "g_sre",
+        objectId: uuid("g_sre"),
         relation: "member",
         subjectType: "user_d4c",
-        subjectId: "alice",
+        subjectId: uuid("alice"),
       },
       {
         objectType: "group_d4c",
-        objectId: "g_ops",
+        objectId: uuid("g_ops"),
         relation: "member",
         subjectType: "group_d4c",
-        subjectId: "g_sre",
+        subjectId: uuid("g_sre"),
         subjectRelation: "member",
       },
       {
         objectType: "group_d4c",
-        objectId: "g_ops",
+        objectId: uuid("g_ops"),
         relation: "member",
         subjectType: "user_d4c",
-        subjectId: "bob",
+        subjectId: uuid("bob"),
       },
       {
         objectType: "group_d4c",
-        objectId: "g_page",
+        objectId: uuid("g_page"),
         relation: "member",
         subjectType: "user_d4c",
-        subjectId: "lena",
+        subjectId: uuid("lena"),
       },
       {
         objectType: "org_d4c",
-        objectId: "acme",
+        objectId: uuid("acme"),
         relation: "admin",
         subjectType: "user_d4c",
-        subjectId: "carol",
+        subjectId: uuid("carol"),
       },
       {
         objectType: "org_d4c",
-        objectId: "acme",
+        objectId: uuid("acme"),
         relation: "member",
         subjectType: "group_d4c",
-        subjectId: "g_ops",
+        subjectId: uuid("g_ops"),
         subjectRelation: "member",
       },
       {
         objectType: "team_d4c",
-        objectId: teamId(1),
+        objectId: uuid(teamId(1)),
         relation: "org",
         subjectType: "org_d4c",
-        subjectId: "acme",
+        subjectId: uuid("acme"),
       },
     ];
     for (let index = 2; index <= TEAM_DEPTH; index++) {
       tuples.push({
         objectType: "team_d4c",
-        objectId: teamId(index),
+        objectId: uuid(teamId(index)),
         relation: "parent_team",
         subjectType: "team_d4c",
-        subjectId: teamId(index - 1),
+        subjectId: uuid(teamId(index - 1)),
       });
     }
     tuples.push(
       {
         objectType: "team_d4c",
-        objectId: "t15",
+        objectId: uuid("t15"),
         relation: "on_call",
         subjectType: "user_d4c",
-        subjectId: "dave",
+        subjectId: uuid("dave"),
         conditionName: "on_shift_d4c",
         conditionContext: SHIFT,
       },
       {
         objectType: "team_d4c",
-        objectId: "t15",
+        objectId: uuid("t15"),
         relation: "escalation",
         subjectType: "user_d4c",
-        subjectId: "erin",
+        subjectId: uuid("erin"),
       },
       {
         objectType: "service_d4c",
-        objectId: "svc_api",
+        objectId: uuid("svc_api"),
         relation: "team",
         subjectType: "team_d4c",
-        subjectId: "t15",
+        subjectId: uuid("t15"),
       },
       {
         objectType: "service_d4c",
-        objectId: "svc_deep",
+        objectId: uuid("svc_deep"),
         relation: "team",
         subjectType: "team_d4c",
-        subjectId: "t30",
+        subjectId: uuid("t30"),
       },
       {
         objectType: "service_d4c",
-        objectId: "svc_api",
+        objectId: uuid("svc_api"),
         relation: "responder",
         subjectType: "user_d4c",
-        subjectId: "frank",
+        subjectId: uuid("frank"),
       },
       {
         objectType: "service_d4c",
-        objectId: "svc_api",
+        objectId: uuid("svc_api"),
         relation: "responder",
         subjectType: "user_d4c",
-        subjectId: "gina",
+        subjectId: uuid("gina"),
       },
       {
         objectType: "service_d4c",
-        objectId: "svc_api",
+        objectId: uuid("svc_api"),
         relation: "barred",
         subjectType: "user_d4c",
-        subjectId: "gina",
+        subjectId: uuid("gina"),
       },
       {
         objectType: "service_d4c",
-        objectId: "svc_api",
+        objectId: uuid("svc_api"),
         relation: "public_status",
         subjectType: "user_d4c",
         subjectId: "*",
       },
       {
         objectType: "service_d4c",
-        objectId: "svc_edge",
+        objectId: uuid("svc_edge"),
         relation: "responder",
         subjectType: "user_d4c",
-        subjectId: "hank",
+        subjectId: uuid("hank"),
       },
       {
         objectType: "service_d4c",
-        objectId: "svc_edge",
+        objectId: uuid("svc_edge"),
         relation: "barred",
         subjectType: "user_d4c",
         subjectId: "*",
       },
       {
         objectType: "service_d4c",
-        objectId: "svc_edge",
+        objectId: uuid("svc_edge"),
         relation: "public_status",
         subjectType: "user_d4c",
         subjectId: "*",
       },
       {
         objectType: "alert_rule_d4c",
-        objectId: "r_cpu",
+        objectId: uuid("r_cpu"),
         relation: "service",
         subjectType: "service_d4c",
-        subjectId: "svc_api",
+        subjectId: uuid("svc_api"),
       },
       {
         objectType: "alert_rule_d4c",
-        objectId: "r_deep",
+        objectId: uuid("r_deep"),
         relation: "service",
         subjectType: "service_d4c",
-        subjectId: "svc_deep",
+        subjectId: uuid("svc_deep"),
       },
       {
         objectType: "alert_rule_d4c",
-        objectId: "r_cpu",
+        objectId: uuid("r_cpu"),
         relation: "editor",
         subjectType: "user_d4c",
-        subjectId: "frank",
+        subjectId: uuid("frank"),
       },
       {
         objectType: "alert_rule_d4c",
-        objectId: "r_cpu",
+        objectId: uuid("r_cpu"),
         relation: "editor",
         subjectType: "user_d4c",
-        subjectId: "ivan",
+        subjectId: uuid("ivan"),
       },
       {
         objectType: "alert_rule_d4c",
-        objectId: "r_cpu",
+        objectId: uuid("r_cpu"),
         relation: "notifier",
         subjectType: "user_d4c",
-        subjectId: "hookbot",
+        subjectId: uuid("hookbot"),
         conditionName: "webhook_host_d4c",
       },
       {
         objectType: "incident_d4c",
-        objectId: "inc1",
+        objectId: uuid("inc1"),
         relation: "rule",
         subjectType: "alert_rule_d4c",
-        subjectId: "r_cpu",
+        subjectId: uuid("r_cpu"),
       },
       {
         objectType: "incident_d4c",
-        objectId: "inc2",
+        objectId: uuid("inc2"),
         relation: "rule",
         subjectType: "alert_rule_d4c",
-        subjectId: "r_cpu",
+        subjectId: uuid("r_cpu"),
       },
       {
         objectType: "incident_d4c",
-        objectId: "inc_deep",
+        objectId: uuid("inc_deep"),
         relation: "rule",
         subjectType: "alert_rule_d4c",
-        subjectId: "r_deep",
+        subjectId: uuid("r_deep"),
       },
       {
         objectType: "incident_d4c",
-        objectId: "inc1",
+        objectId: uuid("inc1"),
         relation: "responder",
         subjectType: "user_d4c",
-        subjectId: "jill",
+        subjectId: uuid("jill"),
       },
       {
         objectType: "incident_d4c",
-        objectId: "inc1",
+        objectId: uuid("inc1"),
         relation: "responder",
         subjectType: "user_d4c",
-        subjectId: "kim",
+        subjectId: uuid("kim"),
         conditionName: "sev_scope_d4c",
       },
       {
         objectType: "incident_d4c",
-        objectId: "inc1",
+        objectId: uuid("inc1"),
         relation: "escalation_target",
         subjectType: "group_d4c",
-        subjectId: "g_page",
+        subjectId: uuid("g_page"),
         subjectRelation: "member",
       },
       {
         objectType: "incident_d4c",
-        objectId: "inc1",
+        objectId: uuid("inc1"),
         relation: "suppressed",
         subjectType: "user_d4c",
-        subjectId: "jill",
+        subjectId: uuid("jill"),
       },
       {
         objectType: "incident_d4c",
-        objectId: "inc2",
+        objectId: uuid("inc2"),
         relation: "suppressed",
         subjectType: "user_d4c",
         subjectId: "*",
@@ -683,6 +757,7 @@ describe("On-call Platform Model Conformance", () => {
       storeId,
       "./d4-oncall/tuples.yaml",
       authorizationModelId,
+      uuidMap,
     );
   });
 
@@ -923,10 +998,10 @@ describe("On-call Platform Model Conformance", () => {
       [
         {
           objectType: "incident_d4c",
-          objectId: "inc1",
+          objectId: uuid("inc1"),
           relation: "responder",
           subjectType: "user_d4c",
-          subjectId: "zed",
+          subjectId: uuid("zed"),
         },
       ],
       true,
@@ -942,10 +1017,10 @@ describe("On-call Platform Model Conformance", () => {
       [
         {
           objectType: "service_d4c",
-          objectId: "svc_deep",
+          objectId: uuid("svc_deep"),
           relation: "responder",
           subjectType: "group_d4c",
-          subjectId: "g_page",
+          subjectId: uuid("g_page"),
           subjectRelation: "member",
         },
       ],
@@ -957,10 +1032,10 @@ describe("On-call Platform Model Conformance", () => {
     const shift: AddTupleRequest[] = [
       {
         objectType: "team_d4c",
-        objectId: "t15",
+        objectId: uuid("t15"),
         relation: "on_call",
         subjectType: "user_d4c",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
         conditionName: "on_shift_d4c",
         conditionContext: SHIFT,
       },
@@ -994,7 +1069,7 @@ describe("On-call Platform Model Conformance", () => {
       [
         {
           objectType: "incident_d4c",
-          objectId: "inc1",
+          objectId: uuid("inc1"),
           relation: "suppressed",
           subjectType: "user_d4c",
           subjectId: "*",
@@ -1013,10 +1088,10 @@ describe("On-call Platform Model Conformance", () => {
       [
         {
           objectType: "incident_d4c",
-          objectId: "inc1",
+          objectId: uuid("inc1"),
           relation: "responder",
           subjectType: "user_d4c",
-          subjectId: "kim",
+          subjectId: uuid("kim"),
         },
       ],
       true,
@@ -1032,10 +1107,10 @@ describe("On-call Platform Model Conformance", () => {
       [
         {
           objectType: "incident_d4c",
-          objectId: "inc1",
+          objectId: uuid("inc1"),
           relation: "escalation_target",
           subjectType: "user_d4c",
-          subjectId: "zed",
+          subjectId: uuid("zed"),
         },
       ],
       "refused",
@@ -1053,9 +1128,9 @@ describe("On-call Platform Model Conformance", () => {
         objectType: "group_d4c",
         relation: "member",
         subjectType: "user_d4c",
-        subjectId: "alice",
+        subjectId: uuid("alice"),
       },
-      ["g_sre", "g_ops"],
+      [uuid("g_sre"), uuid("g_ops")],
     );
   });
 
@@ -1068,10 +1143,10 @@ describe("On-call Platform Model Conformance", () => {
         objectType: "team_d4c",
         relation: "on_call",
         subjectType: "user_d4c",
-        subjectId: "dave",
+        subjectId: uuid("dave"),
         context: MID_SHIFT,
       },
-      ["t15"],
+      [uuid("t15")],
     );
   });
 
@@ -1084,7 +1159,7 @@ describe("On-call Platform Model Conformance", () => {
         objectType: "team_d4c",
         relation: "on_call",
         subjectType: "user_d4c",
-        subjectId: "dave",
+        subjectId: uuid("dave"),
         context: BEFORE_SHIFT,
       },
       [],
@@ -1100,9 +1175,9 @@ describe("On-call Platform Model Conformance", () => {
         objectType: "service_d4c",
         relation: "public_status",
         subjectType: "user_d4c",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
-      ["svc_api", "svc_edge"],
+      [uuid("svc_api"), uuid("svc_edge")],
     );
   });
 
@@ -1115,9 +1190,9 @@ describe("On-call Platform Model Conformance", () => {
         objectType: "incident_d4c",
         relation: "escalation_target",
         subjectType: "user_d4c",
-        subjectId: "erin",
+        subjectId: uuid("erin"),
       },
-      ["inc1", "inc2"],
+      [uuid("inc1"), uuid("inc2")],
     );
   });
 
@@ -1130,18 +1205,18 @@ describe("On-call Platform Model Conformance", () => {
         objectType: "incident_d4c",
         relation: "escalation_target",
         subjectType: "user_d4c",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
         contextualTuples: [
           {
             objectType: "team_d4c",
-            objectId: "t30",
+            objectId: uuid("t30"),
             relation: "escalation",
             subjectType: "user_d4c",
-            subjectId: "zed",
+            subjectId: uuid("zed"),
           },
         ],
       },
-      ["inc_deep"],
+      [uuid("inc_deep")],
     );
   });
 
@@ -1151,62 +1226,62 @@ describe("On-call Platform Model Conformance", () => {
     const items = [
       {
         objectType: "incident_d4c",
-        objectId: "inc1",
+        objectId: uuid("inc1"),
         relation: "can_ack",
         subjectType: "user_d4c",
-        subjectId: "alice",
+        subjectId: uuid("alice"),
       },
       {
         objectType: "incident_d4c",
-        objectId: "inc1",
+        objectId: uuid("inc1"),
         relation: "can_ack",
         subjectType: "user_d4c",
-        subjectId: "jill",
+        subjectId: uuid("jill"),
       },
       {
         objectType: "incident_d4c",
-        objectId: "inc1",
+        objectId: uuid("inc1"),
         relation: "can_ack",
         subjectType: "user_d4c",
-        subjectId: "kim",
+        subjectId: uuid("kim"),
         context: SEV2,
       },
       {
         objectType: "incident_d4c",
-        objectId: "inc1",
+        objectId: uuid("inc1"),
         relation: "responder",
         subjectType: "user_d4c",
-        subjectId: "kim",
+        subjectId: uuid("kim"),
       },
       {
         objectType: "incident_d4c",
-        objectId: "inc1",
+        objectId: uuid("inc1"),
         relation: "on_call",
         subjectType: "user_d4c",
-        subjectId: "dave",
+        subjectId: uuid("dave"),
         context: MID_SHIFT,
       },
       {
         objectType: "incident_d4c",
-        objectId: "inc1",
+        objectId: uuid("inc1"),
         relation: "on_call",
         subjectType: "user_d4c",
-        subjectId: "dave",
+        subjectId: uuid("dave"),
         context: BEFORE_SHIFT,
       },
       {
         objectType: "service_d4c",
-        objectId: "svc_api",
+        objectId: uuid("svc_api"),
         relation: "can_view_status",
         subjectType: "user_d4c",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       {
         objectType: "incident_d4c",
-        objectId: "inc2",
+        objectId: uuid("inc2"),
         relation: "can_ack",
         subjectType: "user_d4c",
-        subjectId: "erin",
+        subjectId: uuid("erin"),
       },
     ];
     const [ours, theirs] = await Promise.all([
@@ -1241,10 +1316,10 @@ describe("On-call Platform Model Conformance", () => {
       tsfga,
       {
         objectType: "team_d4c",
-        objectId: "t15",
+        objectId: uuid("t15"),
         relation: "on_call",
         subjectType: "user_d4c",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       "refused",
     );
@@ -1257,10 +1332,10 @@ describe("On-call Platform Model Conformance", () => {
       tsfga,
       {
         objectType: "team_d4c",
-        objectId: "t15",
+        objectId: uuid("t15"),
         relation: "on_call",
         subjectType: "user_d4c",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
         conditionName: "sev_scope_d4c",
       },
       "refused",
@@ -1274,10 +1349,10 @@ describe("On-call Platform Model Conformance", () => {
       tsfga,
       {
         objectType: "service_d4c",
-        objectId: "svc_api",
+        objectId: uuid("svc_api"),
         relation: "public_status",
         subjectType: "user_d4c",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       "refused",
     );
@@ -1290,10 +1365,10 @@ describe("On-call Platform Model Conformance", () => {
       tsfga,
       {
         objectType: "service_d4c",
-        objectId: "svc_api",
+        objectId: uuid("svc_api"),
         relation: "escalation",
         subjectType: "group_d4c",
-        subjectId: "g_page",
+        subjectId: uuid("g_page"),
         subjectRelation: "member",
       },
       "refused",
@@ -1307,10 +1382,10 @@ describe("On-call Platform Model Conformance", () => {
       tsfga,
       {
         objectType: "incident_d4c",
-        objectId: "inc1",
+        objectId: uuid("inc1"),
         relation: "can_ack",
         subjectType: "user_d4c",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       "refused",
     );
@@ -1323,10 +1398,10 @@ describe("On-call Platform Model Conformance", () => {
       tsfga,
       {
         objectType: "incident_d4c",
-        objectId: "inc2",
+        objectId: uuid("inc2"),
         relation: "responder",
         subjectType: "user_d4c",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       "accepted",
     );
@@ -1336,10 +1411,10 @@ describe("On-call Platform Model Conformance", () => {
       tsfga,
       {
         objectType: "incident_d4c",
-        objectId: "inc2",
+        objectId: uuid("inc2"),
         relation: "responder",
         subjectType: "user_d4c",
-        subjectId: "yara",
+        subjectId: uuid("yara"),
         conditionName: "sev_scope_d4c",
       },
       "accepted",
@@ -1351,10 +1426,10 @@ describe("On-call Platform Model Conformance", () => {
   test("55: revoking the group userset drops lena's escalation", async () => {
     await revoke({
       objectType: "incident_d4c",
-      objectId: "inc1",
+      objectId: uuid("inc1"),
       relation: "escalation_target",
       subjectType: "group_d4c",
-      subjectId: "g_page",
+      subjectId: uuid("g_page"),
       subjectRelation: "member",
     });
     await can("incident_d4c", "inc1", "escalation_target", "lena", false);
@@ -1364,10 +1439,10 @@ describe("On-call Platform Model Conformance", () => {
   test("56: revoking the team row cuts the escalation arm", async () => {
     await revoke({
       objectType: "team_d4c",
-      objectId: "t15",
+      objectId: uuid("t15"),
       relation: "escalation",
       subjectType: "user_d4c",
-      subjectId: "erin",
+      subjectId: uuid("erin"),
     });
     await can("service_d4c", "svc_api", "escalation", "erin", false);
     await can("incident_d4c", "inc1", "can_ack", "erin", false);
@@ -1376,10 +1451,10 @@ describe("On-call Platform Model Conformance", () => {
   test("57: revoking the suppression gives jill the incident", async () => {
     await revoke({
       objectType: "incident_d4c",
-      objectId: "inc1",
+      objectId: uuid("inc1"),
       relation: "suppressed",
       subjectType: "user_d4c",
-      subjectId: "jill",
+      subjectId: uuid("jill"),
     });
     await can("incident_d4c", "inc1", "can_ack", "jill", true);
   });

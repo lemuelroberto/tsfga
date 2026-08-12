@@ -31,6 +31,11 @@ import {
   fgaWriteModel,
   fgaWriteTuples,
 } from "./helpers/openfga.ts";
+import { strictIdStore } from "./helpers/strict-ids.ts";
+import {
+  assertUuidMapCovers,
+  assertUuidMapInjective,
+} from "./helpers/uuid-map.ts";
 
 /**
  * A learning-management system: course -> section -> assignment ->
@@ -90,6 +95,31 @@ const AFTER_REVIEW = { now: "2026-03-20T00:00:00Z" };
 const GOOD_CODE = { code: "ABC-123" };
 const BAD_CODE = { code: "abc-123" };
 
+const uuidMap = new Map<string, string>([
+  ["tina", "00000000-0000-4000-d582-000000000001"],
+  ["g_ta", "00000000-0000-4000-d582-000000000002"],
+  ["prof", "00000000-0000-4000-d582-000000000003"],
+  ["c1", "00000000-0000-4000-d582-000000000004"],
+  ["sam", "00000000-0000-4000-d582-000000000005"],
+  ["sue", "00000000-0000-4000-d582-000000000006"],
+  ["sec1", "00000000-0000-4000-d582-000000000007"],
+  ["zoe", "00000000-0000-4000-d582-000000000008"],
+  ["sec2", "00000000-0000-4000-d582-000000000009"],
+  ["a1", "00000000-0000-4000-d582-000000000010"],
+  ["a2", "00000000-0000-4000-d582-000000000011"],
+  ["s1", "00000000-0000-4000-d582-000000000012"],
+  ["s2", "00000000-0000-4000-d582-000000000013"],
+  ["s3", "00000000-0000-4000-d582-000000000014"],
+  ["zed", "00000000-0000-4000-d582-000000000015"],
+  ["yara", "00000000-0000-4000-d582-000000000016"],
+]);
+
+function uuid(name: string): string {
+  const id = uuidMap.get(name);
+  if (!id) throw new Error(`No UUID for ${name}`);
+  return id;
+}
+
 describe("LMS Model Conformance", () => {
   let db: Kysely<DB>;
   let storeId: string;
@@ -115,10 +145,10 @@ describe("LMS Model Conformance", () => {
       tsfga,
       {
         objectType,
-        objectId,
+        objectId: uuid(objectId),
         relation,
         subjectType: "user_d4l",
-        subjectId: subject,
+        subjectId: uuid(subject),
         ...(extra?.context ? { context: extra.context } : {}),
         ...(extra?.contextualTuples
           ? { contextualTuples: extra.contextualTuples }
@@ -168,10 +198,13 @@ describe("LMS Model Conformance", () => {
   }
 
   beforeAll(async () => {
+    assertUuidMapInjective(uuidMap);
+    assertUuidMapCovers("./d4-lms/tuples.yaml", uuidMap);
+
     db = getDb();
     await beginTransaction(db);
 
-    tsfga = createTsfga(new KyselyTupleStore(db));
+    tsfga = createTsfga(strictIdStore(new KyselyTupleStore(db)));
     fixture = recordFixture(tsfga);
 
     for (const condition of CONDITIONS) {
@@ -383,86 +416,86 @@ describe("LMS Model Conformance", () => {
     const tuples: AddTupleRequest[] = [
       {
         objectType: "group_d4l",
-        objectId: "g_ta",
+        objectId: uuid("g_ta"),
         relation: "member",
         subjectType: "user_d4l",
-        subjectId: "tina",
+        subjectId: uuid("tina"),
       },
       {
         objectType: "course_d4l",
-        objectId: "c1",
+        objectId: uuid("c1"),
         relation: "instructor",
         subjectType: "user_d4l",
-        subjectId: "prof",
+        subjectId: uuid("prof"),
       },
       {
         objectType: "course_d4l",
-        objectId: "c1",
+        objectId: uuid("c1"),
         relation: "ta",
         subjectType: "group_d4l",
-        subjectId: "g_ta",
+        subjectId: uuid("g_ta"),
         subjectRelation: "member",
       },
       {
         objectType: "course_d4l",
-        objectId: "c1",
+        objectId: uuid("c1"),
         relation: "student",
         subjectType: "user_d4l",
-        subjectId: "sam",
+        subjectId: uuid("sam"),
       },
       {
         objectType: "course_d4l",
-        objectId: "c1",
+        objectId: uuid("c1"),
         relation: "student",
         subjectType: "user_d4l",
-        subjectId: "sue",
+        subjectId: uuid("sue"),
       },
       {
         objectType: "course_d4l",
-        objectId: "c1",
+        objectId: uuid("c1"),
         relation: "withdrawn",
         subjectType: "user_d4l",
-        subjectId: "sue",
+        subjectId: uuid("sue"),
       },
       {
         objectType: "section_d4l",
-        objectId: "sec1",
+        objectId: uuid("sec1"),
         relation: "course",
         subjectType: "course_d4l",
-        subjectId: "c1",
+        subjectId: uuid("c1"),
       },
       {
         objectType: "section_d4l",
-        objectId: "sec1",
+        objectId: uuid("sec1"),
         relation: "student",
         subjectType: "user_d4l",
-        subjectId: "zoe",
+        subjectId: uuid("zoe"),
         conditionName: "enrollment_code_d4l",
       },
       {
         objectType: "section_d4l",
-        objectId: "sec2",
+        objectId: uuid("sec2"),
         relation: "course",
         subjectType: "course_d4l",
-        subjectId: "c1",
+        subjectId: uuid("c1"),
       },
       {
         objectType: "section_d4l",
-        objectId: "sec2",
+        objectId: uuid("sec2"),
         relation: "blocked",
         subjectType: "user_d4l",
         subjectId: "*",
       },
       {
         objectType: "assignment_d4l",
-        objectId: "a1",
+        objectId: uuid("a1"),
         relation: "section",
         subjectType: "section_d4l",
-        subjectId: "sec1",
+        subjectId: uuid("sec1"),
       },
       {
         objectType: "assignment_d4l",
-        objectId: "a1",
+        objectId: uuid("a1"),
         relation: "published",
         subjectType: "user_d4l",
         subjectId: "*",
@@ -471,86 +504,86 @@ describe("LMS Model Conformance", () => {
       },
       {
         objectType: "assignment_d4l",
-        objectId: "a2",
+        objectId: uuid("a2"),
         relation: "section",
         subjectType: "section_d4l",
-        subjectId: "sec1",
+        subjectId: uuid("sec1"),
       },
       {
         objectType: "assignment_d4l",
-        objectId: "a2",
+        objectId: uuid("a2"),
         relation: "conflicted",
         subjectType: "user_d4l",
-        subjectId: "tina",
+        subjectId: uuid("tina"),
       },
       {
         objectType: "submission_d4l",
-        objectId: "s1",
+        objectId: uuid("s1"),
         relation: "assignment",
         subjectType: "assignment_d4l",
-        subjectId: "a1",
+        subjectId: uuid("a1"),
       },
       {
         objectType: "submission_d4l",
-        objectId: "s1",
+        objectId: uuid("s1"),
         relation: "author",
         subjectType: "user_d4l",
-        subjectId: "sam",
+        subjectId: uuid("sam"),
       },
       {
         objectType: "submission_d4l",
-        objectId: "s1",
+        objectId: uuid("s1"),
         relation: "peer_reviewer",
         subjectType: "user_d4l",
-        subjectId: "sue",
+        subjectId: uuid("sue"),
         conditionName: "review_window_d4l",
         conditionContext: REVIEW_WINDOW,
       },
       {
         objectType: "submission_d4l",
-        objectId: "s1",
+        objectId: uuid("s1"),
         relation: "peer_of",
         subjectType: "submission_d4l",
-        subjectId: "s2",
+        subjectId: uuid("s2"),
       },
       {
         objectType: "submission_d4l",
-        objectId: "s2",
+        objectId: uuid("s2"),
         relation: "assignment",
         subjectType: "assignment_d4l",
-        subjectId: "a1",
+        subjectId: uuid("a1"),
       },
       {
         objectType: "submission_d4l",
-        objectId: "s2",
+        objectId: uuid("s2"),
         relation: "author",
         subjectType: "user_d4l",
-        subjectId: "zoe",
+        subjectId: uuid("zoe"),
       },
       {
         objectType: "submission_d4l",
-        objectId: "s2",
+        objectId: uuid("s2"),
         relation: "peer_of",
         subjectType: "submission_d4l",
-        subjectId: "s1",
+        subjectId: uuid("s1"),
       },
       {
         objectType: "submission_d4l",
-        objectId: "s3",
+        objectId: uuid("s3"),
         relation: "assignment",
         subjectType: "assignment_d4l",
-        subjectId: "a2",
+        subjectId: uuid("a2"),
       },
       {
         objectType: "submission_d4l",
-        objectId: "s3",
+        objectId: uuid("s3"),
         relation: "author",
         subjectType: "user_d4l",
-        subjectId: "sam",
+        subjectId: uuid("sam"),
       },
       {
         objectType: "submission_d4l",
-        objectId: "s3",
+        objectId: uuid("s3"),
         relation: "muted",
         subjectType: "user_d4l",
         subjectId: "*",
@@ -561,7 +594,12 @@ describe("LMS Model Conformance", () => {
     storeId = await fgaCreateStore("d4-lms");
     fgaClient = new OpenFgaClient({ apiUrl: process.env.FGA_API_URL, storeId });
     authorizationModelId = await fgaWriteModel(storeId, "./d4-lms/model.dsl");
-    await fgaWriteTuples(storeId, "./d4-lms/tuples.yaml", authorizationModelId);
+    await fgaWriteTuples(
+      storeId,
+      "./d4-lms/tuples.yaml",
+      authorizationModelId,
+      uuidMap,
+    );
   });
 
   afterAll(async () => {
@@ -771,10 +809,10 @@ describe("LMS Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "section_d4l",
-          objectId: "sec1",
+          objectId: uuid("sec1"),
           relation: "student",
           subjectType: "user_d4l",
-          subjectId: "zed",
+          subjectId: uuid("zed"),
         },
       ],
     });
@@ -786,10 +824,10 @@ describe("LMS Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "group_d4l",
-          objectId: "g_ta",
+          objectId: uuid("g_ta"),
           relation: "member",
           subjectType: "user_d4l",
-          subjectId: "zed",
+          subjectId: uuid("zed"),
         },
       ],
     });
@@ -798,10 +836,10 @@ describe("LMS Model Conformance", () => {
   test("32: a conditioned contextual review row answers on the clock", async () => {
     const tuple: AddTupleRequest = {
       objectType: "submission_d4l",
-      objectId: "s3",
+      objectId: uuid("s3"),
       relation: "peer_reviewer",
       subjectType: "user_d4l",
-      subjectId: "zed",
+      subjectId: uuid("zed"),
       conditionName: "review_window_d4l",
       conditionContext: REVIEW_WINDOW,
     };
@@ -820,7 +858,7 @@ describe("LMS Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "section_d4l",
-          objectId: "sec1",
+          objectId: uuid("sec1"),
           relation: "blocked",
           subjectType: "user_d4l",
           subjectId: "*",
@@ -838,7 +876,7 @@ describe("LMS Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "submission_d4l",
-          objectId: "s3",
+          objectId: uuid("s3"),
           relation: "muted",
           subjectType: "user_d4l",
           subjectId: "*",
@@ -853,10 +891,10 @@ describe("LMS Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "submission_d4l",
-          objectId: "s3",
+          objectId: uuid("s3"),
           relation: "peer_of",
           subjectType: "submission_d4l",
-          subjectId: "s2",
+          subjectId: uuid("s2"),
         },
       ],
     });
@@ -865,10 +903,10 @@ describe("LMS Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "submission_d4l",
-          objectId: "s3",
+          objectId: uuid("s3"),
           relation: "peer_of",
           subjectType: "submission_d4l",
-          subjectId: "s2",
+          subjectId: uuid("s2"),
         },
       ],
     });
@@ -879,7 +917,7 @@ describe("LMS Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "submission_d4l",
-          objectId: "s1",
+          objectId: uuid("s1"),
           relation: "author",
           subjectType: "user_d4l",
           subjectId: "*",
@@ -899,9 +937,9 @@ describe("LMS Model Conformance", () => {
         objectType: "submission_d4l",
         relation: "can_view",
         subjectType: "user_d4l",
-        subjectId: "tina",
+        subjectId: uuid("tina"),
       },
-      ["s1", "s2"],
+      [uuid("s1"), uuid("s2")],
     );
   });
 
@@ -914,9 +952,9 @@ describe("LMS Model Conformance", () => {
         objectType: "submission_d4l",
         relation: "can_view",
         subjectType: "user_d4l",
-        subjectId: "zoe",
+        subjectId: uuid("zoe"),
       },
-      ["s1", "s2"],
+      [uuid("s1"), uuid("s2")],
     );
   });
 
@@ -929,7 +967,7 @@ describe("LMS Model Conformance", () => {
         objectType: "submission_d4l",
         relation: "can_view",
         subjectType: "user_d4l",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       [],
     );
@@ -944,10 +982,10 @@ describe("LMS Model Conformance", () => {
         objectType: "assignment_d4l",
         relation: "can_view",
         subjectType: "user_d4l",
-        subjectId: "sam",
+        subjectId: uuid("sam"),
         context: IN_REVIEW,
       },
-      ["a1"],
+      [uuid("a1")],
     );
     await expectListObjectsConformance(
       storeId,
@@ -957,7 +995,7 @@ describe("LMS Model Conformance", () => {
         objectType: "assignment_d4l",
         relation: "can_view",
         subjectType: "user_d4l",
-        subjectId: "sam",
+        subjectId: uuid("sam"),
         context: BEFORE_RELEASE,
       },
       [],
@@ -973,10 +1011,10 @@ describe("LMS Model Conformance", () => {
         objectType: "section_d4l",
         relation: "can_view",
         subjectType: "user_d4l",
-        subjectId: "zoe",
+        subjectId: uuid("zoe"),
         context: GOOD_CODE,
       },
-      ["sec1"],
+      [uuid("sec1")],
     );
     await expectListObjectsConformance(
       storeId,
@@ -986,7 +1024,7 @@ describe("LMS Model Conformance", () => {
         objectType: "section_d4l",
         relation: "can_view",
         subjectType: "user_d4l",
-        subjectId: "zoe",
+        subjectId: uuid("zoe"),
         context: BAD_CODE,
       },
       [],
@@ -1002,25 +1040,25 @@ describe("LMS Model Conformance", () => {
         objectType: "section_d4l",
         relation: "can_view",
         subjectType: "user_d4l",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
         contextualTuples: [
           {
             objectType: "section_d4l",
-            objectId: "sec1",
+            objectId: uuid("sec1"),
             relation: "student",
             subjectType: "user_d4l",
-            subjectId: "zed",
+            subjectId: uuid("zed"),
           },
           {
             objectType: "section_d4l",
-            objectId: "sec2",
+            objectId: uuid("sec2"),
             relation: "student",
             subjectType: "user_d4l",
-            subjectId: "zed",
+            subjectId: uuid("zed"),
           },
         ],
       },
-      ["sec1"],
+      [uuid("sec1")],
     );
   });
 
@@ -1033,9 +1071,9 @@ describe("LMS Model Conformance", () => {
         objectType: "submission_d4l",
         relation: "can_comment",
         subjectType: "user_d4l",
-        subjectId: "sam",
+        subjectId: uuid("sam"),
       },
-      ["s1", "s2"],
+      [uuid("s1"), uuid("s2")],
     );
   });
 
@@ -1045,63 +1083,63 @@ describe("LMS Model Conformance", () => {
     const items = [
       {
         objectType: "submission_d4l",
-        objectId: "s1",
+        objectId: uuid("s1"),
         relation: "can_view",
         subjectType: "user_d4l",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
       },
       {
         objectType: "submission_d4l",
-        objectId: "s1",
+        objectId: uuid("s1"),
         relation: "can_view",
         subjectType: "user_d4l",
-        subjectId: "sue",
+        subjectId: uuid("sue"),
         context: IN_REVIEW,
       },
       {
         objectType: "submission_d4l",
-        objectId: "s1",
+        objectId: uuid("s1"),
         relation: "can_view",
         subjectType: "user_d4l",
-        subjectId: "sue",
+        subjectId: uuid("sue"),
         context: AFTER_REVIEW,
       },
       {
         objectType: "assignment_d4l",
-        objectId: "a1",
+        objectId: uuid("a1"),
         relation: "can_view",
         subjectType: "user_d4l",
-        subjectId: "sam",
+        subjectId: uuid("sam"),
         context: BEFORE_RELEASE,
       },
       {
         objectType: "section_d4l",
-        objectId: "sec1",
+        objectId: uuid("sec1"),
         relation: "can_view",
         subjectType: "user_d4l",
-        subjectId: "zoe",
+        subjectId: uuid("zoe"),
         context: GOOD_CODE,
       },
       {
         objectType: "section_d4l",
-        objectId: "sec1",
+        objectId: uuid("sec1"),
         relation: "can_view",
         subjectType: "user_d4l",
-        subjectId: "zoe",
+        subjectId: uuid("zoe"),
       },
       {
         objectType: "submission_d4l",
-        objectId: "s3",
+        objectId: uuid("s3"),
         relation: "can_comment",
         subjectType: "user_d4l",
-        subjectId: "sam",
+        subjectId: uuid("sam"),
       },
       {
         objectType: "assignment_d4l",
-        objectId: "a2",
+        objectId: uuid("a2"),
         relation: "can_grade",
         subjectType: "user_d4l",
-        subjectId: "tina",
+        subjectId: uuid("tina"),
       },
     ];
     const [ours, theirs] = await Promise.all([
@@ -1136,7 +1174,7 @@ describe("LMS Model Conformance", () => {
       tsfga,
       {
         objectType: "assignment_d4l",
-        objectId: "a2",
+        objectId: uuid("a2"),
         relation: "published",
         subjectType: "user_d4l",
         subjectId: "*",
@@ -1149,10 +1187,10 @@ describe("LMS Model Conformance", () => {
       tsfga,
       {
         objectType: "assignment_d4l",
-        objectId: "a2",
+        objectId: uuid("a2"),
         relation: "published",
         subjectType: "user_d4l",
-        subjectId: "zed",
+        subjectId: uuid("zed"),
         conditionName: "after_release_d4l",
         conditionContext: { release_at: RELEASE_AT },
       },
@@ -1164,7 +1202,7 @@ describe("LMS Model Conformance", () => {
       tsfga,
       {
         objectType: "assignment_d4l",
-        objectId: "a2",
+        objectId: uuid("a2"),
         relation: "published",
         subjectType: "user_d4l",
         subjectId: "*",
@@ -1182,10 +1220,10 @@ describe("LMS Model Conformance", () => {
       tsfga,
       {
         objectType: "section_d4l",
-        objectId: "sec1",
+        objectId: uuid("sec1"),
         relation: "student",
         subjectType: "user_d4l",
-        subjectId: "yara",
+        subjectId: uuid("yara"),
       },
       "accepted",
     );
@@ -1195,10 +1233,10 @@ describe("LMS Model Conformance", () => {
       tsfga,
       {
         objectType: "section_d4l",
-        objectId: "sec1",
+        objectId: uuid("sec1"),
         relation: "student",
         subjectType: "user_d4l",
-        subjectId: "yara",
+        subjectId: uuid("yara"),
         conditionName: "review_window_d4l",
         conditionContext: REVIEW_WINDOW,
       },
@@ -1213,10 +1251,10 @@ describe("LMS Model Conformance", () => {
       tsfga,
       {
         objectType: "submission_d4l",
-        objectId: "s3",
+        objectId: uuid("s3"),
         relation: "peer_reviewer",
         subjectType: "user_d4l",
-        subjectId: "yara",
+        subjectId: uuid("yara"),
       },
       "refused",
     );
@@ -1229,10 +1267,10 @@ describe("LMS Model Conformance", () => {
       tsfga,
       {
         objectType: "assignment_d4l",
-        objectId: "a2",
+        objectId: uuid("a2"),
         relation: "section",
         subjectType: "course_d4l",
-        subjectId: "c1",
+        subjectId: uuid("c1"),
       },
       "refused",
     );
@@ -1245,10 +1283,10 @@ describe("LMS Model Conformance", () => {
       tsfga,
       {
         objectType: "course_d4l",
-        objectId: "c1",
+        objectId: uuid("c1"),
         relation: "student",
         subjectType: "group_d4l",
-        subjectId: "g_ta",
+        subjectId: uuid("g_ta"),
         subjectRelation: "member",
       },
       "accepted",
@@ -1259,10 +1297,10 @@ describe("LMS Model Conformance", () => {
       tsfga,
       {
         objectType: "section_d4l",
-        objectId: "sec1",
+        objectId: uuid("sec1"),
         relation: "ta",
         subjectType: "group_d4l",
-        subjectId: "g_ta",
+        subjectId: uuid("g_ta"),
         subjectRelation: "member",
       },
       "refused",
@@ -1276,10 +1314,10 @@ describe("LMS Model Conformance", () => {
       tsfga,
       {
         objectType: "course_d4l",
-        objectId: "c1",
+        objectId: uuid("c1"),
         relation: "participant",
         subjectType: "user_d4l",
-        subjectId: "yara",
+        subjectId: uuid("yara"),
       },
       "refused",
     );
@@ -1289,10 +1327,10 @@ describe("LMS Model Conformance", () => {
       tsfga,
       {
         objectType: "submission_d4l",
-        objectId: "s1",
+        objectId: uuid("s1"),
         relation: "can_comment",
         subjectType: "user_d4l",
-        subjectId: "yara",
+        subjectId: uuid("yara"),
       },
       "refused",
     );
@@ -1311,10 +1349,10 @@ describe("LMS Model Conformance", () => {
   test("52: revoking the withdrawal gives sue the section back", async () => {
     await revoke({
       objectType: "course_d4l",
-      objectId: "c1",
+      objectId: uuid("c1"),
       relation: "withdrawn",
       subjectType: "user_d4l",
-      subjectId: "sue",
+      subjectId: uuid("sue"),
     });
     await can("course_d4l", "c1", "participant", "sue", true);
     await can("section_d4l", "sec1", "can_view", "sue", true);
@@ -1323,10 +1361,10 @@ describe("LMS Model Conformance", () => {
   test("53: revoking the peer link breaks the cycle in one direction", async () => {
     await revoke({
       objectType: "submission_d4l",
-      objectId: "s1",
+      objectId: uuid("s1"),
       relation: "peer_of",
       subjectType: "submission_d4l",
-      subjectId: "s2",
+      subjectId: uuid("s2"),
     });
     await can("submission_d4l", "s1", "can_view", "zoe", false);
     await can("submission_d4l", "s2", "can_view", "sam", true);
@@ -1335,10 +1373,10 @@ describe("LMS Model Conformance", () => {
   test("54: revoking the conflict lets the TA grade again", async () => {
     await revoke({
       objectType: "assignment_d4l",
-      objectId: "a2",
+      objectId: uuid("a2"),
       relation: "conflicted",
       subjectType: "user_d4l",
-      subjectId: "tina",
+      subjectId: uuid("tina"),
     });
     await can("assignment_d4l", "a2", "can_grade", "tina", true);
     await can("submission_d4l", "s3", "can_view", "tina", true);
@@ -1347,10 +1385,10 @@ describe("LMS Model Conformance", () => {
   test("55: revoking the userset edge cuts the TA off the course", async () => {
     await revoke({
       objectType: "course_d4l",
-      objectId: "c1",
+      objectId: uuid("c1"),
       relation: "ta",
       subjectType: "group_d4l",
-      subjectId: "g_ta",
+      subjectId: uuid("g_ta"),
       subjectRelation: "member",
     });
     await can("section_d4l", "sec1", "ta", "tina", false);
