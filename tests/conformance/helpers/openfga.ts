@@ -175,6 +175,23 @@ export interface FgaContextualTuple {
   user: string;
   relation: string;
   object: string;
+  /**
+   * Carried for the same reason `writeOneTuple` carries it: a
+   * contextual tuple is admitted by the type restriction that
+   * names its condition, and then evaluated. Dropping it asks
+   * OpenFGA about a *different* tuple.
+   *
+   * Both directions are wrong, and the second is the dangerous
+   * one. On `[user with cond]` the stripped tuple is not admitted
+   * at all, so upstream refuses a request it would have answered
+   * and the suite reports a divergence the engines do not have.
+   * But on a relation admitting `[user, user with cond]` the
+   * stripped tuple *is* admitted, unconditionally -- upstream
+   * answers `true` without ever evaluating the condition and
+   * agrees with tsfga for the wrong reason, passing an assertion
+   * that tested nothing.
+   */
+  condition?: { name: string; context?: Record<string, unknown> };
 }
 
 export interface FgaCheckParams {

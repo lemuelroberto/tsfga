@@ -12,7 +12,6 @@ import type { DB } from "@tsfga/kysely";
 import { KyselyTupleStore } from "@tsfga/kysely";
 import type { Kysely } from "kysely";
 import {
-  type CheckOutcome,
   expectConfigsMatchModel,
   expectConformance,
   type FixtureRecord,
@@ -165,44 +164,6 @@ describe("Contextual Tuple Conformance", () => {
     await destroyDb();
   });
 
-  /**
-   * As `expectConformance`, but carrying each contextual tuple's
-   * condition through to OpenFGA.
-   *
-   * The shared helper drops it — see GAP-171 — so a conditional
-   * contextual tuple cannot be asserted with it. Local rather than
-   * a helper edit because the helpers belong to the whole suite.
-   */
-  async function expectConditionalConformance(
-    params: CheckRequest,
-    expected: CheckOutcome,
-  ): Promise<void> {
-    const [tsfgaResult, openFgaResult] = await Promise.all([
-      tsfgaClient
-        .check(params)
-        .then((allowed): CheckOutcome => allowed)
-        .catch((error: unknown): CheckOutcome => {
-          if (error instanceof TsfgaError) return "refused";
-          throw error;
-        }),
-      sdk()
-        .check(
-          {
-            user: `${params.subjectType}:${params.subjectId}`,
-            relation: params.relation,
-            object: `${params.objectType}:${params.objectId}`,
-            context: params.context,
-            contextualTuples: params.contextualTuples?.map(raw),
-          },
-          { authorizationModelId: modelId },
-        )
-        .then((r): CheckOutcome => r.allowed ?? false)
-        .catch((): CheckOutcome => "refused"),
-    ]);
-    expect(tsfgaResult).toBe(openFgaResult);
-    expect(tsfgaResult).toBe(expected);
-  }
-
   const root: CheckRequest = {
     objectType: "cdoc_a8",
     objectId: id(0),
@@ -324,21 +285,16 @@ describe("Contextual Tuple Conformance", () => {
     });
 
     test("granted when the request context satisfies it", async () => {
-      await expectConditionalConformance(conditional(10), true);
+      await expectConformance(
+        storeId,
+        modelId,
+        tsfgaClient,
+        conditional(10),
+        true,
+      );
     });
 
     test("denied when it does not", async () => {
-      await expectConditionalConformance(conditional(1), false);
-    });
-
-    /**
-     * The same request through the shared helper. It sends the
-     * tuple unconditionally, which the model does not admit, so
-     * OpenFGA refuses the request while tsfga evaluates the
-     * condition and answers `false` — a divergence the two engines
-     * do not actually have.
-     */
-    test("GAP-171: the shared helper drops the condition", async () => {
       await expectConformance(
         storeId,
         modelId,
@@ -420,7 +376,10 @@ describe("Contextual Tuple Conformance", () => {
     });
 
     test("a condition name the model does not define", async () => {
-      await expectConditionalConformance(
+      await expectConformance(
+        storeId,
+        modelId,
+        tsfgaClient,
         {
           objectType: "kdoc_a8",
           objectId: id(43),

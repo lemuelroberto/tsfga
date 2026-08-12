@@ -10,7 +10,12 @@ import {
   TsfgaError,
   type TypeRestriction,
 } from "@tsfga/core";
-import { fgaCheck, fgaListObjects, fgaWrite } from "./openfga.ts";
+import {
+  type FgaContextualTuple,
+  fgaCheck,
+  fgaListObjects,
+  fgaWrite,
+} from "./openfga.ts";
 
 /**
  * What a check may do: answer, or decline to answer.
@@ -84,18 +89,29 @@ export async function expectPinnedDivergence(
   expect(tsfgaResult).toBe(expected.tsfga);
 }
 
-/** A tuple as OpenFGA's contextual-tuple field spells it. */
-function asFgaTuple(tuple: AddTupleRequest): {
-  user: string;
-  relation: string;
-  object: string;
-} {
+/**
+ * A tuple as OpenFGA's contextual-tuple field spells it.
+ *
+ * The condition travels with it. See `FgaContextualTuple` for why
+ * dropping it fabricates agreements as readily as divergences.
+ */
+function asFgaTuple(tuple: AddTupleRequest): FgaContextualTuple {
   return {
     user: tuple.subjectRelation
       ? `${tuple.subjectType}:${tuple.subjectId}#${tuple.subjectRelation}`
       : `${tuple.subjectType}:${tuple.subjectId}`,
     relation: tuple.relation,
     object: `${tuple.objectType}:${tuple.objectId}`,
+    ...(tuple.conditionName
+      ? {
+          condition: {
+            name: tuple.conditionName,
+            ...(tuple.conditionContext
+              ? { context: tuple.conditionContext }
+              : {}),
+          },
+        }
+      : {}),
   };
 }
 
@@ -178,6 +194,76 @@ export async function expectListObjectsConformance(
   const tsfgaResult = [...tsfgaObjects].sort();
   expect(tsfgaResult).toEqual([...openFgaObjects].sort());
   expect(tsfgaResult).toEqual([...expected].sort());
+}
+
+/**
+ * What a `listObjects` call may do: reach a set of objects, or
+ * decline to answer.
+ *
+ * The refusal is not an error the caller can route around: both
+ * engines abort the whole call rather than return a partial set,
+ * so a refusal costs every object, including the ones inside the
+ * budget that both engines agree on.
+ */
+export type ListObjectsOutcome = readonly string[] | "refused";
+
+/**
+ * Pin a `listObjects` divergence: assert what **each** engine
+ * does, knowing they differ.
+ *
+ * The counterpart to `expectPinnedDivergence`, and it exists for
+ * the same reason: the depth boundary is documented as a known
+ * divergence, and a documented divergence nothing asserts is
+ * indistinguishable from one nobody has noticed.
+ *
+ * Refuses to pass on agreement, so a pinned cell that has stopped
+ * diverging fails and gets rewritten as `expectListObjects-
+ * Conformance` rather than quietly passing forever.
+ */
+export async function expectPinnedListObjectsDivergence(
+  storeId: string,
+  authorizationModelId: string,
+  tsfgaClient: TsfgaClient,
+  params: ListObjectsParams,
+  expected: { openfga: ListObjectsOutcome; tsfga: ListObjectsOutcome },
+): Promise<void> {
+  expect(describeOutcome(expected.openfga)).not.toBe(
+    describeOutcome(expected.tsfga),
+  );
+
+  const [tsfgaOutcome, openFgaOutcome] = await Promise.all([
+    tsfgaClient
+      .listObjects(params)
+      .then((objects): ListObjectsOutcome => [...objects].sort())
+      .catch((error: unknown): ListObjectsOutcome => {
+        // Only tsfga's own refusal counts. Anything else is a
+        // broken fixture reported as a pinned divergence.
+        if (error instanceof TsfgaError) return "refused";
+        throw error;
+      }),
+    fgaListObjects(storeId, authorizationModelId, {
+      ...params,
+      contextualTuples: params.contextualTuples?.map(asFgaTuple),
+    })
+      .then((objects): ListObjectsOutcome => [...objects].sort())
+      .catch((): ListObjectsOutcome => "refused"),
+  ]);
+
+  expect(describeOutcome(openFgaOutcome)).toBe(
+    describeOutcome(normalise(expected.openfga)),
+  );
+  expect(describeOutcome(tsfgaOutcome)).toBe(
+    describeOutcome(normalise(expected.tsfga)),
+  );
+}
+
+function normalise(outcome: ListObjectsOutcome): ListObjectsOutcome {
+  return outcome === "refused" ? outcome : [...outcome].sort();
+}
+
+/** Compared as one string so a set and a refusal are comparable. */
+function describeOutcome(outcome: ListObjectsOutcome): string {
+  return outcome === "refused" ? "refused" : JSON.stringify(outcome);
 }
 
 /**
