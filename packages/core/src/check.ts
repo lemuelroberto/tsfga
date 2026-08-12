@@ -16,6 +16,7 @@ import {
   subjectShape,
   validateTupleWrite,
 } from "./tuple-validation.ts";
+import { createReachability, type Reachability } from "./type-graph.ts";
 import type {
   AddTupleRequest,
   CheckOptions,
@@ -375,6 +376,18 @@ export interface CheckScope {
   readonly maxBreadth: number;
   readonly memo: NodeMemo;
   readonly inflight: NodeMap<InflightEntry>;
+  /**
+   * The model-shape prune, memoized for the life of the scope so a
+   * whole `listObjects` or `checkMany` pays for each backward walk
+   * once. Scope-lived rather than process-lived: a model that
+   * changes between requests is then picked up.
+   *
+   * Deliberately built over the scope's *caching* store and kept
+   * even when a request overlays contextual tuples: contextual
+   * tuples are validated against the same relation configs, so they
+   * cannot introduce an edge the model does not already admit.
+   */
+  readonly reachability: Reachability;
 }
 
 /**
@@ -488,18 +501,21 @@ export function createCheckScope(
     );
   }
 
+  // Cache for relation configs and condition definitions: static
+  // per model, but read at every node. A store that already caches
+  // is passed through: `checkMany` builds a scope per context group
+  // and they share one config cache, which a second wrapper would
+  // silently split in two.
+  const caching =
+    store instanceof CachingTupleStore ? store : new CachingTupleStore(store);
+
   return {
-    // Cache for relation configs and condition definitions: static
-    // per model, but read at every node. A store that already
-    // caches is passed through: `checkMany` builds a scope per
-    // context group and they share one config cache, which a second
-    // wrapper would silently split in two.
-    store:
-      store instanceof CachingTupleStore ? store : new CachingTupleStore(store),
+    store: caching,
     maxDepth: options.maxDepth ?? 25,
     maxBreadth,
     memo: new Map(),
     inflight: new Map(),
+    reachability: createReachability(caching, maxBreadth),
   };
 }
 
@@ -778,6 +794,62 @@ async function resolveNode(
   // and that row was then narrowed against nothing and granted.
   if (config === null) {
     throw new RelationConfigNotFoundError(request.objectType, request.relation);
+  }
+
+  // The model-shape prune. Upstream consults the type graph at
+  // **every** node, before resolving the rewrite:
+  //
+  //   hasPath, err := typesys.PathExists(user, relation, objectType)
+  //   if !hasPath { return &ResolveCheckResponse{Allowed: false}, nil }
+  //
+  // Narrowing at the node it is standing on — this relation's own
+  // `directlyAssignable` — is not the same question. `via_ring:
+  // [ring#member]` admits the row it is holding; what it cannot
+  // say is that `ring#member` takes its entrypoint from a type the
+  // subject is not, so no subject of this type reaches the far end
+  // whatever the data says. Walking that subtree anyway made
+  // whatever it ran into the answer: an unevaluable condition, the
+  // depth budget, or a cycle whose indeterminacy then *denied* on
+  // the subtract side of a `but not` — the one of the three that is
+  // wrong in the granting direction.
+  //
+  // Two properties of the returned value are load-bearing:
+  //
+  // - it is the **unflagged** `DENIED`, never `CYCLE`. The prune is
+  //   a definitive answer read off the model, not a truncation, and
+  //   an exclusion's subtrahend reads the two differently.
+  // - it comes **after** the missing-config raise above, so a
+  //   relation the model does not define is still refused rather
+  //   than pruned to `false`.
+  //
+  // It sits before `readNodeTuples`, so a pruned node issues no
+  // tuple read at all — the point of upstream's placement. The
+  // synchronous form is tried first and answers for every node a
+  // walk has already settled, which after the first check of a
+  // scope is nearly all of them; only a genuinely cold node awaits.
+  // That matters beyond speed: an extra await here reorders the
+  // node's read against its siblings', and which branch of a union
+  // reads first decides which one wins a race.
+  const subject = { type: request.subjectType };
+  let reachable = scope.reachability.settledReaches(
+    subject,
+    request.objectType,
+    request.relation,
+  );
+  if (reachable === undefined) {
+    reachable = await scope.reachability.reaches(
+      subject,
+      request.objectType,
+      request.relation,
+    );
+    // A cold walk is an await a sibling branch can win inside, so
+    // the abandonment checkpoint is re-taken on the way out.
+    if (frame.branch.abandoned) {
+      throw new BranchAbandoned();
+    }
+  }
+  if (!reachable) {
+    return DENIED;
   }
 
   // Some paths never await the batch (config error, or an
@@ -1184,24 +1256,39 @@ async function checkBase(
     );
   }
 
-  // Step 5: Tuple-to-userset composite handler. Like step 2 this
-  // moves to another object, so each child costs one depth.
+  // Step 5: Tuple-to-userset. Like step 2 this moves to another
+  // object, so each child costs one depth.
+  //
+  // **One handler per entry, not one for the array.** Upstream
+  // turns every child of a union into its own `CheckHandlerFunc`
+  // and `checkTTU` is one such child (`internal/graph/check.go`),
+  // so a `viewer from parent or viewer from owner` relation is two
+  // union branches. Batching the arms behind a single handler put
+  // their tupleset reads in one `Promise.all`: an arm whose
+  // tupleset rows carried an unevaluable condition rejected before
+  // any arm's dispatches were built, so it sank the arm beside it
+  // that granted. Now an arm's raise is just one branch's raise —
+  // a sibling grant wins, and the error propagates only when
+  // nothing granted.
+  //
+  // `raiseUnlessOneHeld` stays scoped to one tupleset read inside
+  // `resolveTupleset`, which is exactly upstream's
+  // `ConditionsFilteredTupleKeyIterator` scope: per `checkTTU`
+  // call, not per relation.
   if (config.tupleToUserset) {
-    const ttuEntries = config.tupleToUserset;
-    handlers.push(async (branch) => {
-      if (branch.abandoned) throw new BranchAbandoned();
-      // Batch all tupleset lookups. Each returns only the rows
-      // the tupleset relation admits whose condition holds.
-      const linkedResults = await Promise.all(
-        ttuEntries.map(({ tupleset, computedUserset }) =>
-          resolveTupleset(store, request, tupleset, computedUserset),
-        ),
-      );
+    for (const { tupleset, computedUserset } of config.tupleToUserset) {
+      handlers.push(async (branch) => {
+        if (branch.abandoned) throw new BranchAbandoned();
+        // Only the rows this arm's tupleset relation admits whose
+        // condition holds.
+        const linkedTuples = await resolveTupleset(
+          store,
+          request,
+          tupleset,
+          computedUserset,
+        );
 
-      // Collect all linked-tuple check handlers
-      const ttuHandlers: Handler[] = [];
-      for (const [i, { computedUserset }] of ttuEntries.entries()) {
-        const linkedTuples = linkedResults[i] ?? [];
+        const ttuHandlers: Handler[] = [];
         for (const linked of linkedTuples) {
           ttuHandlers.push((child) =>
             checkNode(
@@ -1220,10 +1307,10 @@ async function checkBase(
             ),
           );
         }
-      }
 
-      return resolveUnion(ttuHandlers, maxBreadth, branch);
-    });
+        return resolveUnion(ttuHandlers, maxBreadth, branch);
+      });
+    }
   }
 
   // A rejection from any other handler still wins: `resolveUnion`
