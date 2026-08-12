@@ -102,6 +102,30 @@ Consumers on `@tsfga/core` 0.5.x and `@tsfga/kysely` 0.4.x should
 plan this as a coordinated deploy: the new adapter cannot read the
 old columns, and the old adapter cannot read the new one.
 
+### 006-subject-id-text must be applied
+
+This migration widens `tsfga.tuples.subject_id` from `uuid` to
+`text` and deletes the nil-UUID wildcard encoding: `"*"` is now
+stored literally.
+
+It fixes a grant to everybody. A tuple written for a real subject
+whose ID was `00000000-0000-0000-0000-000000000000` landed in the
+wildcard's slot — it read back as `"*"`, granted every subject of
+its type on any relation admitting `type:*`, and stopped matching
+the subject it was written for. OpenFGA reserves no ID; only the
+literal `*` is a wildcard.
+
+A database on `005` needs `006` applied before this adapter reads
+it correctly, and the previous adapter against a `006` database
+writes wildcards it can no longer find — so this is a coordinated
+deploy too.
+
+**Rolling `006` back is lossy by construction.** `text` admits IDs
+`uuid` cannot, `"*"` among them. `down` casts and lets PostgreSQL
+refuse, naming the offending row; rows with non-UUID subject IDs
+must be deleted or rewritten deliberately first. `object_id` is
+unchanged.
+
 ## Transactions
 
 `KyselyTupleStore` takes a `Kysely<DB>` it does not own, and
@@ -164,14 +188,15 @@ Postgres datastore, never on its storage interface.
 
 ## Subject IDs and wildcards
 
-All object and subject IDs are stored in `uuid` columns, so
-callers must pass UUID-formatted strings. The one exception is
-the public wildcard subject `"*"` ("all subjects"), which the
-adapter stores internally as the nil UUID
-`00000000-0000-0000-0000-000000000000` and maps back to `"*"` on
-every read. The nil UUID is therefore reserved: never use it as
-the ID of a real subject, or its tuples will be indistinguishable
-from wildcard grants.
+`object_id` is a `uuid` column, so object IDs must be
+UUID-formatted strings. `subject_id` is `text`: it holds the
+public wildcard subject `"*"` ("all subjects") as itself, and no
+subject ID is reserved. A grant to
+`user:00000000-0000-0000-0000-000000000000` names that one
+subject, exactly as it does upstream.
+
+Object IDs that are not UUIDs are still unsupported — a known
+divergence from OpenFGA, tracked separately.
 
 ## Schema
 
@@ -188,7 +213,7 @@ query the adapter actually issues:
 
 | Index | Columns | Serves |
 |---|---|---|
-| `idx_tuples_unique` | `(object_type, object_id, relation, subject_type, subject_id, COALESCE(subject_relation, ''))`, unique | The upsert's conflict target; also every probe, via its leading columns |
+| `idx_tuples_unique` | `(object_type, object_id, relation, subject_type, subject_id, COALESCE(subject_relation, ''))`, unique | The insert's conflict target; also every probe, via its leading columns |
 | `idx_tuples_object` | `(object_type, object_id)` | `findTuplesByRelation` |
 | `idx_tuples_userset` | `(object_type, object_id, relation)` where `subject_relation IS NOT NULL`, partial | The userset scan |
 | `idx_tuples_subject` | `(subject_type, subject_id)` | Reverse lookups by subject |
@@ -197,6 +222,15 @@ query the adapter actually issues:
 `idx_tuples_unique` and could in principle be dropped, but both
 are far narrower than it — a tenth of its size — so they fit more
 entries per page and measurably win the scans they serve.
+
+## How a write lands
+
+`insertTuple` inserts and reports: the conflict clause does
+nothing on a duplicate and the method returns `false`, so the
+stored row keeps the condition and the context it already had. It
+used to update the row in place. `TsfgaClient.addTuple` turns the
+`false` into `DuplicateTupleError`; the way to change a live
+grant's condition is `removeTuple` then `addTuple`.
 
 ## How a check reads
 
@@ -241,6 +275,33 @@ waiting on them, so a pool sized for the first column against a
 model shaped like the third turns concurrency into a queue and
 the latency win into its opposite. Lower `maxBreadth` if that is
 the trade you want — it is the same knob on both.
+
+**The reachability prune adds config reads, not width.** Core asks
+whether the subject's type can reach a node before resolving it,
+and answers from the relation configs — which means reading
+configs the resolution itself would never have asked for. Every
+read goes through the scope's config cache, so each
+`objectType#relation` costs at most one round trip per scope, and
+the walks are *serialized* within a scope: they lengthen a scope's
+read sequence without widening it. The width bound is still
+`maxBreadth` per node.
+
+Measured against `theopenlane`, the largest model in the suite at
+225 relation configs, one resolution scope's walk read 11 distinct
+configs at the smallest, 18 at the median and 192 at the largest.
+So a single `check()` against a large, densely cross-referenced
+model can turn ~10 config round trips into up to ~190 on its first
+node, and none afterwards. `listObjects` and `checkMany` amortise
+that across the whole call, which is where it is cheapest; a
+one-shot `check()` on a big model is where it is dearest — about
++18 % wall clock on the `theopenlane` conformance files against a
+warm database.
+
+A **userset** subject is cheaper per node, not dearer: both the
+direct and the wildcard probe are excluded rather than narrowed,
+so its node reads are strictly a subset of a concrete subject's.
+It adds one relation-config read per scope, for the subject's own
+relation, cached like every other.
 
 Inside a transaction the whole question dissolves: every store
 call runs on the transaction's one connection, so the peak is 1

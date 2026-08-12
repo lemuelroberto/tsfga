@@ -5,6 +5,60 @@ Notable changes to `@tsfga/kysely`. The format is based on
 follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor
 releases may contain breaking changes).
 
+## Unreleased
+
+### Changed
+
+- **BREAKING: `KyselyTupleStore.insertTuple` no longer updates an
+  existing row.** It returns `true` when a row was inserted and
+  `false` when the natural key already existed, leaving the stored
+  condition and context alone — core's `addTuple` turns the
+  `false` into `DuplicateTupleError`. The conflict clause is
+  `doNothing()` where it was `doUpdateSet(...)`.
+
+- **BREAKING: migration `006-subject-id-text`.**
+  `tsfga.tuples.subject_id` becomes `text`, and the wildcard `"*"`
+  is stored literally instead of being encoded as the nil UUID.
+
+  **This fixes a grant to everybody.** A tuple written for a real
+  subject whose ID was `00000000-0000-0000-0000-000000000000`
+  landed in the wildcard's slot: it read back as `"*"`, granted
+  every subject of its type on any relation admitting `type:*`,
+  and stopped matching the subject it was written for. OpenFGA
+  reserves no ID; only the literal `*` is a wildcard, and no
+  subject ID is reserved here now either.
+
+  **Consumers must run migrations.** A database on `005` needs
+  `006` applied before the new adapter reads it correctly, and the
+  old adapter against a `006` database writes wildcards it can no
+  longer find.
+
+  **Rolling `006` back is lossy by construction.** `text` admits
+  IDs `uuid` cannot, `"*"` among them; `down` casts and lets
+  PostgreSQL refuse, naming the offending row. Rows with non-UUID
+  subject IDs must be deleted or rewritten deliberately first.
+  `object_id` is unchanged and still `uuid`.
+
+- **The peer range on `@tsfga/core` must be raised to a floor
+  before this ships.** Core's next release changes `TupleStore`
+  semantics — `insertTuple` is insert-and-report, not upsert — so
+  per the cross-package rules this is the floor case, not the
+  ceiling one: the floor moves to the core release that carries
+  it, and this package takes a **minor**. The range is left at
+  `>=0.6.0 <0.7.0` in the repo because it cannot name a core
+  version that does not exist yet; it moves in the release PR,
+  together with the installation section of the README.
+
+### Documentation
+
+- The reachability prune core added is accounted for in the
+  pool-sizing section: it reads relation configs the resolution
+  would not have asked for — 11 to 192 distinct configs per scope
+  on a 225-relation model, about +18 % wall clock on a one-shot
+  check — through the same request-scoped cache, and serialized
+  within a scope, so it lengthens the read sequence without
+  widening it.
+
 ## 0.5.0 — 2026-08
 
 ### Changed
