@@ -10,6 +10,7 @@ import type { Kysely } from "kysely";
 import {
   expectConfigsMatchModel,
   expectConformance,
+  expectPinnedWriteDivergence,
   expectWriteConformance,
   type FixtureRecord,
   recordFixture,
@@ -35,11 +36,12 @@ import { fgaCreateStore, fgaWriteModel } from "./helpers/openfga.ts";
  *    window on each side of the limit where the engines disagree
  *    — in both directions.
  *
- * 2. Subject ids. `tsfga.tuples.subject_id` became `text` in
- *    migration 006, so ids that the `uuid` column used to reject
- *    at the driver are now writable. Upstream's `userIDRegex` is
- *    `^[^:#\s\x00\p{Cc}]+$`; tsfga's write path applies no id rule
- *    at all, which was unobservable while the column enforced one.
+ * 2. Subject ids. Upstream's `userIDRegex` is
+ *    `^[^:#\s\x00\p{Cc}]+$`, and tsfga's write path applies it —
+ *    so the ids below that both engines refuse are plain parity.
+ *    The two that upstream *accepts* are pinned capability
+ *    divergences: `café` and a 300-character id are ordinary
+ *    subjects there and this store holds canonical UUIDs only.
  */
 
 const ALICE = "00000000-0000-4000-d4a0-000000000001";
@@ -152,6 +154,19 @@ describe("Write Limits and Id Conformance", () => {
       tsfgaClient,
       tuple(overrides),
       expected,
+    );
+  }
+
+  /** Upstream accepts it; this store's id domain does not. */
+  async function expectPinnedWrite(
+    overrides: Partial<AddTupleRequest>,
+  ): Promise<void> {
+    await expectPinnedWriteDivergence(
+      storeId,
+      authorizationModelId,
+      tsfgaClient,
+      tuple(overrides),
+      { openfga: "accepted", tsfga: "refused" },
     );
   }
 
@@ -327,14 +342,20 @@ describe("Write Limits and Id Conformance", () => {
     );
   });
 
-  // --- subject ids, now that the column is text ------------------
+  // --- subject ids ------------------------------------------------
 
-  test("a unicode subject id is written", async () => {
-    await expectWrite({ subjectId: "café" }, "accepted");
+  // The two upstream accepts and this store cannot hold. They are
+  // ordinary subject ids there: non-empty, no control character,
+  // no `#`, `:` or space. `b6-id-domain.test.ts` carries the rest
+  // of the class, including the five UUID spellings a `uuid`
+  // column folds onto one row; these two stay here because this is
+  // where the id surface is enumerated.
+  test("a unicode subject id is refused", async () => {
+    await expectPinnedWrite({ subjectId: "café" });
   });
 
-  test("a long subject id is written", async () => {
-    await expectWrite({ subjectId: "x".repeat(300) }, "accepted");
+  test("a long subject id is refused", async () => {
+    await expectPinnedWrite({ subjectId: "x".repeat(300) });
   });
 
   test("GAP-243: an empty subject id is written", async () => {

@@ -9,7 +9,10 @@ import {
 import type { DB } from "@tsfga/kysely";
 import { KyselyTupleStore } from "@tsfga/kysely";
 import type { Kysely } from "kysely";
-import { expectDeleteConformance } from "./helpers/conformance.ts";
+import {
+  expectDeleteConformance,
+  expectPinnedDeleteDivergence,
+} from "./helpers/conformance.ts";
 import {
   beginTransaction,
   destroyDb,
@@ -43,11 +46,36 @@ import {
  * strand every row written under the old one, permanently. That
  * property is asserted at the end, across a real model change.
  *
- * Non-UUID identifiers throughout, deliberately. Six of the
- * fall-through rows are about characters — `:`, `#`, `@`, a
- * control character, `*`, empty — that a UUID cannot express at
- * all, so writing them as UUIDs would leave the negative
- * assertions vacuously true forever.
+ * **What `@tsfga/kysely`'s id domain did to this fixture, and what
+ * it did not.** Six of the fall-through rows are about characters
+ * — `:`, `#`, `@`, a control character, `*`, empty — that a
+ * canonical UUID cannot express at all, and a seventh is a subject
+ * id holding `#`. Every one of those is now refused by the id
+ * domain, one rule later than the delete gate. Rewriting them as
+ * UUIDs would leave the negative assertion vacuously true forever,
+ * which is the failure this fixture exists to avoid, so they are
+ * **pinned capability divergences** instead: still two-sided,
+ * still red if tsfga's refusal moves, and red the day upstream
+ * starts refusing them too. The guard is retired by the
+ * capability, not satisfied by it.
+ *
+ * Everything whose defect lives outside the id keeps its full
+ * meaning under a mechanical UUID substitution: the empty
+ * relation, `self`, an undefined relation, an undefined type, an
+ * unadmitted subject type, a userset naming a relation the type
+ * lacks, and the wildcard subject. Those are the rows that carry
+ * the property — a model change that drops a relation must not
+ * strand the rows written under it — and none of them moved.
+ *
+ * Two rows retired rather than converting. The 512-byte subject
+ * pair cannot be expressed at all here: the longest subject a
+ * canonical UUID renders is `user_e1d:` plus 36 characters, 45
+ * bytes. A pin would record tsfga refusing a non-UUID id for a
+ * reason unrelated to the bound. The bound is asserted at the
+ * core level, in `packages/core/tests/tuple-validation.test.ts`.
+ * The 256-rune object survives, because a delete runs no model
+ * validation at all and the length can move into the type name:
+ * 219 characters, a `:` and a 36-character UUID is exactly 256.
  */
 
 const TYPE = "doc_e1d";
@@ -142,13 +170,21 @@ const CONFIGS: RelationConfig[] = [
 
 const BELL = "";
 
+/** The fixture's well-formed ids. */
+const DOC1 = "00000000-0000-4000-e130-000000000001";
+const DOC2 = "00000000-0000-4000-e130-000000000002";
+const ALICE = "00000000-0000-4000-e130-000000000011";
+const BEA = "00000000-0000-4000-e130-000000000012";
+const ABSENT = "00000000-0000-4000-e130-000000000013";
+const TEAM1 = "00000000-0000-4000-e130-000000000021";
+
 function key(overrides: Partial<RemoveTupleRequest>): RemoveTupleRequest {
   return {
     objectType: TYPE,
-    objectId: "d1",
+    objectId: DOC1,
     relation: "viewer",
     subjectType: SUBJECT,
-    subjectId: "absent",
+    subjectId: ABSENT,
     ...overrides,
   };
 }
@@ -228,7 +264,7 @@ describe("Delete gate conformance", () => {
         storeId,
         modelId,
         tsfgaClient,
-        key({ subjectType: "", subjectId: "alice" }),
+        key({ subjectType: "", subjectId: ALICE }),
         "refused",
       );
     });
@@ -240,7 +276,7 @@ describe("Delete gate conformance", () => {
         storeId,
         modelId,
         tsfgaClient,
-        key({ subjectId: "alice", subjectRelation: "" }),
+        key({ subjectId: ALICE, subjectRelation: "" }),
         "refused",
       );
     });
@@ -265,7 +301,7 @@ describe("Delete gate conformance", () => {
         tsfgaClient,
         key({
           subjectType: TEAM,
-          subjectId: "t1",
+          subjectId: TEAM1,
           subjectRelation: "mem:ber",
         }),
         "refused",
@@ -279,7 +315,7 @@ describe("Delete gate conformance", () => {
         tsfgaClient,
         key({
           subjectType: TEAM,
-          subjectId: "t1",
+          subjectId: TEAM1,
           subjectRelation: "mem#ber",
         }),
         "refused",
@@ -293,7 +329,7 @@ describe("Delete gate conformance", () => {
         tsfgaClient,
         key({
           subjectType: TEAM,
-          subjectId: "t1",
+          subjectId: TEAM1,
           subjectRelation: "mem ber",
         }),
         "refused",
@@ -307,19 +343,9 @@ describe("Delete gate conformance", () => {
         tsfgaClient,
         key({
           subjectType: TEAM,
-          subjectId: "t1",
+          subjectId: TEAM1,
           subjectRelation: `mem${BELL}ber`,
         }),
-        "refused",
-      );
-    });
-
-    test("a rendered subject of 513 bytes", async () => {
-      await expectDeleteConformance(
-        storeId,
-        modelId,
-        tsfgaClient,
-        key({ subjectId: "a".repeat(513 - SUBJECT.length - 1) }),
         "refused",
       );
     });
@@ -329,7 +355,7 @@ describe("Delete gate conformance", () => {
         storeId,
         modelId,
         tsfgaClient,
-        key({ objectType: "t".repeat(220), objectId: "o".repeat(36) }),
+        key({ objectType: "t".repeat(220), objectId: DOC1 }),
         "refused",
       );
     });
@@ -363,76 +389,6 @@ describe("Delete gate conformance", () => {
    * request upstream performs.
    */
   describe("falls through to the row, and the row is absent", () => {
-    test("an object id holding a colon", async () => {
-      await expectDeleteConformance(
-        storeId,
-        modelId,
-        tsfgaClient,
-        key({ objectId: "a:b" }),
-        "missing",
-      );
-    });
-
-    test("an object id holding a hash", async () => {
-      await expectDeleteConformance(
-        storeId,
-        modelId,
-        tsfgaClient,
-        key({ objectId: "a#b" }),
-        "missing",
-      );
-    });
-
-    test("an object id holding an at sign", async () => {
-      await expectDeleteConformance(
-        storeId,
-        modelId,
-        tsfgaClient,
-        key({ objectId: "a@b" }),
-        "missing",
-      );
-    });
-
-    test("an object id holding a control character", async () => {
-      await expectDeleteConformance(
-        storeId,
-        modelId,
-        tsfgaClient,
-        key({ objectId: `a${BELL}b` }),
-        "missing",
-      );
-    });
-
-    test("an object id that is a typed wildcard", async () => {
-      await expectDeleteConformance(
-        storeId,
-        modelId,
-        tsfgaClient,
-        key({ objectId: "*" }),
-        "missing",
-      );
-    });
-
-    test("an empty object id", async () => {
-      await expectDeleteConformance(
-        storeId,
-        modelId,
-        tsfgaClient,
-        key({ objectId: "" }),
-        "missing",
-      );
-    });
-
-    test("a subject id holding a hash reads as a userset", async () => {
-      await expectDeleteConformance(
-        storeId,
-        modelId,
-        tsfgaClient,
-        key({ subjectId: "a#b" }),
-        "missing",
-      );
-    });
-
     test("an empty relation", async () => {
       // protovalidate patterns do not run on an empty field, so
       // the relation pattern does not apply and this falls
@@ -511,17 +467,7 @@ describe("Delete gate conformance", () => {
         storeId,
         modelId,
         tsfgaClient,
-        key({ subjectType: TEAM, subjectId: "t1", subjectRelation: "nosuch" }),
-        "missing",
-      );
-    });
-
-    test("a rendered subject of exactly 512 bytes", async () => {
-      await expectDeleteConformance(
-        storeId,
-        modelId,
-        tsfgaClient,
-        key({ subjectId: "a".repeat(512 - SUBJECT.length - 1) }),
+        key({ subjectType: TEAM, subjectId: TEAM1, subjectRelation: "nosuch" }),
         "missing",
       );
     });
@@ -533,10 +479,55 @@ describe("Delete gate conformance", () => {
         storeId,
         modelId,
         tsfgaClient,
-        key({ objectType: "t".repeat(219), objectId: "o".repeat(36) }),
+        key({ objectType: "t".repeat(219), objectId: DOC1 }),
         "missing",
       );
     });
+  });
+
+  /**
+   * Upstream reaches the row; this store refuses the id.
+   *
+   * These seven were fall-through rows — the guard that the delete
+   * gate is not the write gate — and every one of them is built on
+   * an id a canonical UUID cannot express, which is exactly what
+   * made them test anything. Under `@tsfga/kysely`'s id domain
+   * tsfga refuses them, one rule *after* the delete gate rather
+   * than inside it.
+   *
+   * So the guard changes shape and does not disappear. It still
+   * fails if someone re-widens the delete gate to the write
+   * validators, because the refusal would then arrive from the
+   * wrong rule and upstream's side of the pin would still say
+   * `missing`. And a pin refuses to pass on agreement: the day
+   * upstream starts refusing one of these too, this goes red and
+   * the row belongs back in the parity set above.
+   *
+   * Registered under `ID-DOMAIN-OUT-OF-DOMAIN` in
+   * `packages/core/capability-refusals.json`.
+   */
+  describe("upstream reaches the row and the id domain refuses", () => {
+    const idShaped: ReadonlyArray<[string, Partial<RemoveTupleRequest>]> = [
+      ["an object id holding a colon", { objectId: "a:b" }],
+      ["an object id holding a hash", { objectId: "a#b" }],
+      ["an object id holding an at sign", { objectId: "a@b" }],
+      ["an object id holding a control character", { objectId: `a${BELL}b` }],
+      ["an object id that is a typed wildcard", { objectId: "*" }],
+      ["an empty object id", { objectId: "" }],
+      ["a subject id holding a hash", { subjectId: "a#b" }],
+    ];
+
+    for (const [name, overrides] of idShaped) {
+      test(name, async () => {
+        await expectPinnedDeleteDivergence(
+          storeId,
+          modelId,
+          tsfgaClient,
+          key(overrides),
+          { openfga: "missing", tsfga: "refused" },
+        );
+      });
+    }
   });
 
   test("a delete that is both malformed and absent reports the refusal", async () => {
@@ -550,7 +541,7 @@ describe("Delete gate conformance", () => {
       tsfgaClient,
       key({
         objectType: "nosuchtype_e1d",
-        objectId: "9",
+        objectId: DOC1,
         relation: "nosuchrel",
         subjectId: "al ice",
       }),
@@ -560,20 +551,24 @@ describe("Delete gate conformance", () => {
 
   test("the control: a row that is there is deleted", async () => {
     await fgaWriteTuplesRaw(storeId, modelId, [
-      { user: `${SUBJECT}:alice`, relation: "viewer", object: `${TYPE}:d1` },
+      {
+        user: `${SUBJECT}:${ALICE}`,
+        relation: "viewer",
+        object: `${TYPE}:${DOC1}`,
+      },
     ]);
     await tsfgaClient.addTuple({
       objectType: TYPE,
-      objectId: "d1",
+      objectId: DOC1,
       relation: "viewer",
       subjectType: SUBJECT,
-      subjectId: "alice",
+      subjectId: ALICE,
     });
     await expectDeleteConformance(
       storeId,
       modelId,
       tsfgaClient,
-      key({ objectId: "d1", subjectId: "alice" }),
+      key({ objectId: DOC1, subjectId: ALICE }),
       "accepted",
     );
   });
@@ -584,14 +579,18 @@ describe("Delete gate conformance", () => {
     // is deleted under a model that defines neither -- so a bad
     // model change is recoverable rather than a trap.
     await fgaWriteTuplesRaw(storeId, modelId, [
-      { user: `${SUBJECT}:bea`, relation: "editor", object: `${TYPE}:d2` },
+      {
+        user: `${SUBJECT}:${BEA}`,
+        relation: "editor",
+        object: `${TYPE}:${DOC2}`,
+      },
     ]);
     await tsfgaClient.addTuple({
       objectType: TYPE,
-      objectId: "d2",
+      objectId: DOC2,
       relation: "editor",
       subjectType: SUBJECT,
-      subjectId: "bea",
+      subjectId: BEA,
     });
 
     const narrowedId = await fgaWriteModelJson(storeId, NARROWED_MODEL);
@@ -602,7 +601,7 @@ describe("Delete gate conformance", () => {
       storeId,
       narrowedId,
       tsfgaClient,
-      key({ objectId: "d2", relation: "editor", subjectId: "bea" }),
+      key({ objectId: DOC2, relation: "editor", subjectId: BEA }),
       "accepted",
     );
   });

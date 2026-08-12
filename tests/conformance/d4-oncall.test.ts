@@ -31,7 +31,6 @@ import {
   fgaWriteModel,
   fgaWriteTuples,
 } from "./helpers/openfga.ts";
-import { strictIdStore } from "./helpers/strict-ids.ts";
 import {
   assertUuidMapCovers,
   assertUuidMapInjective,
@@ -276,7 +275,7 @@ describe("On-call Platform Model Conformance", () => {
     db = getDb();
     await beginTransaction(db);
 
-    tsfga = createTsfga(strictIdStore(new KyselyTupleStore(db)));
+    tsfga = createTsfga(new KyselyTupleStore(db));
     fixture = recordFixture(tsfga);
 
     for (const condition of CONDITIONS) {

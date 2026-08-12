@@ -7,6 +7,7 @@ import type { Kysely } from "kysely";
 import {
   expectConfigsMatchModel,
   expectConformance,
+  expectPinnedDivergence,
   type FixtureRecord,
   recordFixture,
 } from "./helpers/conformance.ts";
@@ -180,6 +181,33 @@ describe("Request identifier conformance", () => {
     );
 
   /**
+   * A check whose id upstream admits and this store cannot hold.
+   *
+   * Not a hole and not a hedge: `@tsfga/kysely` declares a
+   * canonical-UUID id domain, so every id upstream accepts that is
+   * not one is refused here. Pinned two-sidedly, so it fails the
+   * day either engine moves.
+   */
+  const pinned = (overrides: {
+    objectId?: string;
+    subjectId?: string;
+  }): Promise<void> =>
+    expectPinnedDivergence(
+      storeId,
+      modelId,
+      tsfgaClient,
+      {
+        objectType: "doc_d2i",
+        objectId: uuid("doc"),
+        relation: "viewer",
+        subjectType: "user_d2i",
+        subjectId: uuid("alice"),
+        ...overrides,
+      },
+      { openfga: false, tsfga: "refused" },
+    );
+
+  /**
    * `listObjects` parity where **both** calls are expected to
    * refuse.
    *
@@ -236,8 +264,14 @@ describe("Request identifier conformance", () => {
       await check({ objectId: "a".repeat(300) }, "refused");
     });
 
-    test("a non-breaking space in an object id answers on both", async () => {
-      await check({ objectId: `${uuid("doc")}${NBSP}` }, false);
+    test("a non-breaking space in an object id is refused here", async () => {
+      // The control for the character class: `NBSP` is an ordinary
+      // character to both engines, so upstream answers `false`
+      // rather than 400 and neither `IsValidObject` nor
+      // `unicode.IsControl` is involved. What refuses it here is
+      // the store's id domain — an id upstream admits and a `uuid`
+      // column cannot hold — one rule after the request gate.
+      await pinned({ objectId: `${uuid("doc")}${NBSP}` });
     });
   });
 
@@ -256,8 +290,9 @@ describe("Request identifier conformance", () => {
       await check({ subjectId: "a".repeat(600) }, "refused");
     });
 
-    test("a non-breaking space in a subject id answers on both", async () => {
-      await check({ subjectId: `${uuid("alice")}${NBSP}` }, false);
+    test("a non-breaking space in a subject id is refused here", async () => {
+      // The subject-side control, refused for the same reason.
+      await pinned({ subjectId: `${uuid("alice")}${NBSP}` });
     });
 
     test("the two characters tsfga does gate are refused by both", async () => {
@@ -351,15 +386,17 @@ describe("Request identifier conformance", () => {
       expect(tsfga).toBe(openfga);
     });
 
-    test("a control character in a ListUsers object id is answered", async () => {
+    test("a control character in a ListUsers object id diverges", async () => {
       // Upstream's ListUsers does not run `unicode.IsControl` over
-      // its object, so this cell agrees today — and is the reason
-      // the fix cannot simply be "apply the check rule everywhere".
+      // its object, so it answers — which is why `listSubjects`
+      // keeps a narrower object rule than `check` and the fix was
+      // never "apply the check rule everywhere". The store's id
+      // domain is what refuses it, behind that narrower rule.
       const [tsfga, openfga] = await outcomes(
         `${uuid("doc")}${String.fromCharCode(1)}`,
       );
       expect(openfga).toBe("[]");
-      expect(tsfga).toBe(openfga);
+      expect(tsfga).toBe("refused");
     });
   });
 

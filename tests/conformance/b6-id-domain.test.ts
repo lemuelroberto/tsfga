@@ -22,7 +22,6 @@ import {
   fgaWriteModel,
   fgaWriteTuplesRaw,
 } from "./helpers/openfga.ts";
-import { canonicalIdStore } from "./helpers/strict-ids.ts";
 
 /**
  * The one divergence `@tsfga/kysely` buys deliberately: an id
@@ -49,12 +48,6 @@ import { canonicalIdStore } from "./helpers/strict-ids.ts";
  * wildcard in this store, so a subject that happened to carry it
  * read back as everyone. It is an ordinary id now, admitted by
  * both engines, answering `true` for itself and nothing else.
- *
- * The store is wrapped in `canonicalIdStore` because
- * `KyselyTupleStore` still declares `OPAQUE_IDS` at this commit;
- * the wrapper declares the domain and core does the refusing. When
- * the adapter declares it natively the wrapper goes and this file
- * does not change.
  */
 
 const uuidMap = new Map<string, string>([
@@ -130,7 +123,7 @@ describe("The store's id domain", () => {
   beforeAll(async () => {
     db = getDb();
     await beginTransaction(db);
-    tsfgaClient = createTsfga(canonicalIdStore(new KyselyTupleStore(db)));
+    tsfgaClient = createTsfga(new KyselyTupleStore(db));
 
     await tsfgaClient.writeRelationConfig({
       objectType: TYPE,

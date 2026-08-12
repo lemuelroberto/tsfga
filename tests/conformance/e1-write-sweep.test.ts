@@ -14,6 +14,7 @@ import { KyselyTupleStore } from "@tsfga/kysely";
 import type { Kysely } from "kysely";
 import {
   expectDeleteConformance,
+  expectPinnedDeleteDivergence,
   expectWriteConformance,
   expectWriteConformanceWithCause,
 } from "./helpers/conformance.ts";
@@ -64,6 +65,21 @@ const TEAM = "team_e1s";
 const DOC = "doc_e1s";
 const CONDITION = "in_window_e1s";
 const BELL = "";
+
+/**
+ * The fixture's well-formed ids, now that `@tsfga/kysely` holds
+ * canonical UUIDs and nothing else.
+ *
+ * Substitution is safe here and only here: every one of these
+ * appears in a case whose defect lives *outside* the identifier,
+ * so nothing about the case changes. The cases whose defect **is**
+ * the identifier keep their malformed literals -- a `:` or a `#`
+ * or an empty string cannot be written as a UUID at all, and
+ * rewriting them would leave the assertion vacuously true.
+ */
+const ALICE = "00000000-0000-4000-e120-000000000001";
+const TEAM1 = "00000000-0000-4000-e120-000000000002";
+const DOC0 = "00000000-0000-4000-e120-000000000003";
 
 const MODEL: WriteAuthorizationModelRequest = {
   schema_version: "1.1",
@@ -213,10 +229,10 @@ describe("Write sweep conformance", () => {
     counter += 1;
     return {
       objectType: DOC,
-      objectId: `d${counter}`,
+      objectId: `00000000-0000-4000-e120-1${String(counter).padStart(11, "0")}`,
       relation: "bare",
       subjectType: USER,
-      subjectId: "alice",
+      subjectId: ALICE,
       ...overrides,
     };
   }
@@ -259,7 +275,7 @@ describe("Write sweep conformance", () => {
         base({
           relation: "userset",
           subjectType: TEAM,
-          subjectId: "t1",
+          subjectId: TEAM1,
           subjectRelation: "member",
         }),
         "accepted",
@@ -284,7 +300,11 @@ describe("Write sweep conformance", () => {
 
     test("a userset where only a concrete subject is admitted", async () => {
       await ruled(
-        base({ subjectType: TEAM, subjectId: "t1", subjectRelation: "member" }),
+        base({
+          subjectType: TEAM,
+          subjectId: TEAM1,
+          subjectRelation: "member",
+        }),
         "refused",
         "TUPLE-SUBJECT-NOT-ADMITTED",
       );
@@ -303,7 +323,7 @@ describe("Write sweep conformance", () => {
         base({
           relation: "userset",
           subjectType: TEAM,
-          subjectId: "t1",
+          subjectId: TEAM1,
           subjectRelation: "ghost",
         }),
         "refused",
@@ -345,12 +365,17 @@ describe("Write sweep conformance", () => {
       );
     });
 
-    test("a rendered subject of exactly 512 bytes", async () => {
-      await parity(
-        base({ subjectId: "a".repeat(512 - USER.length - 1) }),
-        "accepted",
-      );
-    });
+    // The 512-byte subject that upstream *accepts* is gone, and it
+    // does not become a pin. It cannot be expressed at all under
+    // this store's id domain -- the longest subject a canonical
+    // UUID can render is `user_e1s:` plus 36 characters, 45 bytes
+    // -- so a pin would record tsfga refusing a non-UUID id for a
+    // reason that has nothing to do with the bound, which is a
+    // claim about the wrong rule. The bound is asserted at the
+    // core level, against the mock store, in
+    // `packages/core/tests/tuple-validation.test.ts`. The 513-byte
+    // row above survives: upstream's own length rule runs ahead of
+    // the domain gate, so it still refuses for the reason named.
   });
 
   describe("2: the object", () => {
@@ -385,12 +410,12 @@ describe("Write sweep conformance", () => {
       );
     });
 
-    test("a rendered object of exactly 256 runes", async () => {
-      await parity(
-        base({ objectId: "o".repeat(256 - DOC.length - 1) }),
-        "accepted",
-      );
-    });
+    // Retired for the same reason as the 512-byte subject, with
+    // one extra: the delete fixture keeps its 256-rune row by
+    // moving the length into the *type* name, and a write cannot
+    // do that -- upstream validates the model on a write, so a
+    // 219-character type is refused for being undefined. Asserted
+    // at the core level instead.
 
     test("an object type the model does not define", async () => {
       await ruled(
@@ -595,7 +620,7 @@ describe("Write sweep conformance", () => {
         base({
           relation: "bare",
           subjectType: DOC,
-          subjectId: "d0",
+          subjectId: DOC0,
           subjectRelation: "bare",
         }),
         "refused",
@@ -625,15 +650,21 @@ describe("Write sweep conformance", () => {
       );
     });
 
-    test("an object id holding a colon falls through", async () => {
-      // The delete gate is not the write gate: the same object id
-      // that is refused above reaches the row here.
-      await expectDeleteConformance(
+    test("an object id holding a colon is refused by the id domain", async () => {
+      // The guard this row carries is that the delete gate is not
+      // the write gate: upstream reaches the row for an object id
+      // a write refuses. tsfga still does not reuse the write
+      // validators here -- it refuses one rule later, on the id
+      // domain, because `a:b` is not a UUID and this store holds
+      // nothing else. Pinned rather than deleted so the guard
+      // survives as a two-sided assertion, and so the day either
+      // engine moves, a test says so.
+      await expectPinnedDeleteDivergence(
         storeId,
         modelId,
         tsfga,
         base({ objectId: "a:b" }),
-        "missing",
+        { openfga: "missing", tsfga: "refused" },
       );
     });
 

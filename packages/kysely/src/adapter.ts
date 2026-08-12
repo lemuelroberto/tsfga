@@ -1,4 +1,5 @@
 import {
+  CANONICAL_UUID_IDS,
   type CheckTuples,
   type CheckTuplesQuery,
   type ConditionDefinition,
@@ -8,7 +9,6 @@ import {
   type IdDomain,
   type IntersectionOperand,
   InvalidStoredDataError,
-  OPAQUE_IDS,
   type RelationConfig,
   type RemoveTupleRequest,
   type Tuple,
@@ -54,11 +54,22 @@ export class KyselyTupleStore implements TupleStore {
   private db: Kysely<DB>;
 
   /**
-   * Opaque for now. `object_id` and `subject_id` are `text`
-   * columns as of migrations `006` and `007`, so anything OpenFGA
-   * admits as an id this store can hold.
+   * Canonical lower-case hyphenated UUIDs, and nothing else.
+   *
+   * `object_id` and `subject_id` are going back to `uuid` columns,
+   * and this is narrower than what that column's own input grammar
+   * accepts -- deliberately. The grammar is many-to-one: the
+   * uppercase, hyphenless, braced, braced-hyphenless and
+   * odd-hyphen spellings of one value all store as the same row,
+   * while OpenFGA holds them apart as distinct ids. Admitting more
+   * than the canonical spelling would let a grant written for one
+   * answer `true` for another.
+   *
+   * **`user:alice` is an ordinary subject upstream and this store
+   * refuses it, permanently.** See the id-domain section of the
+   * README; it is a declared limitation, not a bug awaiting a fix.
    */
-  readonly idDomain: IdDomain = OPAQUE_IDS;
+  readonly idDomain: IdDomain = CANONICAL_UUID_IDS;
 
   /**
    * Takes a `Kysely<DB>` it does not own — including a

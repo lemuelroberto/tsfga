@@ -7,6 +7,47 @@ Part of the [tsfga](../../README.md) monorepo. Implements
 the `TupleStore` interface from `@tsfga/core` using
 [Kysely](https://kysely.dev/) for PostgreSQL.
 
+## Identifiers must be canonical UUIDs
+
+**This store holds object and subject ids that are exactly
+8-4-4-4-12 lower-case hexadecimal digits, hyphenated, and nothing
+else. `user:alice` is an ordinary subject in OpenFGA and this
+store refuses it, permanently.**
+
+It is the first thing to know about it, and it is a declared
+design limit rather than a bug awaiting a fix. `object_id` and
+`subject_id` are `uuid` columns; `KyselyTupleStore` declares
+`CANONICAL_UUID_IDS` as its `TupleStore.idDomain`, and core
+refuses anything outside it with `IdDomainError` — at the request
+boundary, before any query, on `check`, `checkMany`,
+`listObjects`, `listSubjects`, `addTuple`, `removeTuple` and
+contextual tuples.
+
+The domain is deliberately **narrower than PostgreSQL's own `uuid`
+input grammar**, which accepts a UUID uppercased, hyphenless,
+braced, or hyphenated oddly and stores every one of them as the
+same value. OpenFGA treats each spelling as a distinct id.
+Admitting more than the canonical spelling would let a grant
+written for one answer `true` for another, so only the canonical
+spelling is admitted.
+
+Nothing about the version or variant digits is checked. The nil
+UUID `00000000-0000-0000-0000-000000000000` is an ordinary id
+here — no id value is reserved.
+
+Every refusal is in the refusing direction: a refused request is
+one no grant was computed for, and the read paths raise rather
+than answering `false`, which is what upstream does (HTTP 400, for
+every id it cannot represent). If your ids are not UUIDs, this
+adapter is not the one to use — `@tsfga/core` is
+database-agnostic and a store declaring `OPAQUE_IDS` has none of
+these restrictions.
+
+See the [core README's id-domain
+section](../core/README.md#known-divergence-the-stores-id-domain)
+and `tests/conformance/b6-id-domain.test.ts`, which pins the
+divergence against a live OpenFGA.
+
 ## Installation
 
 ```bash

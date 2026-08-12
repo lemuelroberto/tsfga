@@ -57,6 +57,10 @@ releases may contain breaking changes).
   `validateIdDomain` and `validateSubjectIdDomain` are exported
   for a store author reimplementing a gate.
 
+  `@tsfga/kysely` declares the narrow domain; see its changelog
+  for what that costs a consumer of that adapter. A store
+  declaring `OPAQUE_IDS` is unaffected.
+
 - **`writeRelationConfig` refuses a rewrite cycle**, with
   `InvalidRelationConfigError` and cause `"rewrite cycle"`.
   `viewer: editor` beside `editor: viewer` was stored and is now

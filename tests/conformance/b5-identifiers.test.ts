@@ -303,7 +303,7 @@ describe("Identifier validity conformance", () => {
     test("GAP-281: an object id differing only in hex case", async () => {
       const lower = objectId();
       const upper = lower.toUpperCase();
-      await expectWriteConformance(
+      await expectPinnedWriteDivergence(
         storeId,
         authorizationModelId,
         tsfgaClient,
@@ -314,11 +314,12 @@ describe("Identifier validity conformance", () => {
           subjectType: "user_b5",
           subjectId: uuid("alice"),
         },
-        "accepted",
+        { openfga: "accepted", tsfga: "refused" },
       );
       // `doc_b5:0000...D4C0...` and `doc_b5:0000...d4c0...` are two
-      // objects upstream — object ids are opaque strings. The
-      // adapter's `uuid` column normalises them to one.
+      // objects upstream. They are one row to a `uuid` column,
+      // which is why the store refuses the uppercase spelling
+      // outright rather than storing it and answering for both.
       await expectConformance(
         storeId,
         authorizationModelId,
@@ -337,7 +338,7 @@ describe("Identifier validity conformance", () => {
     test("GAP-281: an object id written without hyphens", async () => {
       const hyphenated = objectId();
       const bare = hyphenated.replaceAll("-", "");
-      await expectWriteConformance(
+      await expectPinnedWriteDivergence(
         storeId,
         authorizationModelId,
         tsfgaClient,
@@ -348,7 +349,7 @@ describe("Identifier validity conformance", () => {
           subjectType: "user_b5",
           subjectId: uuid("alice"),
         },
-        "accepted",
+        { openfga: "accepted", tsfga: "refused" },
       );
       await expectConformance(
         storeId,
@@ -366,11 +367,12 @@ describe("Identifier validity conformance", () => {
     });
 
     test("a subject id differing only in hex case is two subjects", async () => {
-      // The counterpart, and it passes: `subject_id` is `text`
-      // since migration `006`, so it is compared byte for byte as
-      // upstream compares it.
+      // The subject-side counterpart of the two object cases
+      // above, and it is refused for the same reason: the
+      // uppercase spelling is a distinct subject upstream and the
+      // same row here.
       const id = objectId();
-      await expectWriteConformance(
+      await expectPinnedWriteDivergence(
         storeId,
         authorizationModelId,
         tsfgaClient,
@@ -381,7 +383,7 @@ describe("Identifier validity conformance", () => {
           subjectType: "user_b5",
           subjectId: uuid("bob").toUpperCase(),
         },
-        "accepted",
+        { openfga: "accepted", tsfga: "refused" },
       );
       await expectConformance(
         storeId,

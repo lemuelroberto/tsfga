@@ -9,10 +9,34 @@ releases may contain breaking changes).
 
 ### Changed
 
-- **`KyselyTupleStore` declares `idDomain`.** `OPAQUE_IDS` for
-  now: `object_id` and `subject_id` are `text` columns, so the
-  store holds anything OpenFGA admits as an id. Requires
-  `@tsfga/core` with `IdDomain` exported.
+- **BREAKING: ids must be canonical lower-case hyphenated UUIDs.**
+  `KyselyTupleStore` declares `CANONICAL_UUID_IDS` as its
+  `TupleStore.idDomain`, and core refuses anything else with
+  `IdDomainError` before any query — on `check`, `checkMany`,
+  `listObjects`, `listSubjects`, `addTuple`, `removeTuple` and
+  contextual tuples. Requires `@tsfga/core` with `IdDomain`
+  exported.
+
+  **`user:alice` is an ordinary subject in OpenFGA and this store
+  refuses it, permanently.** So are `user:café` and a
+  300-character id. It is a declared design limit, not a bug
+  awaiting a fix, and it is stated at the top of the README.
+
+  The domain is narrower than the `uuid` column's own input
+  grammar, which accepts a UUID uppercased, hyphenless, braced or
+  oddly hyphenated and folds all of them onto one value while
+  OpenFGA holds them apart. Admitting more than the canonical
+  spelling would let a grant written for one answer `true` for
+  another — the one granting-direction hole this could have had,
+  and the reason `b5-identifiers`' three issue-281 rows now record
+  a refusal instead of a wrong `true`.
+
+  Nothing about the version or variant digits is checked; the nil
+  UUID is an ordinary id.
+
+  If your ids are not UUIDs, this adapter is not the one to use.
+  `@tsfga/core` is database-agnostic and a store declaring
+  `OPAQUE_IDS` has none of these restrictions.
 
 - **`KyselyTupleStore.insertTuple` and `upsertRelationConfig` take
   the branded `GatedTuple` and `GatedRelationConfig`.** Type-level

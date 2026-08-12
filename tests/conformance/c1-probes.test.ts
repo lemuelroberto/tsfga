@@ -370,14 +370,29 @@ describe("c1: round-2 behaviour under a four-level composition", () => {
   });
 
   /**
-   * Migration `007` made `object_id` a `text` column. A single
-   * direct row on a non-UUID id is covered by `b5-identifiers`;
-   * what is not is whether such an id survives being carried
-   * through four dispatches, two of them as the *object* half of a
-   * userset ref the next level compares by string.
+   * An id carried unchanged through four dispatches, two of them
+   * as the *object* half of a userset ref the next level compares
+   * by string.
+   *
+   * This block used to run on non-UUID ids, because migration
+   * `007` had made `object_id` a `text` column. That premise is
+   * retired: the column is `uuid` again and the store declares a
+   * canonical-UUID id domain, so a non-UUID id is refused at the
+   * request boundary and the block would be asserting the
+   * refusal rather than the composition.
+   *
+   * The composition coverage is what it was for, and it survives:
+   * three distinct ids, each written at three levels and each
+   * required to reach only itself.
    */
-  describe("non-UUID object ids through the whole composition", () => {
-    const TEXT_IDS = ["ce-text-1", "CE_Text_2", "\u00fcn\u00efcode-3"];
+  describe("an object id through the whole composition", () => {
+    const TEXT_IDS = [
+      "00000000-0000-4000-c1e0-000000000001",
+      "00000000-0000-4000-c1e0-000000000002",
+      "00000000-0000-4000-c1e0-000000000003",
+    ];
+    /** A neighbour of each, never written. */
+    const other = (id: string): string => `${id.slice(0, -1)}9`;
 
     beforeAll(async () => {
       const rows: { object: string; relation: string; user: string }[] = [];
@@ -429,7 +444,7 @@ describe("c1: round-2 behaviour under a four-level composition", () => {
         );
       });
 
-      test(`check denies a neighbouring text id at ${id}`, async () => {
+      test(`check denies a neighbouring id at ${id}`, async () => {
         await expectConformance(
           storeId,
           authorizationModelId,
@@ -439,7 +454,7 @@ describe("c1: round-2 behaviour under a four-level composition", () => {
             objectId: id,
             relation: "ttu_userset",
             subjectType: U,
-            subjectId: `${id}-other`,
+            subjectId: other(id),
           },
           false,
         );
