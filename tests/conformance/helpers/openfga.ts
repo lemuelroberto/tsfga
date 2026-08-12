@@ -188,8 +188,22 @@ function resolveRef(ref: string, uuidMap?: Map<string, string>): string {
 
   const type = base.slice(0, colonIdx);
   const name = base.slice(colonIdx + 1);
+
+  // The typed wildcard is a subject shape, not an id, so it is
+  // never a map key. It is the only ref that legitimately passes
+  // through — 40 rows across 17 files spell it, and throwing on
+  // it reds every one of them.
+  if (name === "*") return ref;
+
   const uuid = uuidMap.get(name);
-  if (!uuid) return ref;
+  if (uuid === undefined) {
+    // Passing an unmapped ref through leaves the OpenFGA store
+    // half-migrated: it holds a grant on a slug while tsfga holds
+    // one on a UUID, so each engine answers `false` about the
+    // object the other one has, the two agree, and every
+    // assertion over that object goes quietly vacuous.
+    throw new Error(`resolveRef: no UUID mapped for "${name}" in "${ref}"`);
+  }
 
   return `${type}:${uuid}${suffix}`;
 }
