@@ -4,6 +4,7 @@ import {
   InvalidConditionalTupleError,
   InvalidSubjectTypeError,
   RelationConfigNotFoundError,
+  TsfgaError,
 } from "./errors.ts";
 import type { TupleStore } from "./store-interface.ts";
 import type {
@@ -227,6 +228,193 @@ export function isSelfDefining(request: AddTupleRequest): boolean {
 export const DEFAULT_WRITE_CONTEXT_BYTE_LIMIT = 32 * 1024;
 
 /**
+ * The `TupleKey.user` proto constraint — 512 **UTF-8 bytes** on the
+ * whole wire string, `type:id` or `type:id#relation`, not on the id
+ * alone.
+ *
+ * It is an API-layer constraint (`openfga.pb.validate.go`,
+ * `len(m.GetUser()) > 512`) rather than a `pkg/tuple` rule, so it
+ * sits beside the context limit rather than inside the
+ * well-formedness predicate. Bisected against the v1.18.2
+ * container: `user_q2:` plus 504 bytes is accepted and plus 505 is
+ * refused, and 252 two-byte runes are accepted where 253 are not —
+ * so the unit is bytes, not code points.
+ */
+const WRITE_SUBJECT_BYTE_LIMIT = 512;
+
+/**
+ * The `TupleKey.object` proto constraint — `^[^\s]{2,256}$`, so 256
+ * **code points** on the whole `type:id` wire string.
+ *
+ * Go's regexp quantifier counts runes, and the container agrees:
+ * `doc_q2:` plus 249 ASCII characters is accepted and plus 250 is
+ * refused, while 200 two-byte runes (407 bytes) are accepted. The
+ * two limits therefore have different units, which is why they are
+ * two constants and not one.
+ */
+const WRITE_OBJECT_RUNE_LIMIT = 256;
+
+/** One encoder, reused: the contexts measured here can be large. */
+const UTF8 = new TextEncoder();
+
+/** UTF-8 byte length, which is what protobuf and Go's `len` count. */
+function utf8Length(value: string): number {
+  return UTF8.encode(value).length;
+}
+
+/** Bytes in the base-128 varint encoding of a length. */
+function varintLength(value: number): number {
+  let bytes = 1;
+  let rest = Math.floor(value / 128);
+  while (rest > 0) {
+    bytes += 1;
+    rest = Math.floor(rest / 128);
+  }
+  return bytes;
+}
+
+/**
+ * The serialised size of one `google.protobuf.Value`.
+ *
+ * Each kind is a field of the `kind` oneof, so exactly one is
+ * emitted: `null_value` (1, varint enum), `number_value` (2,
+ * fixed64 double), `string_value` (3, length-delimited),
+ * `bool_value` (4, varint), `struct_value` (5) and `list_value`
+ * (6). A oneof member is written even when it holds its zero
+ * value, which is why `null` costs 2 bytes and not 0.
+ *
+ * A value protobuf cannot carry at all — `bigint`, `undefined`, a
+ * function — is measured as `null`, because that is what a
+ * `structpb.Value` built from it would hold.
+ */
+function protoValueSize(value: unknown): number {
+  if (typeof value === "string") {
+    const n = utf8Length(value);
+    return 1 + varintLength(n) + n;
+  }
+  if (typeof value === "number") return 9;
+  if (typeof value === "boolean") return 2;
+  if (Array.isArray(value)) {
+    let items = 0;
+    for (const item of value) {
+      const size = protoValueSize(item);
+      items += 1 + varintLength(size) + size;
+    }
+    return 1 + varintLength(items) + items;
+  }
+  if (typeof value === "object" && value !== null) {
+    const size = protoStructSize(value);
+    return 1 + varintLength(size) + size;
+  }
+  return 2;
+}
+
+/**
+ * The serialised size of a `google.protobuf.Struct`, which is what
+ * upstream measures a condition context with.
+ *
+ * `Struct` is a single `map<string, Value> fields = 1`, and a
+ * protobuf map field is sugar for a repeated message of `key` (1)
+ * and `value` (2). So each entry costs its own tag and length
+ * prefix on top of the two it contains.
+ *
+ * This replaces `JSON.stringify`, which diverged from upstream in
+ * both directions: JSON's framing is 8 bytes where protobuf's is
+ * 15, and `JSON.stringify` escapes quotes, backslashes and control
+ * characters where protobuf carries raw UTF-8 — so a context of
+ * 20 KiB of quote characters measured 40 KiB and was refused,
+ * though upstream accepts it.
+ *
+ * Calibration, asserted in `tuple-validation.test.ts`: one string
+ * entry keyed `s` comes out at `len(s) + 15`, so `"x".repeat(32753)`
+ * is exactly 32768 and is the largest context upstream accepts.
+ */
+function protoStructSize(struct: object): number {
+  let total = 0;
+  for (const [key, value] of Object.entries(struct)) {
+    const keyBytes = utf8Length(key);
+    const valueSize = protoValueSize(value);
+    const entry =
+      1 +
+      varintLength(keyBytes) +
+      keyBytes +
+      1 +
+      varintLength(valueSize) +
+      valueSize;
+    total += 1 + varintLength(entry) + entry;
+  }
+  return total;
+}
+
+/**
+ * Whether an id is well-formed in the sense the four `pkg/tuple`
+ * predicates share: at least one character, no Unicode control
+ * character anywhere, and none of the separators the wire string
+ * reserves.
+ *
+ * `IsValidUserID` reserves `#`, `:` and U+0020; `IsValidObject`
+ * reserves `#` and U+0020, and reserves `:` for the one separating
+ * the type from the id — which tsfga carries in a field of its own,
+ * so a `:` inside `objectId` is always a second one and is refused
+ * the same way. `*` is reserved by neither: it is the wildcard, and
+ * both predicates admit it in the `default` arm.
+ */
+function isWellFormedId(id: string, reserved: readonly string[]): boolean {
+  if (id.length === 0) return false;
+  if (hasControlChar(id)) return false;
+  return !reserved.some((char) => id.includes(char));
+}
+
+/** `IsValidUserID`'s reserved set. */
+const SUBJECT_ID_RESERVED: readonly string[] = ["#", ":", " "];
+
+/** `IsValidObject`'s, once the type separator is accounted for. */
+const OBJECT_ID_RESERVED: readonly string[] = ["#", ":", " "];
+
+/**
+ * The object half of the same well-formedness gate.
+ *
+ * It closes a hole rather than a failing test. `tsfga.tuples.
+ * object_id` was a `uuid` column until migration `007` widened it
+ * to `text`, so the driver refused every malformed object id and
+ * the missing rule could not be observed — exactly the surface
+ * migration `006` opened on the subject side, which is how the
+ * subject-side gap came to be reported at all. The rule lands in
+ * the same wave as the migration so the hole never opens.
+ *
+ * `IsValidObject` is **not** `IsValidUserID`. It walks the whole
+ * `type:id` string, so the one `:` it allows is the type separator
+ * — which tsfga carries in a field of its own, making any `:` in
+ * `objectId` a second one. It has no userset arm either, so a `#`
+ * is refused outright rather than reinterpreted.
+ *
+ * Raised as the base `TsfgaError`, deliberately and provisionally:
+ * there is no error class for a malformed *object*
+ * (`InvalidSubjectTypeError` is the subject's, and its `subject`
+ * field would have to be a lie), and adding one is a change to
+ * `errors.ts`. What the rule buys today is that a caller catching
+ * `TsfgaError` sees a refusal where they previously saw the
+ * driver's own error — which, inside a transaction, aborted every
+ * later statement. Giving it a class of its own is a follow-up.
+ */
+function validateObjectId(request: AddTupleRequest): void {
+  const wire = `${request.objectType}:${request.objectId}`;
+  if (!isWellFormedId(request.objectId, OBJECT_ID_RESERVED)) {
+    throw new TsfgaError(
+      `Invalid object '${wire}': an object id must be non-empty and ` +
+        `hold no ':', '#', space or control character`,
+    );
+  }
+  const runes = [...wire].length;
+  if (runes > WRITE_OBJECT_RUNE_LIMIT) {
+    throw new TsfgaError(
+      `Invalid object for ${request.objectType}: ${runes} characters ` +
+        `exceeds ${WRITE_OBJECT_RUNE_LIMIT}`,
+    );
+  }
+}
+
+/**
  * Whether a string holds a Unicode control character.
  *
  * Go's `unicode.IsControl` is exactly the `Cc` category —
@@ -284,7 +472,8 @@ function forbiddenChars(value: unknown): string | null {
 export interface TupleWriteValidationOptions {
   /**
    * Refuse a condition context larger than this many bytes,
-   * measured as the UTF-8 length of its JSON.
+   * measured as upstream measures it: the serialised size of the
+   * `google.protobuf.Struct` the context becomes on the wire.
    *
    * `undefined` does not measure at all, which is what the
    * contextual-tuple path wants: upstream's limit lives in the
@@ -358,6 +547,52 @@ export async function validateTupleWrite(
     );
   }
 
+  // The rest of `IsValidUser`, in the same place and for the same
+  // reason as the wildcard gate above it: it is a statement about
+  // the request, not about what the relation admits, and upstream
+  // decides it in `ValidateUser` before any type restriction or
+  // condition is read (`pkg/tuple/tuple.go:459-518`).
+  //
+  // The check path has applied this rule since round 1
+  // (`validateCheckSubject`), so until now a subject id holding `:`
+  // or `#` was writable and *uncheckable* — a grant that existed
+  // and could never be exercised. Same class, same cause, so the
+  // two gates report identically.
+  //
+  // `*` is exempt from nothing: it holds none of the reserved
+  // characters, and `IsValidUser` admits the bare wildcard
+  // explicitly.
+  if (!isWellFormedId(request.subjectId, SUBJECT_ID_RESERVED)) {
+    throw new InvalidSubjectTypeError(
+      shape,
+      request.objectType,
+      request.relation,
+      config.directlyAssignable,
+      "malformed subject",
+      "a subject id must be non-empty and hold no ':', '#', " +
+        "space or control character",
+    );
+  }
+
+  const subjectWire =
+    request.subjectRelation === null || request.subjectRelation === undefined
+      ? `${request.subjectType}:${request.subjectId}`
+      : `${request.subjectType}:${request.subjectId}` +
+        `#${request.subjectRelation}`;
+  const subjectBytes = utf8Length(subjectWire);
+  if (subjectBytes > WRITE_SUBJECT_BYTE_LIMIT) {
+    throw new InvalidSubjectTypeError(
+      shape,
+      request.objectType,
+      request.relation,
+      config.directlyAssignable,
+      "malformed subject",
+      `${subjectBytes} bytes exceeds ${WRITE_SUBJECT_BYTE_LIMIT}`,
+    );
+  }
+
+  validateObjectId(request);
+
   if (!admitsSubjectShape(config, shape)) {
     throw new InvalidSubjectTypeError(
       shape,
@@ -399,7 +634,7 @@ export async function validateTupleWrite(
     if (limit === undefined) return;
     const context = request.conditionContext;
     if (context === null || context === undefined) return;
-    const size = new TextEncoder().encode(JSON.stringify(context)).length;
+    const size = protoStructSize(context);
     if (size > limit) {
       refuse("context size limit exceeded", `${size} bytes exceeds ${limit}`);
     }
