@@ -559,7 +559,17 @@ export type RelationConfigDefect =
    */
   | "computed relation undefined on every tupleset type"
   /** A rewrite names a relation the object type does not define. */
-  | "undefined relation";
+  | "undefined relation"
+  /**
+   * The rewrites lead back to a relation already on the path --
+   * `viewer: editor` beside `editor: viewer`. Upstream's
+   * `ErrCycle`: "an authorization model cannot contain a cycle".
+   *
+   * Distinct from `rewrite names its own relation`, which is the
+   * depth-1 case and which upstream reports as a different cause
+   * from a different function.
+   */
+  | "rewrite cycle";
 
 /**
  * A piece of the model the model would not admit.

@@ -9,6 +9,15 @@ releases may contain breaking changes).
 
 ### Added
 
+- **`writeRelationConfig` refuses a rewrite cycle**, with
+  `InvalidRelationConfigError` and cause `"rewrite cycle"`.
+  `viewer: editor` beside `editor: viewer` was stored and is now
+  refused, as OpenFGA refuses it. Nothing was granted by such a
+  model — every check under it resolved `false` — so this widens
+  the write gate rather than changing an answer. Rewrites on the
+  same object type only; direct assignment and tuple-to-userset
+  are not followed, because upstream's walk stops at both.
+
 - **`TsfgaError.ruleId`.** Every write- and config-gate refusal
   names the rule that raised it. `UPSTREAM_RULE_IDS` and
   `CAPABILITY_RULE_IDS` are exported alongside the `WriteRuleId`,

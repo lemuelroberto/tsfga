@@ -797,8 +797,9 @@ the reason on `.cause`:
 | `type restrictions on a non-assignable relation` | `directlyAssignable` is non-empty on a relation whose `intersection` has no `direct` operand |
 | `relation admits nothing and rewrites nothing` | the relation can never grant |
 | `relation has no entrypoint` | the closed self-cycle form; see below |
+| `rewrite cycle` | the rewrites lead back to a relation already on the path; upstream: "an authorization model cannot contain a cycle" |
 
-Three of those read as stronger than they are without a
+Four of those read as stronger than they are without a
 qualifier:
 
 - **`relation admits nothing and rewrites nothing` is not
@@ -811,6 +812,18 @@ qualifier:
   `computedUserset`, `tupleToUserset` or `excludedBy` is
   upstream's `union(This, …)` and `difference(This, …)`, both
   valid.
+- **`rewrite cycle` follows rewrites on the same object type
+  only.** Every `impliedBy` arm, the `computedUserset`, the
+  `excludedBy` and every `computedUserset` intersection operand.
+  Direct assignment and `tupleToUserset` are not followed, because
+  upstream's own walk stops at both: `viewer: viewer from parent`
+  names this relation on *another* object and is the commonest
+  shape a model has. A target whose config has not been written
+  yet is skipped, for the write-order reason below — so the rule
+  is weaker than upstream's in the accepting direction, never the
+  refusing one. The depth-1 case, `viewer: viewer`, is reported as
+  `rewrite names its own relation` instead, which is the cause
+  upstream reports for it.
 - **`relation has no entrypoint` is the closed case only.** An
   entrypoint is a whole-model property, and upstream decides it
   over one document. A single config decides only the relation

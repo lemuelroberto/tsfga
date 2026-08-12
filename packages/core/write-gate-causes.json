@@ -54,9 +54,9 @@
     "dispositions": {
       "n/a": 51,
       "pinned": 4,
-      "claimed": 34,
-      "open": 2,
-      "claimed-partial": 7
+      "claimed": 35,
+      "claimed-partial": 7,
+      "open": 1
     }
   },
   "excluded": [],
@@ -212,9 +212,11 @@
       "sites": [
         "pkg/typesystem/error.go:38"
       ],
-      "disposition": "open",
-      "gap": "A model whose rewrites form a cycle -- `viewer: editor` and `editor: viewer` -- is refused outright upstream and stored here. Every check under it answers `false`, so nothing is granted; the damage is that a model upstream will not store is accepted silently.",
-      "readmeAnchor": "packages/core/README.md#write-time-model-validation"
+      "disposition": "claimed",
+      "rules": [
+        "CONFIG-REWRITE-CYCLE"
+      ],
+      "test": "tests/conformance/e1-model-cycles.test.ts:two relations rewriting onto each other"
     },
     {
       "package": "typesystem",

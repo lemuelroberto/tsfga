@@ -626,3 +626,157 @@ describe("two config defects at once report the earlier rule", () => {
     ).toBe("CONDITION-NAME-MALFORMED");
   });
 });
+
+/**
+ * A rewrite cycle, which upstream refuses outright.
+ *
+ * The rule follows same-object-type rewrites only — every
+ * `impliedBy` arm, the `computedUserset`, the `excludedBy` and
+ * every `computedUserset` intersection operand — because
+ * upstream's `hasCycle` returns `false` immediately on direct
+ * assignment and on a tuple-to-userset. Following either would
+ * refuse `viewer: viewer from parent`, which is the commonest
+ * shape an OpenFGA model has.
+ *
+ * The two shapes below the cycles are the ones a wrong
+ * implementation gets wrong: a diamond is not a cycle, and a
+ * re-convergent graph must not be walked twice.
+ */
+describe("writeRelationConfig refuses a rewrite cycle", () => {
+  let store: MockTupleStore;
+  let fga: TsfgaClient;
+
+  beforeEach(() => {
+    store = new MockTupleStore();
+    fga = createTsfga(store);
+  });
+
+  test("a two-relation cycle", async () => {
+    await fga.writeRelationConfig(
+      config({ relation: "a", computedUserset: "b" }),
+    );
+    await expect(
+      fga.writeRelationConfig(config({ relation: "b", computedUserset: "a" })),
+    ).rejects.toBeInstanceOf(InvalidRelationConfigError);
+  });
+
+  test("a three-relation cycle", async () => {
+    await fga.writeRelationConfig(
+      config({ relation: "a", computedUserset: "b" }),
+    );
+    await fga.writeRelationConfig(
+      config({ relation: "b", computedUserset: "c" }),
+    );
+    await expect(
+      fga.writeRelationConfig(config({ relation: "c", computedUserset: "a" })),
+    ).rejects.toBeInstanceOf(InvalidRelationConfigError);
+  });
+
+  test("the cause names the cycle", async () => {
+    await fga.writeRelationConfig(
+      config({ relation: "a", computedUserset: "b" }),
+    );
+    try {
+      await fga.writeRelationConfig(
+        config({ relation: "b", computedUserset: "a" }),
+      );
+      throw new Error("expected a refusal");
+    } catch (error) {
+      if (!(error instanceof InvalidRelationConfigError)) throw error;
+      expect(error.cause).toBe("rewrite cycle");
+      expect(error.ruleId).toBe("CONFIG-REWRITE-CYCLE");
+    }
+  });
+
+  test("a union arm closing the loop is a cycle too", async () => {
+    // The realistic shape: a relation with a legitimate direct
+    // assignment that also unions in a relation pointing back.
+    await fga.writeRelationConfig(
+      config({
+        relation: "a",
+        directlyAssignable: [{ type: "user" }],
+        impliedBy: ["b"],
+      }),
+    );
+    await expect(
+      fga.writeRelationConfig(config({ relation: "b", computedUserset: "a" })),
+    ).rejects.toBeInstanceOf(InvalidRelationConfigError);
+  });
+
+  test("an exclusion closing the loop is a cycle too", async () => {
+    await fga.writeRelationConfig(
+      config({
+        relation: "a",
+        directlyAssignable: [{ type: "user" }],
+        excludedBy: "b",
+      }),
+    );
+    await expect(
+      fga.writeRelationConfig(config({ relation: "b", computedUserset: "a" })),
+    ).rejects.toBeInstanceOf(InvalidRelationConfigError);
+  });
+
+  test("a diamond is not a cycle", async () => {
+    // `d` is reached twice and is on neither path when it is. A
+    // single global visited set would call this a cycle.
+    await fga.writeRelationConfig(
+      config({ relation: "d", directlyAssignable: [{ type: "user" }] }),
+    );
+    await fga.writeRelationConfig(
+      config({ relation: "b", computedUserset: "d" }),
+    );
+    await fga.writeRelationConfig(
+      config({ relation: "c", computedUserset: "d" }),
+    );
+    await expect(
+      fga.writeRelationConfig(config({ relation: "a", impliedBy: ["b", "c"] })),
+    ).resolves.toBeUndefined();
+  });
+
+  test("a re-convergent graph is walked once per relation", async () => {
+    // Without the finished set this is 2^depth store reads. With
+    // it, it is one read per edge.
+    const depth = 12;
+    await fga.writeRelationConfig(
+      config({ relation: "r0", directlyAssignable: [{ type: "user" }] }),
+    );
+    for (let level = 1; level <= depth; level += 1) {
+      await fga.writeRelationConfig(
+        config({
+          relation: `r${level}`,
+          impliedBy: [`r${level - 1}`, `r${level - 1}`],
+        }),
+      );
+    }
+    const before = store.callsWith("findRelationConfig");
+    await fga.writeRelationConfig(
+      config({ relation: "top", impliedBy: [`r${depth}`, `r${depth}`] }),
+    );
+    // One read per distinct relation on the walk, not per path.
+    const reads = store.callsWith("findRelationConfig") - before;
+    expect(`${reads} reads, bounded: ${reads <= 2 * depth + 4}`).toBe(
+      `${reads} reads, bounded: true`,
+    );
+  });
+
+  test("a target that is not written yet is skipped", async () => {
+    await expect(
+      fga.writeRelationConfig(config({ relation: "a", computedUserset: "b" })),
+    ).resolves.toBeUndefined();
+  });
+
+  test("a tuple-to-userset onto the same relation is not a cycle", async () => {
+    await fga.writeRelationConfig(
+      config({ relation: "parent", directlyAssignable: [{ type: "folder" }] }),
+    );
+    await expect(
+      fga.writeRelationConfig(
+        config({
+          relation: "viewer",
+          directlyAssignable: [{ type: "user" }],
+          tupleToUserset: [{ tupleset: "parent", computedUserset: "viewer" }],
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+});

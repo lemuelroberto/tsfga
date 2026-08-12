@@ -550,10 +550,10 @@ write, and the list describes the authorization model.
 **`InvalidConditionalTupleError.cause`** is one of `condition is
 missing`, `invalid condition for type restriction`, `undefined
 condition`, `parameter type error`, `invalid context parameter`.
-**`InvalidRelationConfigError.cause`** is one of `intersection
-has fewer than two operands`, `undefined condition`, `tupleset
-relation admits a userset`, `tupleset relation admits a
-wildcard`. Upstream raises one error per family and discriminates
+**`InvalidRelationConfigError.cause`** names which model rule
+refused; `rewrite cycle` is the one that closes upstream's
+`ErrCycle`, and the full list is in `errors.ts` and in
+`packages/core/README.md`. Upstream raises one error per family and discriminates
 by cause string, so tsfga does too.
 
 There is no `UsersetNotAllowedError`. A userset on a relation
