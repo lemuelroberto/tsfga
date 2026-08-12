@@ -15,9 +15,10 @@ import {
   type FgaContextualTuple,
   fgaCheck,
   fgaListObjects,
-  fgaWrite,
   fgaWriteModelOutcome,
+  fgaWriteOutcome,
 } from "./openfga.ts";
+import { recordRefusal } from "./refusal-log.ts";
 
 /**
  * What a check may do: answer, or decline to answer.
@@ -357,27 +358,65 @@ export async function expectWriteConformance(
   tuple: AddTupleRequest,
   expected: "accepted" | "refused",
 ): Promise<void> {
-  const [tsfgaOutcome, openFgaOutcome] = await Promise.all([
-    tsfgaClient
-      .addTuple(tuple)
-      .then(() => "accepted" as const)
-      .catch((error: unknown) => {
-        // A TsfgaError is the model refusing. Anything else -- a
-        // missing relation config from a mis-ordered fixture, a
-        // dropped connection -- would otherwise be reported as a
-        // refusal and satisfy the assertion it was meant to test.
-        if (error instanceof TsfgaError) return "refused" as const;
-        throw error;
-      }),
-    fgaWrite(storeId, authorizationModelId, tuple),
+  const [tsfga, openFgaOutcome] = await Promise.all([
+    tsfgaWriteOutcome(tsfgaClient, tuple),
+    upstreamWriteOutcome(storeId, authorizationModelId, tuple),
   ]);
 
-  expect(tsfgaOutcome).toBe(openFgaOutcome);
-  expect(tsfgaOutcome).toBe(expected);
+  expect(tsfga.outcome).toBe(openFgaOutcome);
+  expect(tsfga.outcome).toBe(expected);
 }
 
 /** What a tuple write may do. */
 export type WriteOutcome = "accepted" | "refused";
+
+/** What tsfga did with a write, and the error it did it with. */
+interface TsfgaWriteOutcome {
+  outcome: WriteOutcome;
+  /** The refusal itself, so an assertion can be about *which* one. */
+  error: TsfgaError | null;
+}
+
+async function tsfgaWriteOutcome(
+  tsfgaClient: TsfgaClient,
+  tuple: AddTupleRequest,
+): Promise<TsfgaWriteOutcome> {
+  try {
+    await tsfgaClient.addTuple(tuple);
+    return { outcome: "accepted", error: null };
+  } catch (error: unknown) {
+    // A TsfgaError is the model refusing. Anything else -- a
+    // missing relation config from a mis-ordered fixture, a
+    // dropped connection -- would otherwise be reported as a
+    // refusal and satisfy the assertion it was meant to test.
+    if (!(error instanceof TsfgaError)) throw error;
+    return { outcome: "refused", error };
+  }
+}
+
+/**
+ * Upstream's side of a tuple write, reduced to an outcome after the
+ * refusal has been recorded.
+ *
+ * `fgaWriteOutcome` rather than `fgaWrite`: the code and the
+ * message are what the refusal recorder measures the cause
+ * inventory's scope against, and `fgaWrite` discards both before
+ * this file can see them.
+ */
+async function upstreamWriteOutcome(
+  storeId: string,
+  authorizationModelId: string,
+  tuple: AddTupleRequest,
+): Promise<WriteOutcome> {
+  const outcome = await fgaWriteOutcome(storeId, authorizationModelId, tuple);
+  if (outcome === "accepted") return "accepted";
+  recordRefusal({
+    helper: "expectWriteConformance",
+    code: outcome.code,
+    reason: outcome.reason,
+  });
+  return "refused";
+}
 
 /**
  * Pin a *write* divergence: assert what **each** engine does with
@@ -408,19 +447,13 @@ export async function expectPinnedWriteDivergence(
 ): Promise<void> {
   expect(expected.openfga).not.toBe(expected.tsfga);
 
-  const [tsfgaOutcome, openFgaOutcome] = await Promise.all([
-    tsfgaClient
-      .addTuple(tuple)
-      .then((): WriteOutcome => "accepted")
-      .catch((error: unknown): WriteOutcome => {
-        if (error instanceof TsfgaError) return "refused";
-        throw error;
-      }),
-    fgaWrite(storeId, authorizationModelId, tuple),
+  const [tsfga, openFgaOutcome] = await Promise.all([
+    tsfgaWriteOutcome(tsfgaClient, tuple),
+    upstreamWriteOutcome(storeId, authorizationModelId, tuple),
   ]);
 
   expect(openFgaOutcome).toBe(expected.openfga);
-  expect(tsfgaOutcome).toBe(expected.tsfga);
+  expect(tsfga.outcome).toBe(expected.tsfga);
 }
 
 /** What a model write may do. */
@@ -461,6 +494,25 @@ async function tsfgaModelWriteOutcome(
 }
 
 /**
+ * Upstream's side of a model write, reduced to an outcome after the
+ * refusal has been recorded — the model-write twin of
+ * `upstreamWriteOutcome`, and recorded for the same reason.
+ */
+async function upstreamModelWriteOutcome(
+  storeId: string,
+  model: WriteAuthorizationModelRequest,
+): Promise<ModelWriteOutcome> {
+  const outcome = await fgaWriteModelOutcome(storeId, model);
+  if (outcome === "accepted") return "accepted";
+  recordRefusal({
+    helper: "expectModelWriteConformance",
+    code: outcome.code,
+    reason: outcome.reason,
+  });
+  return "refused";
+}
+
+/**
  * Assert that tsfga and OpenFGA agree on whether a model may be
  * *written* at all.
  *
@@ -482,10 +534,7 @@ export async function expectModelWriteConformance(
 ): Promise<void> {
   const [tsfgaOutcome, openFgaOutcome] = await Promise.all([
     tsfgaModelWriteOutcome(tsfgaWrite),
-    fgaWriteModelOutcome(storeId, model).then(
-      (outcome): ModelWriteOutcome =>
-        outcome === "accepted" ? "accepted" : "refused",
-    ),
+    upstreamModelWriteOutcome(storeId, model),
   ]);
 
   expect(tsfgaOutcome).toBe(openFgaOutcome);
@@ -522,10 +571,7 @@ export async function expectPinnedModelWriteDivergence(
 
   const [tsfgaOutcome, openFgaOutcome] = await Promise.all([
     tsfgaModelWriteOutcome(tsfgaWrite, options?.tsfgaCause),
-    fgaWriteModelOutcome(storeId, model).then(
-      (outcome): ModelWriteOutcome =>
-        outcome === "accepted" ? "accepted" : "refused",
-    ),
+    upstreamModelWriteOutcome(storeId, model),
   ]);
 
   expect(openFgaOutcome).toBe(expected.openfga);
