@@ -450,7 +450,11 @@ export function createTsfga(
       // points — this write, every tuple write beneath it, and
       // every check until someone ran one — where OpenFGA refuses
       // the model write that carries it.
-      compileCondition(condition.name, condition.expression);
+      compileCondition(
+        condition.name,
+        condition.expression,
+        condition.parameters,
+      );
       await store.upsertConditionDefinition(condition);
     },
 

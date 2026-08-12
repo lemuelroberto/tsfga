@@ -250,10 +250,12 @@ describe("CEL Global-Call Conformance", () => {
 
   test("GAP-322: a list literal of a literal then a variable", async () => {
     // Nothing to do with the splice — `[s][0]` above is spliced and
-    // answers. cel-js types a list literal from its first element
-    // and refuses every later element of another type, so a
-    // variable (`dyn`) beside a string literal is an evaluation
-    // error. CEL's list type is `list(dyn)` and cel-go accepts it.
+    // answers. cel-js's default types a list literal from its first
+    // element and refuses every later element of another type, so a
+    // variable (`dyn`) beside a string literal used to be an
+    // evaluation error. CEL's list type is `list(dyn)`, cel-go
+    // accepts it, and OpenFGA never turns the homogeneous option
+    // on, so `conditions.ts` turns it off and the two now agree.
     await expectCheck("list_hetero", "abc", true);
   });
 

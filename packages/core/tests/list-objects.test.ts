@@ -386,7 +386,9 @@ describe("listObjects", () => {
    * subject on that relation. A condition on one of those is
    * always evaluated upstream too, so an error there must refuse
    * here. Anything further out upstream may never materialise, so
-   * an error there is deferred and raised only if nothing granted.
+   * an error there is dropped outright: the candidate counts
+   * `false` and the call answers with the granted set, which may
+   * be empty.
    *
    * These go through the real check path rather than injecting the
    * error, because the flag is only worth anything if the read
@@ -522,19 +524,29 @@ describe("listObjects", () => {
       expect(await listObjects(store, ALICE_VIEWER)).toEqual(["1"]);
     });
 
-    test("a deferred error is raised when nothing was granted", async () => {
-      // The same shape with the grant removed. Now the erroring
-      // candidate may well have been the subject's only path, so
-      // the held error becomes the answer rather than `[]`.
+    test("a dropped error still lets the call answer empty", async () => {
+      // The same shape with the grant removed, and the rule does
+      // not change with it: an empty granted set is not evidence
+      // that the erroring row was on alice's path -- a subject who
+      // reaches nothing grants nothing for reasons that have
+      // nothing to do with the condition. So the error is dropped
+      // here too and the call answers `[]`.
+      //
+      // The earlier shape of this rule raised it instead, which is
+      // what made `listObjects` refuse where upstream answers `[]`
+      // (issues 301 and 341 row 1). The cost is stated with it:
+      // where upstream's reverse expansion *does* reach the
+      // erroring row it refuses the whole call and this answers,
+      // which is the under-reporting residue pinned in
+      // `tests/conformance/c3-vault.test.ts` and
+      // `b4-listobjects-probes.test.ts`.
       seedTuplesetScan(false);
 
-      await expect(listObjects(store, ALICE_VIEWER)).rejects.toBeInstanceOf(
-        ConditionEvaluationError,
-      );
+      expect(await listObjects(store, ALICE_VIEWER)).toEqual([]);
     });
 
-    test("a hard failure still wins over a deferred one", async () => {
-      // The deferred slot is not a launch cut-off, so `doc:3` is
+    test("a hard failure still wins over a dropped one", async () => {
+      // A dropped failure is not a launch cut-off, so `doc:3` is
       // reached and its failure aborts -- even though the
       // condition error sits at a lower index.
       seedTuplesetScan(true);

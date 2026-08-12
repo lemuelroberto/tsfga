@@ -1090,6 +1090,117 @@ const REWRITES: ReadonlyMap<string, RewriteStyles> = new Map([
   ],
 ]);
 
+/**
+ * Every function cel-go's standard library declares in the
+ * **global** spelling, plus the two OpenFGA adds.
+ *
+ * Transcribed from `common/stdlib/standard.go` — the `decls.Overload`
+ * entries, as opposed to the `decls.MemberOverload` ones — plus the
+ * `has()` macro from `cel.StandardMacros`, plus `ipaddress` from
+ * `types.IPAddressEnvOption()`.
+ *
+ * The operators are absent on purpose: `_+_`, `_==_` and their
+ * siblings are declared as functions in cel-go but there is no
+ * spelling that writes one as a call, and cel-js parses each into
+ * its own AST node rather than into a `call`.
+ */
+const CEL_GO_GLOBAL_CALLS: ReadonlySet<string> = new Set([
+  "bool",
+  "bytes",
+  "double",
+  "duration",
+  "dyn",
+  "has",
+  "int",
+  "ipaddress",
+  "matches",
+  "size",
+  "string",
+  "timestamp",
+  "type",
+  "uint",
+]);
+
+/**
+ * Every function cel-go's standard library declares in the
+ * **receiver** spelling, plus the two OpenFGA adds.
+ *
+ * The `decls.MemberOverload` entries of the same file, plus the
+ * five comprehension macros of `cel.StandardMacros`, plus `in_cidr`
+ * from the `IPADDRESS` custom parameter type.
+ *
+ * `ipaddress` and `in_cidr` are declared here and implemented
+ * nowhere: cel-js has neither, so a condition naming one is written
+ * and then refuses at the check that reads it. That is the
+ * behaviour this file has always had and the allow-list must not
+ * change it — refusing the *write* would refuse a model upstream
+ * accepts, which is the worse of the two directions.
+ */
+const CEL_GO_MEMBER_CALLS: ReadonlySet<string> = new Set([
+  "all",
+  "contains",
+  "endsWith",
+  "exists",
+  "exists_one",
+  "filter",
+  "getDate",
+  "getDayOfMonth",
+  "getDayOfWeek",
+  "getDayOfYear",
+  "getFullYear",
+  "getHours",
+  "getMilliseconds",
+  "getMinutes",
+  "getMonth",
+  "getSeconds",
+  "in_cidr",
+  "map",
+  "matches",
+  "size",
+  "startsWith",
+]);
+
+/**
+ * The two sets above, exported for the enumeration test.
+ *
+ * `conditions.test.ts` diffs them against `getDefinitions()` on the
+ * live cel-js environment and fails on any name in one and not the
+ * other. That is what keeps this transcription honest across a
+ * cel-js upgrade: the surface it describes is the *difference*
+ * between two libraries, and a difference nobody measures is a
+ * divergence nobody knows about.
+ */
+export const CEL_GO_DECLARED_CALLS: Readonly<{
+  global: ReadonlySet<string>;
+  member: ReadonlySet<string>;
+}> = { global: CEL_GO_GLOBAL_CALLS, member: CEL_GO_MEMBER_CALLS };
+
+/**
+ * Refuse a call cel-go's environment does not declare.
+ *
+ * cel-js's base environment ships the equivalent of cel-go's
+ * `ext.Strings()` and `ext.Bindings()` libraries — `split`,
+ * `substring`, `trim`, `indexOf`, `lastIndexOf`, `lowerAscii`,
+ * `upperAscii`, `join`, `cel.bind` — and OpenFGA enables neither,
+ * so a condition naming one of them is a model OpenFGA refuses to
+ * store. It refuses it at `WriteAuthorizationModel`, because
+ * `cel.EagerlyValidateDeclarations(true)` compiles every condition
+ * against its declared parameters while the model is validated
+ * (issue 381).
+ *
+ * There is no way to *remove* a function from cel-js: registries
+ * lock on clone, there is no `deleteFunction`, and `stdlib` has no
+ * opt-out. An allow-list applied to the parse is the only mechanism
+ * available, and it is the same mechanism whatever cel-js adds
+ * next — a name nobody has enumerated is refused because it is
+ * absent from the transcription, not because someone thought of it.
+ */
+function refuseUndeclaredCall(name: string, receiver: boolean): void {
+  const declared = receiver ? CEL_GO_MEMBER_CALLS : CEL_GO_GLOBAL_CALLS;
+  if (declared.has(name)) return;
+  throw new Error(`undeclared reference to '${name}' (in container '')`);
+}
+
 /** One name replaced, as a half-open range of the source text. */
 interface Splice {
   start: number;
@@ -1260,7 +1371,13 @@ function unplaceableCall(name: string): string {
 }
 
 /**
- * Find every call this module owns an implementation for.
+ * Find every call this module owns an implementation for, and
+ * refuse every call cel-go's environment does not declare.
+ *
+ * The two are one walk because they ask the same question of the
+ * same node — *which function is this?* — and because a name the
+ * allow-list refuses must be refused wherever it appears, not only
+ * at the top of the expression.
  *
  * The rewrite is a **source-text splice**, not an AST edit: only
  * the function's name moves, every other byte of the author's
@@ -1331,6 +1448,7 @@ function collectSplices(node: ASTNode, scan: SpliceScan): void {
 
     case "call": {
       const [name, args] = node.args;
+      refuseUndeclaredCall(name, false);
       const rewrite = REWRITES.get(name)?.call ?? null;
       if (rewrite !== null && args.length === rewrite.arity) {
         // A `call` node starts at its own name, so the name is the
@@ -1353,6 +1471,7 @@ function collectSplices(node: ASTNode, scan: SpliceScan): void {
 
     case "rcall": {
       const [name, receiver, args] = node.args;
+      refuseUndeclaredCall(name, true);
       const rewrite = REWRITES.get(name)?.rcall ?? null;
       const first = args[0];
       if (
@@ -1429,6 +1548,202 @@ export function hasCompiledExpression(expression: string): boolean {
 }
 
 /**
+ * How each declared parameter type is spelled to cel-js's type
+ * checker.
+ *
+ * Four of the eight are spelled the same in both. A `duration` and
+ * a `timestamp` are protobuf well-known types and carry their full
+ * names, and `any` is CEL's `dyn` — the type that checks against
+ * everything, which is what an `any` parameter means.
+ */
+const CEL_TYPE_NAMES: Readonly<Record<ConditionParameterScalarType, string>> = {
+  any: "dyn",
+  bool: "bool",
+  double: "double",
+  duration: "google.protobuf.Duration",
+  int: "int",
+  string: "string",
+  timestamp: "google.protobuf.Timestamp",
+  uint: "uint",
+};
+
+/**
+ * A declared parameter type as cel-js spells it, or `dyn` for
+ * anything unrecognised.
+ *
+ * Unrecognised falls to `dyn` rather than refusing: the parameter
+ * types are gated where a condition is written, and a checker that
+ * refused what that gate admits would turn a stored row nobody can
+ * fix into an outage. `dyn` checks against everything, so an
+ * unreadable declaration costs coverage and never an answer.
+ */
+function celTypeName(type: ConditionParameterType): string {
+  if (isScalarParameterType(type)) return CEL_TYPE_NAMES[type];
+  const container = containerOf(type);
+  if (container === null) return "dyn";
+  const element = CEL_TYPE_NAMES[container.element];
+  // A model's `map<T>` is keyed by string; only the value type is
+  // spelled, exactly as OpenFGA's parameter grammar spells it.
+  return container.kind === "list"
+    ? `list<${element}>`
+    : `map<string, ${element}>`;
+}
+
+/**
+ * Refuse an expression that does not type-check against its
+ * declared parameters.
+ *
+ * OpenFGA compiles every condition while it validates
+ * `WriteAuthorizationModel` — `cel.EagerlyValidateDeclarations(true)`
+ * on an environment carrying exactly the declared parameters — so
+ * `n != 'a'` on an `int` parameter, or a reference to a parameter
+ * that was never declared, is a **model-write** refusal upstream and
+ * there is no model carrying it for a check to read. tsfga parsed
+ * and did not check, so all seven shapes issue 388 reports answered,
+ * and four of them granted.
+ *
+ * Two things make this reachable without tsfga writing a checker of
+ * its own: cel-js 8.0.0 exposes a typed `check()`, and its
+ * environment can be cloned with `unlistedVariablesAreDyn` turned
+ * **off** — which is what makes an undeclared reference an error
+ * rather than a `dyn`. `n > 0 || other > 0` is the cell that needs
+ * both: cel-js short-circuits the `||` before `other` is ever
+ * evaluated, so it used to grant with no error anywhere.
+ *
+ * The check runs on the **rewritten** expression, where `int(…)`,
+ * `double(…)` and `matches(…)` name tsfga's own overloads. Checking
+ * the author's spelling instead would refuse `int(d)` and
+ * `int(t)` — overloads cel-go declares, cel-js does not, and this
+ * module supplies.
+ */
+function refuseUntypedExpression(
+  expression: string,
+  parameters: Readonly<Record<string, ConditionParameterType>>,
+): void {
+  const strict = typeVerdict(expression, parameters, false);
+  if (strict === null) return;
+  // A verdict that only stands while a temporal type is known is
+  // not tsfga's to enforce; see `hasUntrustedType`.
+  if (hasUntrustedType(parameters)) {
+    if (typeVerdict(expression, parameters, true) === null) return;
+  }
+  throw new Error(strict);
+}
+
+/**
+ * The types cel-js declares differently from cel-go, and whose
+ * verdicts are therefore not enforced.
+ *
+ * Exactly one declaration is wrong, and it is enough to reach both
+ * of them: cel-js gives `duration + timestamp` the return type
+ * **Duration**, where cel-go's `add_duration_timestamp` gives
+ * Timestamp. So `d + t > t` — a comparison upstream compiles — is
+ * a type error here, and no `registerOperator` can repair it
+ * because cel-js refuses to replace an overload that exists
+ * ("Operator overload already registered"). The value cel-js
+ * *computes* is right; only the declaration is wrong.
+ *
+ * Rather than special-case the one shape, the rule is stated the
+ * way it will still be true after the next cel-js release: where
+ * the two libraries' declarations are known to disagree, a
+ * refusal is not tsfga's to make. An expression naming a temporal
+ * parameter is re-checked with those parameters as `dyn`, and is
+ * accepted when the disagreement was the only thing between it and
+ * a verdict. Everything else about it is still checked, and an
+ * expression with no temporal parameter is unaffected.
+ */
+const CEL_JS_UNTRUSTED_TYPES: ReadonlySet<string> = new Set([
+  "duration",
+  "timestamp",
+]);
+
+function hasUntrustedType(
+  parameters: Readonly<Record<string, ConditionParameterType>>,
+): boolean {
+  for (const type of Object.values(parameters)) {
+    const container = containerOf(type);
+    const element = container === null ? type : container.element;
+    if (CEL_JS_UNTRUSTED_TYPES.has(element)) return true;
+  }
+  return false;
+}
+
+/**
+ * cel-js's verdict on one expression, or `null` when it has none
+ * to give — which is what "this type-checks" looks like.
+ *
+ * `degradeTemporal` declares every temporal parameter as `dyn`
+ * instead of as its own type.
+ */
+function typeVerdict(
+  expression: string,
+  parameters: Readonly<Record<string, ConditionParameterType>>,
+  degradeTemporal: boolean,
+): string | null {
+  const typed = env.clone({
+    unlistedVariablesAreDyn: false,
+    homogeneousAggregateLiterals: false,
+  });
+  // Declared by OpenFGA and absent from cel-js, so the checker
+  // would report an overload error on a model upstream accepts.
+  // The bodies are never reached: `check` does not evaluate, and
+  // the environment that does evaluate is the module's own, where
+  // neither name resolves — which is the documented gap.
+  typed.registerFunction("ipaddress(string): dyn", () => null);
+  typed.registerFunction("dyn.in_cidr(string): bool", () => false);
+  for (const [name, type] of Object.entries(parameters)) {
+    const declared = celTypeName(type);
+    const untrusted = CEL_JS_UNTRUSTED_TYPES.has(type);
+    typed.registerVariable(
+      name,
+      degradeTemporal && untrusted ? "dyn" : declared,
+    );
+  }
+  let result: ReturnType<typeof typed.check>;
+  try {
+    result = typed.check(expression);
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  if (!result.valid) {
+    return result.error?.message ?? `'${expression}' does not type-check`;
+  }
+  // Upstream's own words for the same refusal. A `dyn` result is
+  // accepted: the expression's type is unknown, not known to be
+  // something other than a bool, and upstream's checker admits it
+  // for the same reason.
+  if (result.type === undefined) return null;
+  if (result.type === "bool" || result.type === "dyn") return null;
+  const got = result.type;
+  return `expected a bool condition expression output, but got '${got}'`;
+}
+
+/**
+ * Type-check a compiled expression when its declarations are in
+ * hand, raising `ConditionCompileError` in the one class the write
+ * path already reports.
+ *
+ * `ast.input` is the source cel-js parsed, which is the *rewritten*
+ * expression whenever a rewrite happened — the text the checker has
+ * to read, and the one place it survives.
+ */
+function typeCheck(
+  conditionName: string,
+  compiled: ParseResult,
+  parameters:
+    | Readonly<Record<string, ConditionParameterType>>
+    | null
+    | undefined,
+): void {
+  if (parameters === undefined || parameters === null) return;
+  try {
+    refuseUntypedExpression(compiled.ast.input, parameters);
+  } catch (error) {
+    throw new ConditionCompileError(conditionName, error);
+  }
+}
+
+/**
  * Compile an expression, or raise `ConditionCompileError`.
  *
  * The one place `parse` is called on a stored expression, so that
@@ -1436,10 +1751,21 @@ export function hasCompiledExpression(expression: string): boolean {
  * discovered. It used to be called outside the `try` that wraps
  * evaluation, which let cel-js's own `ParseError` — not a
  * `TsfgaError` — escape `check()`.
+ *
+ * `parameters` is what a caller holding the whole definition — the
+ * write path — passes to have the expression **type-checked**
+ * against its declarations, as upstream's model write does. It is
+ * deliberately absent on the read path: the type check is a
+ * property of the definition, not of the expression, so two
+ * conditions sharing an expression and declaring different
+ * parameters must each be checked, and neither may read the
+ * other's verdict out of the expression cache. Passing it costs
+ * one environment clone per write and nothing per check.
  */
 export function compileCondition(
   conditionName: string,
   expression: string,
+  parameters?: Readonly<Record<string, ConditionParameterType>> | null,
 ): ParseResult {
   const cached = exprCache.get(expression);
   if (cached) {
@@ -1449,6 +1775,7 @@ export function compileCondition(
     // than the bound, which is the case the bound exists for.
     exprCache.delete(expression);
     exprCache.set(expression, cached);
+    typeCheck(conditionName, cached, parameters);
     return cached;
   }
   let compiled: ParseResult;
@@ -1459,6 +1786,7 @@ export function compileCondition(
   } catch (error) {
     throw new ConditionCompileError(conditionName, error);
   }
+  typeCheck(conditionName, compiled, parameters);
   if (exprCache.size >= EXPR_CACHE_MAX_ENTRIES) {
     const oldest = exprCache.keys().next();
     if (!oldest.done) exprCache.delete(oldest.value);

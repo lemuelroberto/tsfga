@@ -7,6 +7,7 @@ import {
   type CheckOutcome,
   expectConfigsMatchModel,
   expectConformance,
+  expectPinnedDivergence,
   type FixtureRecord,
   recordFixture,
 } from "./helpers/conformance.ts";
@@ -116,6 +117,27 @@ describe("CEL RE2 dialect conformance", () => {
 
   const match = (s: string, p: string, expected: CheckOutcome) =>
     expectConformance(
+      storeId,
+      modelId,
+      tsfgaClient,
+      {
+        objectType: "doc_c5",
+        objectId: uuid("doc"),
+        relation: "re_c5",
+        subjectType: "user_c5",
+        subjectId: uuid("alice"),
+        context: { s, p },
+      },
+      expected,
+    );
+
+  /** `match`, for the cells the two engines answer differently. */
+  const matchPinned = (
+    s: string,
+    p: string,
+    expected: { openfga: CheckOutcome; tsfga: CheckOutcome },
+  ) =>
+    expectPinnedDivergence(
       storeId,
       modelId,
       tsfgaClient,
@@ -295,16 +317,33 @@ describe("CEL RE2 dialect conformance", () => {
       await match("a", "\\p{^L}", false);
     });
 
+    // The three inline-flag forms are pinned rather than fixed:
+    // they have no portable JavaScript spelling before V8 12.5's
+    // modifier groups, and the translator refuses by default, so
+    // the divergence is **fail-closed** — tsfga refuses a pattern
+    // upstream compiles and answers. A leading `(?i)` translates
+    // to the `i` flag and still agrees; it is the control two
+    // families up.
+
     test("GAP-384: a case-insensitive flag mid-pattern", async () => {
-      await match("aBC", "a(?i)bc", true);
+      await matchPinned("aBC", "a(?i)bc", {
+        openfga: true,
+        tsfga: "refused",
+      });
     });
 
     test("GAP-384: a scoped case-insensitive group", async () => {
-      await match("ABC", "(?i:abc)", true);
+      await matchPinned("ABC", "(?i:abc)", {
+        openfga: true,
+        tsfga: "refused",
+      });
     });
 
     test("GAP-384: a flag-removal group", async () => {
-      await match("abc", "(?-i)abc", true);
+      await matchPinned("abc", "(?-i)abc", {
+        openfga: true,
+        tsfga: "refused",
+      });
     });
 
     test("GAP-384: a duplicate group name", async () => {

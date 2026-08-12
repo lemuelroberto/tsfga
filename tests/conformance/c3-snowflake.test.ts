@@ -8,6 +8,7 @@ import {
   expectConfigsMatchModel,
   expectConformance,
   expectListObjectsConformance,
+  expectPinnedDivergence,
   expectWriteConformance,
   type FixtureRecord,
   recordFixture,
@@ -499,12 +500,44 @@ describe("Snowflake Model Conformance", () => {
     await can("role_c3s", role(1), "member", "bob", "refused");
   });
 
-  test("GAP-340: a subject with no tuples at all is answered past the budget", async () => {
+  test("GAP-340: a subject with no tuples is answered past the budget", async () => {
+    // Pinned, and fail-closed: tsfga refuses where upstream denies.
+    //
     // erin holds no `direct_member` row anywhere. Upstream's
-    // recursive resolver starts from the *user* side, finds nothing
-    // to walk, and answers `false` at any depth; tsfga dispatches
-    // down the chain and exhausts its budget.
-    await can("role_c3s", role(1), "member", "erin", false);
+    // `recursiveFastPath` streams the usersets reachable from the
+    // *user* alongside those reachable from the object and
+    // short-circuits to `false` the moment the user side closes
+    // empty — before any recursive descent, so no resolution depth
+    // is spent and the answer is `false` at any chain length.
+    // tsfga dispatches one hop at a time from the object side,
+    // has no user-side reachability step, and so spends the same
+    // 25 dispatches on an absent subject as on a present one.
+    //
+    // Test 24 above is the control that makes this precise: `bob`
+    // holds a row on the same relation off the chain, so upstream
+    // cannot rule him out from the tuples alone and exhausts
+    // exactly as tsfga does. The divergence is confined to a
+    // subject who reaches *nothing* through the recursive
+    // relation, and it disappears below the budget — test 23 has
+    // both engines answering `false` for erin at 24 links.
+    //
+    // Not fixed here: closing it needs a new `TupleStore` read and
+    // a slice of upstream's recursive resolver, which belongs with
+    // the weighted-graph work that issues 003, 061, 170 and 200
+    // all point at, and which should be decided as one.
+    await expectPinnedDivergence(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "role_c3s",
+        objectId: role(1),
+        relation: "member",
+        subjectType: "user_c3s",
+        subjectId: "erin",
+      },
+      { openfga: false, tsfga: "refused" },
+    );
   });
 
   // --- listObjects ---

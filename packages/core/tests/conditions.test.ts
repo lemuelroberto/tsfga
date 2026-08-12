@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { Environment } from "@marcbachmann/cel-js";
 import {
+  CEL_GO_DECLARED_CALLS,
   coerceContext,
   compileCondition,
   EXPR_CACHE_MAX_ENTRIES,
@@ -148,7 +150,11 @@ describe("evaluateTupleCondition", () => {
     store.conditionDefinitions.length = 0;
     store.conditionDefinitions.push({
       name: "bad_expr",
-      expression: "x.nonexistent_method()",
+      // `size` is declared — a made-up name would now be refused
+      // by the declaration gate before anything was evaluated —
+      // and there is no overload of it for an int, so this fails
+      // where the test means it to: at evaluation.
+      expression: "size(x)",
       parameters: {},
     });
     await expect(
@@ -1741,5 +1747,378 @@ describe("conversions agree with cel-go", () => {
     test("a homogeneous list still reads", async () => {
       expect(await answer('"b" in ["a", "b"]', {}, {})).toBe(true);
     });
+  });
+});
+
+/**
+ * The enumeration test.
+ *
+ * cel-go's standard library is a finite declaration list and cel-js
+ * 8.0.0 exposes `getDefinitions()`, so "which functions does one
+ * have that the other does not" is not a question to be discovered
+ * by probing a check at a time — it is a **diff that can be
+ * computed**. Computing it is what turns the widest of the CEL root
+ * causes from a sweep into a standing guard: a cel-js upgrade that
+ * adds a function reports itself here rather than waiting for
+ * someone to write a conformance cell against it.
+ *
+ * The two residues below are checked in with a reason each. A name
+ * appearing on either side that is not in its residue fails, in
+ * both directions.
+ */
+describe("cel-js's declared surface against cel-go's", () => {
+  const pristine = new Environment({ unlistedVariablesAreDyn: true });
+
+  const declaredByCelJs = (): { global: Set<string>; member: Set<string> } => {
+    const surface = { global: new Set<string>(), member: new Set<string>() };
+    for (const declared of pristine.getDefinitions().functions) {
+      const style = declared.receiverType === null ? "global" : "member";
+      surface[style].add(declared.name);
+    }
+    return surface;
+  };
+
+  /**
+   * Functions cel-js declares and cel-go does not, by the library
+   * cel-go would need for them.
+   *
+   * OpenFGA enables none of these: `internal/condition/condition.go`
+   * builds its environment from the custom parameter types,
+   * `IPAddressEnvOption` and `EagerlyValidateDeclarations`, so a
+   * condition naming one is a model upstream refuses to store. That
+   * is issue 381, and the declaration gate is what refuses them
+   * here.
+   */
+  const CEL_JS_ONLY: Record<"global" | "member", readonly string[]> = {
+    global: [],
+    member: [
+      // cel-go's ext.Strings()
+      "indexOf",
+      "join",
+      "lastIndexOf",
+      "lowerAscii",
+      "split",
+      "substring",
+      "trim",
+      "upperAscii",
+      // cel-go's ext.Bindings() — `cel.bind` parses as a receiver
+      // call on the `cel` namespace
+      "bind",
+      // cel-js's own bytes and encoding helpers, which have no
+      // cel-go equivalent under any library OpenFGA enables
+      "at",
+      "base64",
+      "hex",
+      "json",
+      "string",
+      // the optional-types family, which cel-go declares only when
+      // a host asks for it and OpenFGA never does
+      "hasValue",
+      "none",
+      "of",
+      "or",
+      "orValue",
+      "value",
+    ],
+  };
+
+  /**
+   * Functions cel-go declares and cel-js does not.
+   *
+   * Three, and each is already accounted for elsewhere in this
+   * file: the global `matches` is why `compileCondition` rewrites
+   * the call onto tsfga's own RE2 implementation rather than
+   * relying on cel-js resolving it (issue 320), and `ipaddress` /
+   * `in_cidr` are OpenFGA's own additions, which tsfga admits at
+   * write time and cannot evaluate — the documented gap.
+   */
+  const CEL_GO_ONLY: Record<"global" | "member", readonly string[]> = {
+    global: ["ipaddress", "matches"],
+    member: ["in_cidr"],
+  };
+
+  for (const style of ["global", "member"] as const) {
+    test(`${style}: every name cel-js adds is one we know about`, () => {
+      const surface = declaredByCelJs();
+      const added = [...surface[style]]
+        .filter((name) => !CEL_GO_DECLARED_CALLS[style].has(name))
+        .sort();
+      expect(added).toEqual([...CEL_JS_ONLY[style]].sort());
+    });
+
+    test(`${style}: every name cel-js lacks is one we know about`, () => {
+      const surface = declaredByCelJs();
+      const absent = [...CEL_GO_DECLARED_CALLS[style]]
+        .filter((name) => !surface[style].has(name))
+        .sort();
+      expect(absent).toEqual([...CEL_GO_ONLY[style]].sort());
+    });
+  }
+
+  /**
+   * The transcription is only as good as its source, so state the
+   * source. cel-go declares `size` and `matches` in both styles and
+   * everything else in one, which is the property the gate reads.
+   */
+  test("the transcription is two sets, not one", () => {
+    const both = [...CEL_GO_DECLARED_CALLS.global].filter((name) =>
+      CEL_GO_DECLARED_CALLS.member.has(name),
+    );
+    expect(both.sort()).toEqual(["matches", "size"]);
+  });
+});
+
+/**
+ * The declaration gate (issue 381).
+ *
+ * cel-js ships the equivalent of cel-go's `ext.Strings()` and
+ * `ext.Bindings()`, OpenFGA enables neither, and there is no way to
+ * remove a function from cel-js — registries lock on clone, there
+ * is no `deleteFunction`, and the standard library has no opt-out.
+ * So the expression is walked and a call cel-go does not declare is
+ * refused where the condition is written, which is where upstream
+ * refuses it.
+ */
+describe("a call cel-go does not declare is refused", () => {
+  const compile = (expression: string): void => {
+    compileCondition("gate", expression);
+  };
+
+  for (const expression of [
+    "s.split(',').size() == 2",
+    "s.substring(0, 1) == 'a'",
+    "s.trim() == 'a'",
+    "s.indexOf('b') == 1",
+    "s.lastIndexOf('a') == 2",
+    "s.lowerAscii() == 'ab'",
+    "s.upperAscii() == 'AB'",
+    "l.join(',') == 'a,b'",
+    "cel.bind(x, n + 1, x > 1)",
+  ]) {
+    test(expression, () => {
+      expect(() => compile(expression)).toThrow(ConditionCompileError);
+    });
+  }
+
+  test("a name neither library declares", () => {
+    expect(() => compile("not_a_function(x)")).toThrow(ConditionCompileError);
+  });
+
+  test("the message names the offending call, as upstream's does", () => {
+    try {
+      compile("s.trim() == 'a'");
+      throw new Error("expected a refusal");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConditionCompileError);
+      expect(String((error as ConditionCompileError).cause)).toContain(
+        "undeclared reference to 'trim'",
+      );
+    }
+  });
+
+  /**
+   * The gate is a walk, not a look at the root: a refused call
+   * nested three deep in an expression whose top-level call is
+   * fine must still be refused.
+   */
+  test("a refused call nested under an allowed one", () => {
+    expect(() => compile("size(s.split(','))  == 2")).toThrow(
+      ConditionCompileError,
+    );
+  });
+
+  /**
+   * The other direction, and the one that would take out whole
+   * fixture files: a name cel-go *does* declare must still be
+   * written. Both styles of the two functions declared in both.
+   */
+  for (const expression of [
+    "size(s) > 0",
+    "s.size() > 0",
+    "matches(s, 'a')",
+    "s.matches('a')",
+    "s.contains('a')",
+    "s.startsWith('a')",
+    "s.endsWith('a')",
+    "has(m.a)",
+    "l.all(i, i == 'a')",
+    "l.exists(i, i == 'a')",
+    "l.exists_one(i, i == 'a')",
+    "l.filter(i, i == 'a') == l",
+    "l.map(i, i + 'a') == l",
+    "int(n) == 1",
+    "uint(n) == 1u",
+    "double(n) == 1.0",
+    "string(n) == '1'",
+    "bool(s)",
+    "bytes(s) == b",
+    "type(n) == int",
+    "dyn(n) == 1",
+    "timestamp(s) > t",
+    "duration(s) > d",
+    "t.getFullYear() > 0",
+    "t.getMonth() == 0",
+    "t.getDayOfYear() == 0",
+    "t.getDayOfMonth() == 0",
+    "t.getDate() == 1",
+    "t.getDayOfWeek() == 0",
+    "t.getHours() == 0",
+    "t.getMinutes() == 0",
+    "t.getSeconds() == 0",
+    "t.getMilliseconds() == 0",
+    "ipaddress(s) == ipaddress(s)",
+    "ip.in_cidr('10.0.0.0/8')",
+  ]) {
+    test(`accepted: ${expression}`, () => {
+      expect(() => compile(expression)).not.toThrow();
+    });
+  }
+});
+
+/**
+ * The type check (issue 388).
+ *
+ * OpenFGA compiles every condition against its declared parameters
+ * while it validates the model, so an expression that does not
+ * type-check has no model to live in and no check to answer.
+ * tsfga's parse said nothing about types, so all seven shapes the
+ * issue reports answered and four of them granted.
+ *
+ * The check is reached by passing the declarations to
+ * `compileCondition`. It is deliberately not run on the read path:
+ * the verdict belongs to the definition, not to the expression,
+ * and the expression cache is keyed by the expression alone.
+ */
+describe("an expression is checked against its declarations", () => {
+  const compile = (
+    expression: string,
+    parameters: Record<string, ConditionParameterType>,
+  ): void => {
+    compileCondition("typed", expression, parameters);
+  };
+
+  describe("refused, as upstream refuses the model", () => {
+    for (const [expression, parameters] of [
+      ["n != 'a'", { n: "int" }],
+      ["n == 1.0", { n: "int" }],
+      ["n == 1u", { n: "int" }],
+      ["n > 0 || other > 0", { n: "int" }],
+      ["n == 'a'", { n: "int" }],
+      ["n in ['a']", { n: "int" }],
+      ["n", { n: "int" }],
+    ] as Array<[string, Record<string, ConditionParameterType>]>) {
+      test(expression, () => {
+        expect(() => compile(expression, parameters)).toThrow(
+          ConditionCompileError,
+        );
+      });
+    }
+
+    /**
+     * The sharpest of the seven, and the one a type check alone
+     * would miss: cel-js short-circuits the `||` before the
+     * undeclared reference is evaluated, so the expression used to
+     * **grant** with nothing reporting a problem. It closes only
+     * because the checking environment is cloned with
+     * `unlistedVariablesAreDyn` turned off.
+     */
+    test("an undeclared reference is named", () => {
+      try {
+        compile("n > 0 || other > 0", { n: "int" });
+        throw new Error("expected a refusal");
+      } catch (error) {
+        expect(error).toBeInstanceOf(ConditionCompileError);
+        expect(String((error as ConditionCompileError).cause)).toContain(
+          "other",
+        );
+      }
+    });
+
+    test("a non-bool output is named as upstream names it", () => {
+      try {
+        compile("n", { n: "int" });
+        throw new Error("expected a refusal");
+      } catch (error) {
+        expect(String((error as ConditionCompileError).cause)).toContain(
+          "expected a bool condition expression output",
+        );
+      }
+    });
+  });
+
+  describe("accepted, as upstream accepts the model", () => {
+    for (const [expression, parameters] of [
+      ["n > 0", { n: "int" }],
+      ["ok", { ok: "bool" }],
+      ["s != ''", { s: "string" }],
+      ["n + 1u == 8u", { n: "uint" }],
+      ["x > 0.0", { x: "double" }],
+      ["size(l) > 0", { l: "list<string>" }],
+      ["'a' in l", { l: "list<string>" }],
+      ["m['a'] > 0", { m: "map<int>" }],
+      ["x == '1'", { x: "any" }],
+      ["s.matches('^a.c$')", { s: "string" }],
+      ["matches(s, '^a.c$')", { s: "string" }],
+      ["now < expires_at", { now: "timestamp", expires_at: "timestamp" }],
+      ["t + d > t", { t: "timestamp", d: "duration" }],
+      ["int(t) > 0", { t: "timestamp" }],
+      ["int(d) > 0", { d: "duration" }],
+      ["string(t) == 'x'", { t: "timestamp" }],
+      ["string(d) == 'x'", { d: "duration" }],
+    ] as Array<[string, Record<string, ConditionParameterType>]>) {
+      test(expression, () => {
+        expect(() => compile(expression, parameters)).not.toThrow();
+      });
+    }
+
+    /**
+     * The one declaration cel-js gets wrong, and the reason the
+     * verdict on a temporal expression is not enforced: cel-js
+     * types `duration + timestamp` as a **Duration** where cel-go's
+     * `add_duration_timestamp` types it as a Timestamp, so a
+     * comparison upstream compiles is a type error here. cel-js
+     * refuses to replace an existing operator overload, so this
+     * cannot be repaired — only not enforced.
+     */
+    test("duration + timestamp, which cel-js types wrongly", () => {
+      expect(() =>
+        compile("d + t > t", { t: "timestamp", d: "duration" }),
+      ).not.toThrow();
+    });
+
+    /**
+     * Declared by OpenFGA, absent from cel-js. The write must be
+     * accepted — refusing it would refuse a model upstream stores —
+     * and the check that reads it still refuses, which is the gap
+     * `packages/core/README.md` already documents.
+     */
+    test("in_cidr, which OpenFGA declares and cel-js has not", () => {
+      expect(() =>
+        compile("ip.in_cidr(cidr)", { ip: "any", cidr: "string" }),
+      ).not.toThrow();
+    });
+  });
+
+  /**
+   * Two conditions may share an expression and declare different
+   * parameters. The compiled expression is cached by its source
+   * text, so the second must be checked against its own
+   * declarations rather than inheriting the first's verdict.
+   */
+  test("the verdict is not cached with the expression", () => {
+    const expression = "shared_388 > 0";
+    expect(() => compile(expression, { shared_388: "int" })).not.toThrow();
+    expect(() => compile(expression, { shared_388: "string" })).toThrow(
+      ConditionCompileError,
+    );
+  });
+
+  /**
+   * The read path passes no declarations and must not pay for a
+   * check it cannot make: an expression a check reads is compiled
+   * exactly as before.
+   */
+  test("no declarations means no check", () => {
+    expect(() => compileCondition("untyped", "n != 'a'")).not.toThrow();
   });
 });

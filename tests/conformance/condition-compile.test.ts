@@ -134,15 +134,21 @@ describe("Condition Compilation Conformance", () => {
   });
 
   /**
-   * Measured while sweeping the neighbourhood of the parse gate,
-   * and **not** closed by it: OpenFGA compiles against the declared
-   * parameters and rejects an undeclared reference, while cel-js
-   * parses the call and only fails when it is evaluated. Pinned
-   * rather than left unstated, so a cel-js release that starts
-   * checking references is a failing test rather than a silent
-   * change of behaviour.
+   * Once a pinned divergence, now agreement.
+   *
+   * OpenFGA compiles against the declared parameters and rejects an
+   * undeclared reference. cel-js only parsed, so the call was stored
+   * and failed at evaluation -- pinned here so that a cel-js release
+   * which started checking references would show up as a failing
+   * test rather than a silent change.
+   *
+   * It was not a cel-js release that closed it. `compileCondition`
+   * now type-checks against the declared parameters on a clone that
+   * registers them as variables, which is what upstream does, so
+   * both engines refuse the write. The pin has become the
+   * conformance assertion it existed to wait for.
    */
-  test("an undeclared reference is refused only upstream", async () => {
+  test("an undeclared reference is refused by both", async () => {
     const expression = "not_a_function(x)";
     const [tsfgaOutcome, openFgaOutcome] = await Promise.all([
       tsfgaClient
@@ -162,7 +168,7 @@ describe("Condition Compilation Conformance", () => {
     ]);
 
     expect(openFgaOutcome).toBe("refused");
-    expect(tsfgaOutcome).toBe("accepted");
+    expect(tsfgaOutcome).toBe("refused");
   });
 
   /**

@@ -376,15 +376,65 @@ describe("listObjects probes", () => {
   });
 
   describe("errors against the drop-on-depth rule", () => {
-    test("a reachable candidate's condition error refuses on both", async () => {
-      // Not a divergence: the failing row is on the only path to
-      // the object asked about, so upstream evaluates it too.
-      await expectBothRefuse({
-        objectType: T,
-        relation: "ttu_other_rel",
-        subjectType: U,
-        subjectId: uuid("stranger"),
-      });
+    test("GAP-341: a reachable candidate's condition error (pinned)", async () => {
+      // The second half of issue 341's pin, asserted here from the
+      // side where the two engines used to agree.
+      //
+      // `stranger` really is reachable through the erroring row --
+      // `ttus_b4:err_parent#mult_parent_types@directs_b4:err_child`
+      // carries `xcond_b4`, and `err_child#other_rel` names him --
+      // so upstream's reverse expansion arrives at that row,
+      // cannot evaluate it without the context, and refuses the
+      // whole call. tsfga meets the same row on a tupleset scan,
+      // which is not a read naming the request subject, so it
+      // drops the candidate and answers the empty list.
+      //
+      // It used to agree, but only by accident: nothing else
+      // granted, and the old rule raised a dropped error when the
+      // granted set came back empty. That rule is what made
+      // `listObjects` refuse where upstream answers `[]` (issues
+      // 301 and 341 row 1), and deleting it exposes this cell as
+      // the divergence it always was.
+      //
+      // **No local predicate separates this from `c3-vault`'s
+      // `dan`, who must answer.** Both reach the identical branch
+      // with identical local information: the erroring row is read
+      // at the same point, `findCheckTuples` probes the subject
+      // directly for both and returns nothing for both, and
+      // "did the candidate's subtree reach the subject?" is
+      // unknowable without evaluating the condition that just
+      // failed. Telling them apart needs reverse reachability over
+      // the stored rows, which tsfga has at the model level only.
+      // So one of the two must diverge, and the direction chosen
+      // is this one: under-reporting, never granting.
+      await expectPinnedListObjectsDivergence(
+        storeId,
+        authorizationModelId,
+        tsfgaClient,
+        {
+          objectType: T,
+          relation: "ttu_other_rel",
+          subjectType: U,
+          subjectId: uuid("stranger"),
+        },
+        { openfga: "refused", tsfga: [] },
+      );
+    });
+
+    test("supplying the context makes both agree again", async () => {
+      // The boundary beside the pin: the divergence is the missing
+      // context, not the shape. With `xcond_b4` evaluable, tsfga
+      // drops nothing and upstream refuses nothing.
+      await expectObjects(
+        {
+          objectType: T,
+          relation: "ttu_other_rel",
+          subjectType: U,
+          subjectId: uuid("stranger"),
+          context: VALID_CONTEXT,
+        },
+        ["err_parent"],
+      );
     });
 
     test("with the context supplied, both list both parents", async () => {

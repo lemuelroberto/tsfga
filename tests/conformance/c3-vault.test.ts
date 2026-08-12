@@ -13,6 +13,7 @@ import {
   expectConfigsMatchModel,
   expectConformance,
   expectListObjectsConformance,
+  expectPinnedListObjectsDivergence,
   expectWriteConformance,
   type FixtureRecord,
   recordFixture,
@@ -795,13 +796,65 @@ describe("Vault Model Conformance", () => {
   });
 
   test("GAP-341: and a row it can reach does not refuse it here", async () => {
-    // The mirror image, and the direction that matters more: carol
-    // *is* in the team, so upstream reaches the unevaluable row and
-    // declines the whole call. tsfga answers with the objects that
-    // resolved, dropping the one that errored.
-    const { tsfga: mine, openfga: theirs } = await listOutcomes("carol");
-    expect(mine).toBe(theirs);
-    expect(mine).toBe("refused");
+    // The mirror image of the row above, and the residue of the
+    // rule that fixes it. carol *is* in `team_c3v:platform`, so
+    // upstream's reverse expansion reaches
+    // `workspace_c3v:prod#writer@team_c3v:platform#member with
+    // business_hours_c3v`, cannot evaluate it without `now`, and
+    // declines the whole call. tsfga meets the same row on a
+    // userset scan -- not a read naming the request subject -- so
+    // it drops `prod` and answers with the workspaces that
+    // resolved.
+    //
+    // **No local predicate separates carol from dan.** It is the
+    // same row, read at the same point, with the same local
+    // information: `findCheckTuples` on `prod#writer` issues a
+    // direct probe for both and returns nothing for both, and
+    // "did this candidate's subtree reach the subject?" cannot be
+    // answered without evaluating the condition that just failed.
+    // Separating them needs reverse reachability over the stored
+    // rows, which tsfga performs at the model level only. So one
+    // of the two rows must diverge; the direction chosen is this
+    // one, because it under-reports rather than grants -- every
+    // object returned here passes a full `check`, and supplying
+    // `now` makes both engines agree.
+    //
+    // The same divergence is pinned from the agreeing side in
+    // `b4-listobjects-probes.test.ts`, where nothing else granted
+    // and the old rule's "raise if the granted set is empty" hid
+    // it. It is one divergence, stated twice.
+    await expectPinnedListObjectsDivergence(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "workspace_c3v",
+        relation: "can_read",
+        subjectType: "user_c3v",
+        subjectId: "carol",
+      },
+      { openfga: "refused", tsfga: ["dev", "staging"] },
+    );
+  });
+
+  test("GAP-341: with `now` supplied, carol's list agrees again", async () => {
+    // The boundary beside the pin: the divergence is the missing
+    // context, not the shape. With `business_hours_c3v` evaluable
+    // there is no error to drop and no error to join, so both
+    // engines answer the same set.
+    await expectListObjectsConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "workspace_c3v",
+        relation: "can_read",
+        subjectType: "user_c3v",
+        subjectId: "carol",
+        context: { now: IN_HOURS },
+      },
+      ["dev", "staging", "prod"],
+    );
   });
 
   // --- The write gate on the conditioned restrictions ---
