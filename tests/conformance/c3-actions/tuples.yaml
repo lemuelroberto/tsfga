@@ -1,0 +1,97 @@
+# Teams: platform nests inside eng
+- user: user_c3a:alice
+  relation: member
+  object: team_c3a:platform
+- user: user_c3a:bob
+  relation: member
+  object: team_c3a:platform
+- user: team_c3a:platform#member
+  relation: member
+  object: team_c3a:eng
+- user: user_c3a:carol
+  relation: member
+  object: team_c3a:eng
+
+# Org
+- user: user_c3a:alice
+  relation: admin
+  object: org_c3a:acme
+- user: team_c3a:eng#member
+  relation: member
+  object: org_c3a:acme
+
+# Repos
+- user: org_c3a:acme
+  relation: org
+  object: repo_c3a:api
+- user: team_c3a:eng#member
+  relation: writer
+  object: repo_c3a:api
+
+- user: org_c3a:acme
+  relation: org
+  object: repo_c3a:docs
+- user: user_c3a:*
+  relation: public
+  object: repo_c3a:docs
+
+# Environments
+- user: repo_c3a:api
+  relation: repo
+  object: environment_c3a:prod
+- user: team_c3a:platform#member
+  relation: required_reviewer
+  object: environment_c3a:prod
+- user: user_c3a:*
+  relation: branch_allowed
+  object: environment_c3a:prod
+  condition:
+    name: branch_pattern_c3a
+    context:
+      pattern: "^refs/heads/(main|release/.+)$"
+
+- user: repo_c3a:api
+  relation: repo
+  object: environment_c3a:staging
+- user: user_c3a:carol
+  relation: required_reviewer
+  object: environment_c3a:staging
+- user: user_c3a:*
+  relation: branch_allowed
+  object: environment_c3a:staging
+  condition:
+    name: branch_pattern_c3a
+    context:
+      pattern: "(?i)^refs/heads/dev-"
+
+# Deployments
+- user: environment_c3a:prod
+  relation: environment
+  object: deployment_c3a:d1
+- user: user_c3a:bob
+  relation: requester
+  object: deployment_c3a:d1
+
+- user: environment_c3a:staging
+  relation: environment
+  object: deployment_c3a:d2
+- user: user_c3a:carol
+  relation: requester
+  object: deployment_c3a:d2
+
+# canary has no stored branch rule at all
+- user: repo_c3a:api
+  relation: repo
+  object: environment_c3a:canary
+- user: team_c3a:platform#member
+  relation: required_reviewer
+  object: environment_c3a:canary
+
+# prod is frozen for release branches, whoever is deploying
+- user: user_c3a:*
+  relation: blocked
+  object: environment_c3a:prod
+  condition:
+    name: branch_pattern_c3a
+    context:
+      pattern: "^refs/heads/release/"

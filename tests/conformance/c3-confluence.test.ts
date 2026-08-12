@@ -1,0 +1,835 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { ErrorCode, FgaApiValidationError, OpenFgaClient } from "@openfga/sdk";
+import {
+  type AddTupleRequest,
+  createTsfga,
+  type RemoveTupleRequest,
+  type TsfgaClient,
+} from "@tsfga/core";
+import type { DB } from "@tsfga/kysely";
+import { KyselyTupleStore } from "@tsfga/kysely";
+import type { Kysely } from "kysely";
+import {
+  expectConfigsMatchModel,
+  expectConformance,
+  expectListObjectsConformance,
+  expectWriteConformance,
+  type FixtureRecord,
+  recordFixture,
+} from "./helpers/conformance.ts";
+import {
+  beginTransaction,
+  destroyDb,
+  getDb,
+  rollbackTransaction,
+} from "./helpers/db.ts";
+import {
+  fgaCreateStore,
+  fgaWriteModel,
+  fgaWriteTuples,
+} from "./helpers/openfga.ts";
+
+/**
+ * A Confluence-shaped wiki: space -> page tree, with per-page
+ * restrictions that *subtract* from what the tree inherits.
+ *
+ * Three seams are the point of this fixture.
+ *
+ * `page_c3f.open_view` is an exclusion whose minuend is a
+ * two-armed, self-recursive tuple-to-userset — `can_view from
+ * parent or can_view from space`. A page therefore inherits along
+ * a chain and can have that inheritance cut at any link, and the
+ * cut is visible to every page *below* it: `runbook` is locked to
+ * `user_c3f:*`, so `appendix`, which is only reachable through
+ * `runbook`, is readable exactly by `runbook`'s restricted
+ * viewers.
+ *
+ * `page_c3f.locked` admits both a wildcard and a userset, so a
+ * subtrahend may be "everyone" or "the contractors" and the second
+ * has to expand a nested group to decide.
+ *
+ * Object ids are human strings, not UUIDs — `object_id` is a
+ * `text` column since migration `007`, and a model fixture is the
+ * natural place to prove that the ordinary case works rather than
+ * only the adversarial one.
+ */
+
+describe("Confluence Model Conformance", () => {
+  let db: Kysely<DB>;
+  let storeId: string;
+  let authorizationModelId: string;
+  let tsfga: TsfgaClient;
+  let fgaClient: OpenFgaClient;
+  let fixture: FixtureRecord;
+
+  function can(
+    objectType: string,
+    objectId: string,
+    relation: string,
+    subject: string,
+    expected: boolean,
+  ): Promise<void> {
+    return expectConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType,
+        objectId,
+        relation,
+        subjectType: "user_c3f",
+        subjectId: subject,
+      },
+      expected,
+    );
+  }
+
+  function userRef(tuple: {
+    subjectType: string;
+    subjectId: string;
+    subjectRelation?: string | null;
+  }): string {
+    return tuple.subjectRelation
+      ? `${tuple.subjectType}:${tuple.subjectId}#${tuple.subjectRelation}`
+      : `${tuple.subjectType}:${tuple.subjectId}`;
+  }
+
+  /** Take a row out of both engines, asserting both had it. */
+  async function revoke(tuple: RemoveTupleRequest): Promise<void> {
+    const [removed] = await Promise.all([
+      tsfga.removeTuple(tuple),
+      fgaClient
+        .deleteTuples(
+          [
+            {
+              user: userRef(tuple),
+              relation: tuple.relation,
+              object: `${tuple.objectType}:${tuple.objectId}`,
+            },
+          ],
+          { authorizationModelId },
+        )
+        .then(() => "deleted")
+        .catch((error: unknown) => {
+          if (
+            error instanceof FgaApiValidationError &&
+            error.apiErrorCode === ErrorCode.WriteFailedDueToInvalidInput
+          ) {
+            return "missing";
+          }
+          throw error;
+        })
+        .then((outcome) => {
+          expect(outcome).toBe("deleted");
+        }),
+    ]);
+    expect(removed).toBe(true);
+  }
+
+  beforeAll(async () => {
+    db = getDb();
+    await beginTransaction(db);
+
+    tsfga = createTsfga(new KyselyTupleStore(db));
+    fixture = recordFixture(tsfga);
+
+    const plain = {
+      impliedBy: null,
+      computedUserset: null,
+      tupleToUserset: null,
+      excludedBy: null,
+      intersection: null,
+    } as const;
+
+    await tsfga.writeRelationConfig({
+      objectType: "group_c3f",
+      relation: "member",
+      directlyAssignable: [
+        { type: "user_c3f" },
+        { type: "group_c3f", relation: "member" },
+      ],
+      ...plain,
+    });
+
+    // === space_c3f ===
+    await tsfga.writeRelationConfig({
+      objectType: "space_c3f",
+      relation: "admin",
+      directlyAssignable: [
+        { type: "user_c3f" },
+        { type: "group_c3f", relation: "member" },
+      ],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "space_c3f",
+      relation: "member",
+      directlyAssignable: [
+        { type: "user_c3f" },
+        { type: "group_c3f", relation: "member" },
+      ],
+      ...plain,
+      impliedBy: ["admin"],
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "space_c3f",
+      relation: "anonymous",
+      directlyAssignable: [{ type: "user_c3f", wildcard: true }],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "space_c3f",
+      relation: "can_view",
+      directlyAssignable: [],
+      ...plain,
+      impliedBy: ["member", "anonymous"],
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "space_c3f",
+      relation: "can_admin",
+      directlyAssignable: [],
+      ...plain,
+      computedUserset: "admin",
+    });
+
+    // === page_c3f ===
+    await tsfga.writeRelationConfig({
+      objectType: "page_c3f",
+      relation: "space",
+      directlyAssignable: [{ type: "space_c3f" }],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "page_c3f",
+      relation: "parent",
+      directlyAssignable: [{ type: "page_c3f" }],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "page_c3f",
+      relation: "owner",
+      directlyAssignable: [{ type: "user_c3f" }],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "page_c3f",
+      relation: "restricted_viewer",
+      directlyAssignable: [
+        { type: "user_c3f" },
+        { type: "group_c3f", relation: "member" },
+      ],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "page_c3f",
+      relation: "locked",
+      directlyAssignable: [
+        { type: "user_c3f", wildcard: true },
+        { type: "group_c3f", relation: "member" },
+      ],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "page_c3f",
+      relation: "comments_disabled",
+      directlyAssignable: [{ type: "user_c3f", wildcard: true }],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "page_c3f",
+      relation: "inherited_view",
+      directlyAssignable: [],
+      ...plain,
+      tupleToUserset: [
+        { tupleset: "parent", computedUserset: "can_view" },
+        { tupleset: "space", computedUserset: "can_view" },
+      ],
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "page_c3f",
+      relation: "open_view",
+      directlyAssignable: [],
+      ...plain,
+      computedUserset: "inherited_view",
+      excludedBy: "locked",
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "page_c3f",
+      relation: "can_view",
+      directlyAssignable: [],
+      ...plain,
+      impliedBy: ["owner", "restricted_viewer", "open_view"],
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "page_c3f",
+      relation: "can_edit",
+      directlyAssignable: [],
+      ...plain,
+      impliedBy: ["owner"],
+      tupleToUserset: [{ tupleset: "space", computedUserset: "can_admin" }],
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "page_c3f",
+      relation: "can_comment",
+      directlyAssignable: [],
+      ...plain,
+      computedUserset: "can_view",
+      excludedBy: "comments_disabled",
+    });
+
+    // === Tuples (mirroring ./c3-confluence/tuples.yaml) ===
+    const add = (t: AddTupleRequest) => tsfga.addTuple(t);
+
+    await add({
+      objectType: "group_c3f",
+      objectId: "platform",
+      relation: "member",
+      subjectType: "user_c3f",
+      subjectId: "bob",
+    });
+    await add({
+      objectType: "group_c3f",
+      objectId: "engineering",
+      relation: "member",
+      subjectType: "group_c3f",
+      subjectId: "platform",
+      subjectRelation: "member",
+    });
+    await add({
+      objectType: "group_c3f",
+      objectId: "engineering",
+      relation: "member",
+      subjectType: "user_c3f",
+      subjectId: "carol",
+    });
+    await add({
+      objectType: "group_c3f",
+      objectId: "contractors",
+      relation: "member",
+      subjectType: "user_c3f",
+      subjectId: "dave",
+    });
+
+    await add({
+      objectType: "space_c3f",
+      objectId: "eng",
+      relation: "admin",
+      subjectType: "user_c3f",
+      subjectId: "alice",
+    });
+    await add({
+      objectType: "space_c3f",
+      objectId: "eng",
+      relation: "member",
+      subjectType: "group_c3f",
+      subjectId: "engineering",
+      subjectRelation: "member",
+    });
+    await add({
+      objectType: "space_c3f",
+      objectId: "public-docs",
+      relation: "anonymous",
+      subjectType: "user_c3f",
+      subjectId: "*",
+    });
+    await add({
+      objectType: "space_c3f",
+      objectId: "public-docs",
+      relation: "admin",
+      subjectType: "user_c3f",
+      subjectId: "alice",
+    });
+
+    await add({
+      objectType: "page_c3f",
+      objectId: "home",
+      relation: "space",
+      subjectType: "space_c3f",
+      subjectId: "eng",
+    });
+    await add({
+      objectType: "page_c3f",
+      objectId: "home",
+      relation: "owner",
+      subjectType: "user_c3f",
+      subjectId: "alice",
+    });
+    await add({
+      objectType: "page_c3f",
+      objectId: "guide",
+      relation: "parent",
+      subjectType: "page_c3f",
+      subjectId: "home",
+    });
+    await add({
+      objectType: "page_c3f",
+      objectId: "guide",
+      relation: "space",
+      subjectType: "space_c3f",
+      subjectId: "eng",
+    });
+    await add({
+      objectType: "page_c3f",
+      objectId: "runbook",
+      relation: "parent",
+      subjectType: "page_c3f",
+      subjectId: "guide",
+    });
+    await add({
+      objectType: "page_c3f",
+      objectId: "runbook",
+      relation: "space",
+      subjectType: "space_c3f",
+      subjectId: "eng",
+    });
+    await add({
+      objectType: "page_c3f",
+      objectId: "runbook",
+      relation: "locked",
+      subjectType: "user_c3f",
+      subjectId: "*",
+    });
+    await add({
+      objectType: "page_c3f",
+      objectId: "runbook",
+      relation: "restricted_viewer",
+      subjectType: "user_c3f",
+      subjectId: "carol",
+    });
+    await add({
+      objectType: "page_c3f",
+      objectId: "appendix",
+      relation: "parent",
+      subjectType: "page_c3f",
+      subjectId: "runbook",
+    });
+    await add({
+      objectType: "page_c3f",
+      objectId: "salary-bands",
+      relation: "parent",
+      subjectType: "page_c3f",
+      subjectId: "home",
+    });
+    await add({
+      objectType: "page_c3f",
+      objectId: "salary-bands",
+      relation: "locked",
+      subjectType: "group_c3f",
+      subjectId: "contractors",
+      subjectRelation: "member",
+    });
+    await add({
+      objectType: "space_c3f",
+      objectId: "eng",
+      relation: "member",
+      subjectType: "user_c3f",
+      subjectId: "dave",
+    });
+    await add({
+      objectType: "page_c3f",
+      objectId: "changelog",
+      relation: "space",
+      subjectType: "space_c3f",
+      subjectId: "public-docs",
+    });
+    await add({
+      objectType: "page_c3f",
+      objectId: "changelog",
+      relation: "comments_disabled",
+      subjectType: "user_c3f",
+      subjectId: "*",
+    });
+
+    storeId = await fgaCreateStore("c3-confluence");
+    authorizationModelId = await fgaWriteModel(
+      storeId,
+      "./c3-confluence/model.dsl",
+    );
+    await fgaWriteTuples(
+      storeId,
+      "./c3-confluence/tuples.yaml",
+      authorizationModelId,
+    );
+    fgaClient = new OpenFgaClient({
+      apiUrl: process.env.FGA_API_URL,
+      storeId,
+    });
+  });
+
+  afterAll(async () => {
+    await rollbackTransaction(db);
+    await destroyDb();
+  });
+
+  // --- The nested group reaching the space ---
+
+  test("1: bob is an engineering member through platform", async () => {
+    await can("group_c3f", "engineering", "member", "bob", true);
+  });
+
+  test("2: dave is no engineering member", async () => {
+    await can("group_c3f", "engineering", "member", "dave", false);
+  });
+
+  test("3: bob is a space member two usersets down", async () => {
+    await can("space_c3f", "eng", "member", "bob", true);
+  });
+
+  test("4: the admin is a member by union", async () => {
+    await can("space_c3f", "eng", "member", "alice", true);
+  });
+
+  test("5: a member is not an admin", async () => {
+    await can("space_c3f", "eng", "can_admin", "bob", false);
+  });
+
+  test("6: frank reaches no space", async () => {
+    await can("space_c3f", "eng", "can_view", "frank", false);
+  });
+
+  // --- Inheritance down the page tree ---
+
+  test("7: the owner views home", async () => {
+    await can("page_c3f", "home", "can_view", "alice", true);
+  });
+
+  test("8: bob views home through the space", async () => {
+    await can("page_c3f", "home", "can_view", "bob", true);
+  });
+
+  test("9: bob views guide one link down", async () => {
+    await can("page_c3f", "guide", "can_view", "bob", true);
+  });
+
+  test("10: alice views guide through the parent, not the space", async () => {
+    await can("page_c3f", "guide", "can_view", "alice", true);
+  });
+
+  test("11: frank views nothing in the tree", async () => {
+    await can("page_c3f", "guide", "can_view", "frank", false);
+  });
+
+  // --- A wildcard lock cutting the chain ---
+
+  test("12: the wildcard lock strips bob's inherited view", async () => {
+    await can("page_c3f", "runbook", "can_view", "bob", false);
+  });
+
+  test("13: it strips the space admin too", async () => {
+    await can("page_c3f", "runbook", "can_view", "alice", false);
+  });
+
+  test("14: carol survives as a restricted viewer", async () => {
+    await can("page_c3f", "runbook", "can_view", "carol", true);
+  });
+
+  test("15: the cut is inherited by the page below", async () => {
+    await can("page_c3f", "appendix", "can_view", "bob", false);
+  });
+
+  test("16: and so is the exception", async () => {
+    await can("page_c3f", "appendix", "can_view", "carol", true);
+  });
+
+  test("17: locking view does not lock editing", async () => {
+    await can("page_c3f", "runbook", "can_edit", "alice", true);
+  });
+
+  test("18: a member still cannot edit", async () => {
+    await can("page_c3f", "guide", "can_edit", "bob", false);
+  });
+
+  // --- A userset lock: contractors only ---
+
+  test("19: dave loses salary-bands to the contractor lock", async () => {
+    await can("page_c3f", "salary-bands", "can_view", "dave", false);
+  });
+
+  test("20: carol keeps it — the lock misses her", async () => {
+    await can("page_c3f", "salary-bands", "can_view", "carol", true);
+  });
+
+  test("21: dave still views the parent page", async () => {
+    await can("page_c3f", "home", "can_view", "dave", true);
+  });
+
+  // --- Anonymous access through the space wildcard ---
+
+  test("22: a stranger views the public changelog", async () => {
+    await can("page_c3f", "changelog", "can_view", "frank", true);
+  });
+
+  test("23: but cannot comment — comments are off", async () => {
+    await can("page_c3f", "changelog", "can_comment", "frank", false);
+  });
+
+  test("24: the anonymous wildcard is not membership of eng", async () => {
+    await can("space_c3f", "eng", "can_view", "frank", false);
+  });
+
+  test("25: bob may comment on guide", async () => {
+    await can("page_c3f", "guide", "can_comment", "bob", true);
+  });
+
+  // --- Userset subjects asked about directly ---
+
+  test("26: the engineering userset is itself a space member", async () => {
+    await expectConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "space_c3f",
+        objectId: "eng",
+        relation: "member",
+        subjectType: "group_c3f",
+        subjectId: "engineering",
+        subjectRelation: "member",
+      },
+      true,
+    );
+  });
+
+  test("27: the nested platform userset is one too, one hop down", async () => {
+    await expectConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "space_c3f",
+        objectId: "eng",
+        relation: "member",
+        subjectType: "group_c3f",
+        subjectId: "platform",
+        subjectRelation: "member",
+      },
+      true,
+    );
+  });
+
+  test("27b: the contractors userset reaches no space", async () => {
+    await expectConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "space_c3f",
+        objectId: "eng",
+        relation: "member",
+        subjectType: "group_c3f",
+        subjectId: "contractors",
+        subjectRelation: "member",
+      },
+      false,
+    );
+  });
+
+  // --- listObjects over the same graph ---
+
+  test("28: the pages bob may view", async () => {
+    await expectListObjectsConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "page_c3f",
+        relation: "can_view",
+        subjectType: "user_c3f",
+        subjectId: "bob",
+      },
+      ["home", "guide", "salary-bands", "changelog"],
+    );
+  });
+
+  test("29: the pages carol may view", async () => {
+    await expectListObjectsConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "page_c3f",
+        relation: "can_view",
+        subjectType: "user_c3f",
+        subjectId: "carol",
+      },
+      ["home", "guide", "runbook", "appendix", "salary-bands", "changelog"],
+    );
+  });
+
+  test("30: the pages a stranger may view", async () => {
+    await expectListObjectsConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "page_c3f",
+        relation: "can_view",
+        subjectType: "user_c3f",
+        subjectId: "frank",
+      },
+      ["changelog"],
+    );
+  });
+
+  test("31: the spaces alice may administer", async () => {
+    await expectListObjectsConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "space_c3f",
+        relation: "can_admin",
+        subjectType: "user_c3f",
+        subjectId: "alice",
+      },
+      ["eng", "public-docs"],
+    );
+  });
+
+  // --- The write gate on this model ---
+
+  test("32: a group userset may lock a page", async () => {
+    await expectWriteConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "page_c3f",
+        objectId: "guide",
+        relation: "locked",
+        subjectType: "group_c3f",
+        subjectId: "contractors",
+        subjectRelation: "member",
+      },
+      "accepted",
+    );
+  });
+
+  test("33: a bare group may not — the model names the userset", async () => {
+    await expectWriteConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "page_c3f",
+        objectId: "appendix",
+        relation: "locked",
+        subjectType: "group_c3f",
+        subjectId: "contractors",
+      },
+      "refused",
+    );
+  });
+
+  test("34: `comments_disabled` admits the wildcard only", async () => {
+    await expectWriteConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "page_c3f",
+        objectId: "guide",
+        relation: "comments_disabled",
+        subjectType: "user_c3f",
+        subjectId: "alice",
+      },
+      "refused",
+    );
+  });
+
+  test("35: a space may not be a page's parent", async () => {
+    await expectWriteConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "page_c3f",
+        objectId: "appendix",
+        relation: "parent",
+        subjectType: "space_c3f",
+        subjectId: "eng",
+      },
+      "refused",
+    );
+  });
+
+  test("36: a computed relation takes no tuple at all", async () => {
+    await expectWriteConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "page_c3f",
+        objectId: "guide",
+        relation: "can_view",
+        subjectType: "user_c3f",
+        subjectId: "frank",
+      },
+      "refused",
+    );
+  });
+
+  // --- Revocation through each path ---
+
+  test("37: the lock written in test 32 now bites bob", async () => {
+    await can("page_c3f", "guide", "can_view", "bob", true);
+    await can("page_c3f", "guide", "can_view", "dave", false);
+  });
+
+  test("38: revoking the nested group drops bob out of the space", async () => {
+    await can("page_c3f", "home", "can_view", "bob", true);
+    await revoke({
+      objectType: "group_c3f",
+      objectId: "engineering",
+      relation: "member",
+      subjectType: "group_c3f",
+      subjectId: "platform",
+      subjectRelation: "member",
+    });
+    await can("group_c3f", "engineering", "member", "bob", false);
+    await can("space_c3f", "eng", "member", "bob", false);
+    await can("page_c3f", "home", "can_view", "bob", false);
+    await can("page_c3f", "guide", "can_view", "bob", false);
+  });
+
+  test("39: revoking the lock restores the whole subtree", async () => {
+    await revoke({
+      objectType: "page_c3f",
+      objectId: "runbook",
+      relation: "locked",
+      subjectType: "user_c3f",
+      subjectId: "*",
+    });
+    await can("page_c3f", "runbook", "can_view", "alice", true);
+    await can("page_c3f", "appendix", "can_view", "alice", true);
+  });
+
+  test("40: revoking the owner tuple ends the owner's whole tree", async () => {
+    await revoke({
+      objectType: "page_c3f",
+      objectId: "home",
+      relation: "owner",
+      subjectType: "user_c3f",
+      subjectId: "alice",
+    });
+    // alice remains a space admin, so the space arm still reaches
+    // home — the owner arm is what went away.
+    await can("page_c3f", "home", "can_view", "alice", true);
+    await revoke({
+      objectType: "space_c3f",
+      objectId: "eng",
+      relation: "admin",
+      subjectType: "user_c3f",
+      subjectId: "alice",
+    });
+    await can("page_c3f", "home", "can_view", "alice", false);
+    await can("page_c3f", "appendix", "can_view", "alice", false);
+    await can("page_c3f", "runbook", "can_edit", "alice", false);
+  });
+
+  test("the relation configs say what the model says", () => {
+    expectConfigsMatchModel("./c3-confluence/model.dsl", fixture, {
+      coverage: "complete",
+    });
+  });
+});

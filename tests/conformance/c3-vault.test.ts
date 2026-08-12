@@ -1,0 +1,925 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  type ConditionDefinition,
+  createTsfga,
+  type TsfgaClient,
+  TsfgaError,
+} from "@tsfga/core";
+import type { DB } from "@tsfga/kysely";
+import { KyselyTupleStore } from "@tsfga/kysely";
+import type { Kysely } from "kysely";
+import {
+  type CheckOutcome,
+  expectConfigsMatchModel,
+  expectConformance,
+  expectListObjectsConformance,
+  expectWriteConformance,
+  type FixtureRecord,
+  recordFixture,
+} from "./helpers/conformance.ts";
+import {
+  beginTransaction,
+  destroyDb,
+  getDb,
+  rollbackTransaction,
+} from "./helpers/db.ts";
+import {
+  fgaCreateStore,
+  fgaListObjects,
+  fgaWriteModel,
+  fgaWriteTuples,
+} from "./helpers/openfga.ts";
+
+/**
+ * A Terraform-Cloud/Vault-shaped model where the conditions carry
+ * the policy rather than decorating it: a source-IP allow-list, a
+ * change window, an environment tag matched case-insensitively, a
+ * spend ceiling, and a secret-path allow-list.
+ *
+ * Four seams are the point of this fixture.
+ *
+ * **`matches()` is RE2, not JavaScript's `RegExp`.**
+ * `env_tagged_c3v` uses the inline flag group `(?i)`, which RE2
+ * accepts and `RegExp` throws on. A model an OpenFGA user can
+ * write is therefore only answerable here since the RE2 rewrite,
+ * and this is the ordinary-model proof of it.
+ *
+ * **Tuple context beats request context.** `erin`'s `reader` row
+ * pins `ip` in the tuple, so a request naming a different IP
+ * changes nothing; `dan`'s row leaves it open, so the request
+ * decides.
+ *
+ * **A missing parameter is a refusal, not a `false`.** Both
+ * engines decline the whole check rather than reading an absent
+ * `ip` as "not allowed" — the fail-open reading is the dangerous
+ * one, and it is the one a naive implementation picks.
+ *
+ * **A condition sits under an intersection and under an
+ * exclusion.** `run_c3v.can_apply` is `approver and can_apply from
+ * workspace`, so a spend ceiling has to hold *and* survive a
+ * workspace lock evaluated one dispatch away.
+ */
+
+const CONDITIONS: ConditionDefinition[] = [
+  {
+    name: "ip_allowed_c3v",
+    expression: 'ip.matches("^10[.]0[.][0-9]{1,3}[.][0-9]{1,3}$")',
+    parameters: { ip: "string" },
+  },
+  {
+    name: "business_hours_c3v",
+    expression:
+      'now >= timestamp("2026-01-01T09:00:00Z") && ' +
+      'now < timestamp("2026-01-01T17:00:00Z")',
+    parameters: { now: "timestamp" },
+  },
+  {
+    name: "env_tagged_c3v",
+    expression: 'env.matches("(?i)^prod(uction)?$")',
+    parameters: { env: "string" },
+  },
+  {
+    name: "under_budget_c3v",
+    expression: "cost <= budget",
+    parameters: { cost: "double", budget: "double" },
+  },
+  {
+    name: "path_allowed_c3v",
+    expression: "path in allowed",
+    parameters: { path: "string", allowed: "list<string>" },
+  },
+];
+
+const IN_HOURS = "2026-01-01T10:00:00Z";
+const OUT_OF_HOURS = "2026-01-01T20:00:00Z";
+
+describe("Vault Model Conformance", () => {
+  let db: Kysely<DB>;
+  let storeId: string;
+  let authorizationModelId: string;
+  let tsfga: TsfgaClient;
+  let fixture: FixtureRecord;
+
+  function can(
+    objectType: string,
+    objectId: string,
+    relation: string,
+    subject: string,
+    expected: CheckOutcome,
+    context?: Record<string, unknown>,
+  ): Promise<void> {
+    return expectConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType,
+        objectId,
+        relation,
+        subjectType: "user_c3v",
+        subjectId: subject,
+        ...(context ? { context } : {}),
+      },
+      expected,
+    );
+  }
+
+  beforeAll(async () => {
+    db = getDb();
+    await beginTransaction(db);
+
+    tsfga = createTsfga(new KyselyTupleStore(db));
+    fixture = recordFixture(tsfga);
+
+    for (const condition of CONDITIONS) {
+      await tsfga.writeConditionDefinition(condition);
+    }
+
+    const plain = {
+      impliedBy: null,
+      computedUserset: null,
+      tupleToUserset: null,
+      excludedBy: null,
+      intersection: null,
+    } as const;
+
+    // === org_c3v ===
+    await tsfga.writeRelationConfig({
+      objectType: "org_c3v",
+      relation: "owner",
+      directlyAssignable: [{ type: "user_c3v" }],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "org_c3v",
+      relation: "member",
+      directlyAssignable: [{ type: "user_c3v" }],
+      ...plain,
+      impliedBy: ["owner"],
+    });
+
+    // === team_c3v ===
+    await tsfga.writeRelationConfig({
+      objectType: "team_c3v",
+      relation: "org",
+      directlyAssignable: [{ type: "org_c3v" }],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "team_c3v",
+      relation: "member",
+      directlyAssignable: [
+        { type: "user_c3v" },
+        { type: "team_c3v", relation: "member" },
+      ],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "team_c3v",
+      relation: "maintainer",
+      directlyAssignable: [{ type: "user_c3v" }],
+      ...plain,
+    });
+
+    // === workspace_c3v ===
+    await tsfga.writeRelationConfig({
+      objectType: "workspace_c3v",
+      relation: "org",
+      directlyAssignable: [{ type: "org_c3v" }],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "workspace_c3v",
+      relation: "locked",
+      directlyAssignable: [{ type: "user_c3v", wildcard: true }],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "workspace_c3v",
+      relation: "reader",
+      directlyAssignable: [
+        { type: "team_c3v", relation: "member" },
+        { type: "user_c3v", condition: "ip_allowed_c3v" },
+      ],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "workspace_c3v",
+      relation: "writer",
+      directlyAssignable: [
+        { type: "user_c3v" },
+        {
+          type: "team_c3v",
+          relation: "member",
+          condition: "business_hours_c3v",
+        },
+      ],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "workspace_c3v",
+      relation: "admin",
+      directlyAssignable: [
+        { type: "user_c3v" },
+        { type: "team_c3v", relation: "maintainer" },
+      ],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "workspace_c3v",
+      relation: "deployer",
+      directlyAssignable: [{ type: "user_c3v", condition: "env_tagged_c3v" }],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "workspace_c3v",
+      relation: "can_read",
+      directlyAssignable: [],
+      ...plain,
+      impliedBy: ["reader", "writer", "admin"],
+      tupleToUserset: [{ tupleset: "org", computedUserset: "owner" }],
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "workspace_c3v",
+      relation: "can_queue_plan",
+      directlyAssignable: [],
+      ...plain,
+      impliedBy: ["writer", "admin"],
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "workspace_c3v",
+      relation: "can_apply",
+      directlyAssignable: [],
+      ...plain,
+      computedUserset: "can_queue_plan",
+      excludedBy: "locked",
+    });
+
+    // === run_c3v ===
+    await tsfga.writeRelationConfig({
+      objectType: "run_c3v",
+      relation: "workspace",
+      directlyAssignable: [{ type: "workspace_c3v" }],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "run_c3v",
+      relation: "requester",
+      directlyAssignable: [{ type: "user_c3v" }],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "run_c3v",
+      relation: "approver",
+      directlyAssignable: [{ type: "user_c3v", condition: "under_budget_c3v" }],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "run_c3v",
+      relation: "can_apply",
+      directlyAssignable: [],
+      ...plain,
+      intersection: [
+        { type: "computedUserset", relation: "approver" },
+        {
+          type: "tupleToUserset",
+          tupleset: "workspace",
+          computedUserset: "can_apply",
+        },
+      ],
+    });
+
+    // === secret_c3v ===
+    await tsfga.writeRelationConfig({
+      objectType: "secret_c3v",
+      relation: "workspace",
+      directlyAssignable: [{ type: "workspace_c3v" }],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "secret_c3v",
+      relation: "path_reader",
+      directlyAssignable: [{ type: "user_c3v", condition: "path_allowed_c3v" }],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "secret_c3v",
+      relation: "can_read",
+      directlyAssignable: [],
+      ...plain,
+      impliedBy: ["path_reader"],
+      tupleToUserset: [{ tupleset: "workspace", computedUserset: "admin" }],
+    });
+
+    // === Tuples (mirroring ./c3-vault/tuples.yaml) ===
+    await tsfga.addTuple({
+      objectType: "org_c3v",
+      objectId: "acme",
+      relation: "owner",
+      subjectType: "user_c3v",
+      subjectId: "alice",
+    });
+    for (const user of ["bob", "carol"]) {
+      await tsfga.addTuple({
+        objectType: "org_c3v",
+        objectId: "acme",
+        relation: "member",
+        subjectType: "user_c3v",
+        subjectId: user,
+      });
+    }
+
+    await tsfga.addTuple({
+      objectType: "team_c3v",
+      objectId: "platform",
+      relation: "org",
+      subjectType: "org_c3v",
+      subjectId: "acme",
+    });
+    for (const user of ["bob", "carol"]) {
+      await tsfga.addTuple({
+        objectType: "team_c3v",
+        objectId: "platform",
+        relation: "member",
+        subjectType: "user_c3v",
+        subjectId: user,
+      });
+    }
+    await tsfga.addTuple({
+      objectType: "team_c3v",
+      objectId: "platform",
+      relation: "maintainer",
+      subjectType: "user_c3v",
+      subjectId: "bob",
+    });
+
+    for (const workspace of ["dev", "prod", "staging"]) {
+      await tsfga.addTuple({
+        objectType: "workspace_c3v",
+        objectId: workspace,
+        relation: "org",
+        subjectType: "org_c3v",
+        subjectId: "acme",
+      });
+    }
+    await tsfga.addTuple({
+      objectType: "workspace_c3v",
+      objectId: "dev",
+      relation: "reader",
+      subjectType: "team_c3v",
+      subjectId: "platform",
+      subjectRelation: "member",
+    });
+    await tsfga.addTuple({
+      objectType: "workspace_c3v",
+      objectId: "dev",
+      relation: "reader",
+      subjectType: "user_c3v",
+      subjectId: "dan",
+      conditionName: "ip_allowed_c3v",
+    });
+    await tsfga.addTuple({
+      objectType: "workspace_c3v",
+      objectId: "dev",
+      relation: "reader",
+      subjectType: "user_c3v",
+      subjectId: "erin",
+      conditionName: "ip_allowed_c3v",
+      conditionContext: { ip: "10.0.4.7" },
+    });
+
+    await tsfga.addTuple({
+      objectType: "workspace_c3v",
+      objectId: "prod",
+      relation: "writer",
+      subjectType: "team_c3v",
+      subjectId: "platform",
+      subjectRelation: "member",
+      conditionName: "business_hours_c3v",
+    });
+    await tsfga.addTuple({
+      objectType: "workspace_c3v",
+      objectId: "prod",
+      relation: "admin",
+      subjectType: "team_c3v",
+      subjectId: "platform",
+      subjectRelation: "maintainer",
+    });
+    await tsfga.addTuple({
+      objectType: "workspace_c3v",
+      objectId: "prod",
+      relation: "deployer",
+      subjectType: "user_c3v",
+      subjectId: "carol",
+      conditionName: "env_tagged_c3v",
+    });
+
+    await tsfga.addTuple({
+      objectType: "workspace_c3v",
+      objectId: "staging",
+      relation: "writer",
+      subjectType: "user_c3v",
+      subjectId: "carol",
+    });
+    await tsfga.addTuple({
+      objectType: "workspace_c3v",
+      objectId: "staging",
+      relation: "locked",
+      subjectType: "user_c3v",
+      subjectId: "*",
+    });
+
+    await tsfga.addTuple({
+      objectType: "run_c3v",
+      objectId: "run1",
+      relation: "workspace",
+      subjectType: "workspace_c3v",
+      subjectId: "prod",
+    });
+    await tsfga.addTuple({
+      objectType: "run_c3v",
+      objectId: "run1",
+      relation: "requester",
+      subjectType: "user_c3v",
+      subjectId: "carol",
+    });
+    await tsfga.addTuple({
+      objectType: "run_c3v",
+      objectId: "run1",
+      relation: "approver",
+      subjectType: "user_c3v",
+      subjectId: "bob",
+      conditionName: "under_budget_c3v",
+      conditionContext: { budget: 100 },
+    });
+    await tsfga.addTuple({
+      objectType: "run_c3v",
+      objectId: "run2",
+      relation: "workspace",
+      subjectType: "workspace_c3v",
+      subjectId: "staging",
+    });
+    await tsfga.addTuple({
+      objectType: "run_c3v",
+      objectId: "run2",
+      relation: "approver",
+      subjectType: "user_c3v",
+      subjectId: "carol",
+      conditionName: "under_budget_c3v",
+      conditionContext: { budget: 100 },
+    });
+
+    await tsfga.addTuple({
+      objectType: "secret_c3v",
+      objectId: "db-creds",
+      relation: "workspace",
+      subjectType: "workspace_c3v",
+      subjectId: "prod",
+    });
+    await tsfga.addTuple({
+      objectType: "secret_c3v",
+      objectId: "db-creds",
+      relation: "path_reader",
+      subjectType: "user_c3v",
+      subjectId: "carol",
+      conditionName: "path_allowed_c3v",
+      conditionContext: { allowed: ["secret/db", "secret/cache"] },
+    });
+
+    storeId = await fgaCreateStore("c3-vault");
+    authorizationModelId = await fgaWriteModel(storeId, "./c3-vault/model.dsl");
+    await fgaWriteTuples(
+      storeId,
+      "./c3-vault/tuples.yaml",
+      authorizationModelId,
+    );
+  });
+
+  afterAll(async () => {
+    await rollbackTransaction(db);
+    await destroyDb();
+  });
+
+  // --- The IP allow-list, matched with RE2 ---
+
+  test("1: dan reads dev from an allowed address", async () => {
+    await can("workspace_c3v", "dev", "reader", "dan", true, {
+      ip: "10.0.4.7",
+    });
+  });
+
+  test("2: and not from anywhere else", async () => {
+    await can("workspace_c3v", "dev", "reader", "dan", false, {
+      ip: "192.168.1.1",
+    });
+  });
+
+  test("3: the anchors hold — a prefix match is not a match", async () => {
+    await can("workspace_c3v", "dev", "reader", "dan", false, {
+      ip: "110.0.4.7",
+    });
+  });
+
+  test("4: nor is a suffix match", async () => {
+    await can("workspace_c3v", "dev", "reader", "dan", false, {
+      ip: "10.0.4.77777",
+    });
+  });
+
+  test("5: a missing parameter refuses the whole check", async () => {
+    await can("workspace_c3v", "dev", "reader", "dan", "refused");
+  });
+
+  test("6: erin's tuple pins the address, so the request is ignored", async () => {
+    await can("workspace_c3v", "dev", "reader", "erin", true, {
+      ip: "192.168.1.1",
+    });
+  });
+
+  test("7: erin needs no request context at all", async () => {
+    await can("workspace_c3v", "dev", "reader", "erin", true);
+  });
+
+  test("8: an unconditioned userset row is unaffected by any of it", async () => {
+    await can("workspace_c3v", "dev", "reader", "bob", true);
+  });
+
+  // --- The change window ---
+
+  test("9: bob writes prod inside the window", async () => {
+    await can("workspace_c3v", "prod", "writer", "bob", true, {
+      now: IN_HOURS,
+    });
+  });
+
+  test("10: and not outside it", async () => {
+    await can("workspace_c3v", "prod", "writer", "bob", false, {
+      now: OUT_OF_HOURS,
+    });
+  });
+
+  test("11: carol likewise, through the same conditioned userset", async () => {
+    await can("workspace_c3v", "prod", "writer", "carol", true, {
+      now: IN_HOURS,
+    });
+    await can("workspace_c3v", "prod", "writer", "carol", false, {
+      now: OUT_OF_HOURS,
+    });
+  });
+
+  test("12: bob still queues a plan out of hours — he is an admin", async () => {
+    await can("workspace_c3v", "prod", "can_queue_plan", "bob", true, {
+      now: OUT_OF_HOURS,
+    });
+  });
+
+  test("13: carol does not — the window was her only arm", async () => {
+    await can("workspace_c3v", "prod", "can_queue_plan", "carol", false, {
+      now: OUT_OF_HOURS,
+    });
+  });
+
+  test("14: the boundary is closed below and open above", async () => {
+    await can("workspace_c3v", "prod", "writer", "carol", true, {
+      now: "2026-01-01T09:00:00Z",
+    });
+    await can("workspace_c3v", "prod", "writer", "carol", false, {
+      now: "2026-01-01T17:00:00Z",
+    });
+  });
+
+  // --- RE2's inline flag group ---
+
+  test("15: the environment tag matches case-insensitively", async () => {
+    await can("workspace_c3v", "prod", "deployer", "carol", true, {
+      env: "Production",
+    });
+  });
+
+  test("16: and in upper case", async () => {
+    await can("workspace_c3v", "prod", "deployer", "carol", true, {
+      env: "PROD",
+    });
+  });
+
+  test("17: and in the short lower-case form", async () => {
+    await can("workspace_c3v", "prod", "deployer", "carol", true, {
+      env: "prod",
+    });
+  });
+
+  test("18: but `preprod` is not `prod`", async () => {
+    await can("workspace_c3v", "prod", "deployer", "carol", false, {
+      env: "preprod",
+    });
+  });
+
+  test("19: nor is `production-eu`", async () => {
+    await can("workspace_c3v", "prod", "deployer", "carol", false, {
+      env: "production-eu",
+    });
+  });
+
+  // --- The spend ceiling under an intersection ---
+
+  test("20: bob approves run1 under budget", async () => {
+    await can("run_c3v", "run1", "can_apply", "bob", true, { cost: 50 });
+  });
+
+  test("21: and not over it", async () => {
+    await can("run_c3v", "run1", "can_apply", "bob", false, { cost: 150 });
+  });
+
+  test("22: the ceiling is inclusive", async () => {
+    await can("run_c3v", "run1", "can_apply", "bob", true, { cost: 100 });
+  });
+
+  test("23: the requester is not an approver", async () => {
+    await can("run_c3v", "run1", "can_apply", "carol", false, { cost: 10 });
+  });
+
+  test("24: a workspace lock beats a satisfied budget", async () => {
+    await can("run_c3v", "run2", "approver", "carol", true, { cost: 10 });
+    await can("workspace_c3v", "staging", "can_queue_plan", "carol", true);
+    await can("workspace_c3v", "staging", "can_apply", "carol", false);
+    await can("run_c3v", "run2", "can_apply", "carol", false, { cost: 10 });
+  });
+
+  test("25: a missing cost refuses rather than denying", async () => {
+    await can("run_c3v", "run1", "can_apply", "bob", "refused");
+  });
+
+  // --- The secret path allow-list ---
+
+  test("26: carol reads an allowed path", async () => {
+    await can("secret_c3v", "db-creds", "can_read", "carol", true, {
+      path: "secret/db",
+    });
+  });
+
+  test("27: and the second one", async () => {
+    await can("secret_c3v", "db-creds", "can_read", "carol", true, {
+      path: "secret/cache",
+    });
+  });
+
+  test("28: and not one outside the list", async () => {
+    await can("secret_c3v", "db-creds", "can_read", "carol", false, {
+      path: "secret/root",
+    });
+  });
+
+  test("29: a prefix of an allowed path is not allowed", async () => {
+    await can("secret_c3v", "db-creds", "can_read", "carol", false, {
+      path: "secret/d",
+    });
+  });
+
+  test("30: the workspace admin reads it with no path at all", async () => {
+    await can("secret_c3v", "db-creds", "can_read", "bob", true);
+  });
+
+  test("31: carol without a path is refused, not denied", async () => {
+    await can("secret_c3v", "db-creds", "can_read", "carol", "refused");
+  });
+
+  // --- The unconditioned arms around them ---
+
+  test("32: the org owner reads every workspace", async () => {
+    await can("workspace_c3v", "prod", "can_read", "alice", true);
+    await can("workspace_c3v", "staging", "can_read", "alice", true);
+  });
+
+  test("33: an org member is not an org owner", async () => {
+    await can("org_c3v", "acme", "owner", "bob", false);
+    await can("org_c3v", "acme", "member", "alice", true);
+  });
+
+  test("34: a stranger reads nothing", async () => {
+    await can("workspace_c3v", "dev", "can_read", "frank", false, {
+      ip: "10.0.4.7",
+    });
+  });
+
+  // --- listObjects with the same context ---
+
+  test("35: the workspaces bob reads in hours", async () => {
+    await expectListObjectsConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "workspace_c3v",
+        relation: "can_read",
+        subjectType: "user_c3v",
+        subjectId: "bob",
+        context: { now: IN_HOURS },
+      },
+      ["dev", "prod"],
+    );
+  });
+
+  test("36: the workspaces carol reads out of hours", async () => {
+    await expectListObjectsConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "workspace_c3v",
+        relation: "can_read",
+        subjectType: "user_c3v",
+        subjectId: "carol",
+        context: { now: OUT_OF_HOURS },
+      },
+      ["dev", "staging"],
+    );
+  });
+
+  test("37: the workspaces dan reads from an allowed address", async () => {
+    await expectListObjectsConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "workspace_c3v",
+        relation: "can_read",
+        subjectType: "user_c3v",
+        subjectId: "dan",
+        context: { ip: "10.0.4.7" },
+      },
+      ["dev"],
+    );
+  });
+
+  /**
+   * What a `listObjects` call did, as one comparable string.
+   *
+   * `expectListObjectsConformance` cannot express "one engine
+   * refused", and the two rows below are exactly that.
+   */
+  async function listOutcomes(
+    subject: string,
+    context?: Record<string, unknown>,
+  ): Promise<{ tsfga: string; openfga: string }> {
+    const params = {
+      objectType: "workspace_c3v",
+      relation: "can_read",
+      subjectType: "user_c3v",
+      subjectId: subject,
+      ...(context ? { context } : {}),
+    };
+    const mine = await tsfga
+      .listObjects(params)
+      .then((objects) => `answered:${[...objects].sort().join(",")}`)
+      .catch((error: unknown) => {
+        if (error instanceof TsfgaError) return "refused";
+        throw error;
+      });
+    const theirs = await fgaListObjects(storeId, authorizationModelId, params)
+      .then((objects) => `answered:${[...objects].sort().join(",")}`)
+      .catch(() => "refused");
+    return { tsfga: mine, openfga: theirs };
+  }
+
+  test("GAP-341: a row the subject cannot reach still refuses the list", async () => {
+    // dan is in no team, so upstream's reverse walk never reaches
+    // `workspace_c3v:prod#writer` — the `team_c3v:platform#member
+    // with business_hours_c3v` row whose `now` the request omits.
+    // It answers the empty set. tsfga runs a check per candidate,
+    // reads that row on `prod`, and refuses the whole call.
+    const { tsfga: mine, openfga: theirs } = await listOutcomes("dan", {
+      ip: "192.168.1.1",
+    });
+    expect(mine).toBe(theirs);
+    expect(mine).toBe("answered:");
+  });
+
+  test("GAP-341: and a row it can reach does not refuse it here", async () => {
+    // The mirror image, and the direction that matters more: carol
+    // *is* in the team, so upstream reaches the unevaluable row and
+    // declines the whole call. tsfga answers with the objects that
+    // resolved, dropping the one that errored.
+    const { tsfga: mine, openfga: theirs } = await listOutcomes("carol");
+    expect(mine).toBe(theirs);
+    expect(mine).toBe("refused");
+  });
+
+  // --- The write gate on the conditioned restrictions ---
+
+  test("39: a reader row must name the condition", async () => {
+    await expectWriteConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "workspace_c3v",
+        objectId: "prod",
+        relation: "reader",
+        subjectType: "user_c3v",
+        subjectId: "frank",
+      },
+      "refused",
+    );
+  });
+
+  test("40: naming it is enough", async () => {
+    await expectWriteConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "workspace_c3v",
+        objectId: "prod",
+        relation: "reader",
+        subjectType: "user_c3v",
+        subjectId: "frank",
+        conditionName: "ip_allowed_c3v",
+      },
+      "accepted",
+    );
+  });
+
+  test("41: naming a different one is not", async () => {
+    await expectWriteConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "workspace_c3v",
+        objectId: "dev",
+        relation: "reader",
+        subjectType: "user_c3v",
+        subjectId: "frank",
+        conditionName: "env_tagged_c3v",
+      },
+      "refused",
+    );
+  });
+
+  test("42: the userset arm takes no condition", async () => {
+    await expectWriteConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "workspace_c3v",
+        objectId: "prod",
+        relation: "reader",
+        subjectType: "team_c3v",
+        subjectId: "platform",
+        subjectRelation: "member",
+        conditionName: "ip_allowed_c3v",
+      },
+      "refused",
+    );
+  });
+
+  test("43: the writer userset arm requires one", async () => {
+    await expectWriteConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "workspace_c3v",
+        objectId: "dev",
+        relation: "writer",
+        subjectType: "team_c3v",
+        subjectId: "platform",
+        subjectRelation: "member",
+      },
+      "refused",
+    );
+  });
+
+  test("44: an undefined condition is refused", async () => {
+    await expectWriteConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "workspace_c3v",
+        objectId: "dev",
+        relation: "reader",
+        subjectType: "user_c3v",
+        subjectId: "frank",
+        conditionName: "no_such_condition_c3v",
+      },
+      "refused",
+    );
+  });
+
+  test("45: the row written in test 40 now answers on context", async () => {
+    await can("workspace_c3v", "prod", "reader", "frank", true, {
+      ip: "10.0.9.9",
+    });
+    await can("workspace_c3v", "prod", "reader", "frank", false, {
+      ip: "172.16.0.1",
+    });
+  });
+
+  test("the relation configs say what the model says", () => {
+    expectConfigsMatchModel("./c3-vault/model.dsl", fixture, {
+      coverage: "complete",
+    });
+  });
+});
