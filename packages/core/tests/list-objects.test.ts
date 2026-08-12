@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { check } from "../src/check.ts";
-import { RelationConfigNotFoundError } from "../src/errors.ts";
+import {
+  ConditionEvaluationError,
+  RelationConfigNotFoundError,
+} from "../src/errors.ts";
 import { createTsfga } from "../src/index.ts";
 import { listObjects } from "../src/list-objects.ts";
 import type {
@@ -360,12 +363,194 @@ describe("listObjects", () => {
       // both engines agree on. Dropping the candidate is closer to
       // upstream on every shape upstream can actually answer.
       //
-      // The three cases above still hold: every *other* error
-      // aborts the call.
+      // The three cases above still hold: every other error
+      // aborts the call, bar the deferred condition error the
+      // block below is about. `StoreReadFailure` is not one, so
+      // none of the three moved.
       seedSharedSubtree(3);
 
       expect(await listObjects(store, ALICE_VIEWER, { maxDepth: 1 })).toEqual(
         [],
+      );
+    });
+  });
+
+  /**
+   * The other exception, and the one that is not a blanket rule:
+   * whether a `ConditionEvaluationError` aborts depends on *which
+   * read* raised it, which `check.ts` records on the error as
+   * `onSubjectRow`.
+   *
+   * Upstream reverse-expands `ListObjects` from the subject, and
+   * its first query is for the rows whose subject is the request
+   * subject on that relation. A condition on one of those is
+   * always evaluated upstream too, so an error there must refuse
+   * here. Anything further out upstream may never materialise, so
+   * an error there is deferred and raised only if nothing granted.
+   *
+   * These go through the real check path rather than injecting the
+   * error, because the flag is only worth anything if the read
+   * sites actually set it.
+   */
+  describe("which read raised a condition error decides", () => {
+    /** A condition whose parameter no request here supplies. */
+    function seedCondition() {
+      store.conditionDefinitions.push({
+        name: "flag",
+        expression: "flag == true",
+        parameters: { flag: "bool" },
+      });
+    }
+
+    /**
+     * `doc:1` grants alice outright; `doc:2` carries her own row
+     * on the same relation, conditioned. That second row is
+     * exactly upstream's first reverse-expansion query.
+     */
+    function seedSubjectRow() {
+      seedCondition();
+      store.relationConfigs.push(
+        makeConfig({
+          objectType: "doc",
+          relation: "viewer",
+          directlyAssignable: [
+            { type: "user" },
+            { type: "user", condition: "flag" },
+          ],
+        }),
+      );
+      store.tuples.push(
+        makeTuple({
+          objectType: "doc",
+          objectId: "1",
+          relation: "viewer",
+          subjectType: "user",
+          subjectId: "alice",
+        }),
+        makeTuple({
+          objectType: "doc",
+          objectId: "2",
+          relation: "viewer",
+          subjectType: "user",
+          subjectId: "alice",
+          conditionName: "flag",
+        }),
+      );
+    }
+
+    /**
+     * `doc:2`'s failure is a hop away: its tupleset row is
+     * conditioned, so the error comes off a scan rather than off
+     * alice's own row. `grantOk` decides whether the candidate
+     * beside it grants anything.
+     */
+    function seedTuplesetScan(grantOk: boolean) {
+      seedCondition();
+      store.relationConfigs.push(
+        makeConfig({
+          objectType: "doc",
+          relation: "viewer",
+          // Nothing is assigned directly, but the arm is kept so
+          // the candidate still opens with a `findCheckTuples` --
+          // which is what `CandidateStore` counts and fails on.
+          directlyAssignable: [{ type: "user" }],
+          tupleToUserset: [{ tupleset: "parent", computedUserset: "member" }],
+        }),
+        makeConfig({
+          objectType: "doc",
+          relation: "parent",
+          directlyAssignable: [
+            { type: "folder" },
+            { type: "folder", condition: "flag" },
+          ],
+        }),
+        makeConfig({
+          objectType: "folder",
+          relation: "member",
+          directlyAssignable: [{ type: "user" }],
+        }),
+      );
+      store.tuples.push(
+        makeTuple({
+          objectType: "doc",
+          objectId: "1",
+          relation: "parent",
+          subjectType: "folder",
+          subjectId: "ok",
+        }),
+        makeTuple({
+          objectType: "doc",
+          objectId: "2",
+          relation: "parent",
+          subjectType: "folder",
+          subjectId: "err",
+          conditionName: "flag",
+        }),
+      );
+      if (grantOk) {
+        store.tuples.push(
+          makeTuple({
+            objectType: "folder",
+            objectId: "ok",
+            relation: "member",
+            subjectType: "user",
+            subjectId: "alice",
+          }),
+        );
+      }
+    }
+
+    test("an error on the subject's own row aborts the call", async () => {
+      // Both engines refuse: upstream reads alice's conditioned
+      // row on `doc:2` in the very first query it issues, so
+      // answering `["1"]` here would answer where upstream
+      // refuses -- on the commonest shape there is, one
+      // conditioned row beside an unconditioned one.
+      seedSubjectRow();
+
+      await expect(listObjects(store, ALICE_VIEWER)).rejects.toBeInstanceOf(
+        ConditionEvaluationError,
+      );
+    });
+
+    test("an error a hop away does not cost the answer", async () => {
+      // `doc:2` grants alice nothing -- the conditioned row under
+      // it points at a folder she is not a member of. Upstream
+      // never walks back to it and answers `["1"]`.
+      seedTuplesetScan(true);
+
+      expect(await listObjects(store, ALICE_VIEWER)).toEqual(["1"]);
+    });
+
+    test("a deferred error is raised when nothing was granted", async () => {
+      // The same shape with the grant removed. Now the erroring
+      // candidate may well have been the subject's only path, so
+      // the held error becomes the answer rather than `[]`.
+      seedTuplesetScan(false);
+
+      await expect(listObjects(store, ALICE_VIEWER)).rejects.toBeInstanceOf(
+        ConditionEvaluationError,
+      );
+    });
+
+    test("a hard failure still wins over a deferred one", async () => {
+      // The deferred slot is not a launch cut-off, so `doc:3` is
+      // reached and its failure aborts -- even though the
+      // condition error sits at a lower index.
+      seedTuplesetScan(true);
+      store.tuples.push(
+        makeTuple({
+          objectType: "doc",
+          objectId: "3",
+          relation: "parent",
+          subjectType: "folder",
+          subjectId: "ok",
+        }),
+      );
+      store.failures.set("3", new StoreReadFailure("doc:3 failed"));
+
+      expect(await failureMessage(listObjects(store, ALICE_VIEWER))).toBe(
+        "doc:3 failed",
       );
     });
   });
