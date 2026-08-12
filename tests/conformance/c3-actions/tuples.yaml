@@ -42,29 +42,12 @@
 - user: team_c3a:platform#member
   relation: required_reviewer
   object: environment_c3a:prod
-- user: user_c3a:*
-  relation: branch_allowed
-  object: environment_c3a:prod
-  condition:
-    name: branch_pattern_c3a
-    context:
-      pattern: "^refs/heads/(main|release/.+)$"
-
 - user: repo_c3a:api
   relation: repo
   object: environment_c3a:staging
 - user: user_c3a:carol
   relation: required_reviewer
   object: environment_c3a:staging
-- user: user_c3a:*
-  relation: branch_allowed
-  object: environment_c3a:staging
-  condition:
-    name: branch_pattern_c3a
-    context:
-      pattern: "(?i)^refs/heads/dev-"
-
-# Deployments
 - user: environment_c3a:prod
   relation: environment
   object: deployment_c3a:d1
@@ -88,10 +71,3 @@
   object: environment_c3a:canary
 
 # prod is frozen for release branches, whoever is deploying
-- user: user_c3a:*
-  relation: blocked
-  object: environment_c3a:prod
-  condition:
-    name: branch_pattern_c3a
-    context:
-      pattern: "^refs/heads/release/"

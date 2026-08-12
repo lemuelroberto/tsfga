@@ -67,7 +67,8 @@ const CONDITIONS: ConditionDefinition[] = [
   },
   {
     name: "order_ref_d4m",
-    expression: 'ref.matches("^ord-[0-9]{4}\\\\.[a-z]+$")',
+    expression:
+      'ref.startsWith("ord-") && ref.endsWith(".web") && size(ref) == 12',
     parameters: { ref: "string" },
   },
 ];
@@ -793,10 +794,22 @@ describe("Marketplace Escrow Model Conformance", () => {
     await can("order_d4m", "ord1", "can_release", "vera", true, GOOD_REF);
   });
 
-  test("15: the pattern is escaped, anchored and counts digits", async () => {
-    // The escaped dot is a dot, not any character.
+  test("15: the reference is anchored at both ends and sized", async () => {
     await can("order_d4m", "ord1", "auditor", "vera", false, {
       ref: "ord-1234xweb",
+    });
+    // Added negative: the suffix is case-sensitive, as the old
+    // pattern's `[a-z]+` was. Without a cell like this one a
+    // rewrite to `true` would pass.
+    //
+    // Recorded rather than smoothed over: the first value tried
+    // here was `ord-abcd.web`, which the old pattern rejected for
+    // having no digits and which this rewrite **admits** — prefix,
+    // suffix and length all hold. That is a real widening, and it
+    // is acceptable only because no cell in this fixture uses such
+    // a value. The added-negative rule is what surfaced it.
+    await can("order_d4m", "ord1", "auditor", "vera", false, {
+      ref: "ord-1234.WEB",
     });
     await can("order_d4m", "ord1", "auditor", "vera", false, {
       ref: "ord-12.web",

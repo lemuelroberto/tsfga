@@ -24,10 +24,19 @@ type environment_c3a
   relations
     define repo: [repo_c3a]
     define required_reviewer: [user_c3a, team_c3a#member]
+    define branch_allowed: [user_c3a:* with branch_pattern_c3a]
+    define blocked: [user_c3a:* with branch_pattern_c3a]
     define can_deploy: can_push from repo
+    define can_deploy_now: can_deploy and branch_allowed
+    define can_deploy_unblocked: can_deploy but not blocked
 
 type deployment_c3a
   relations
     define environment: [environment_c3a]
     define requester: [user_c3a]
     define can_approve: required_reviewer from environment but not requester
+    define can_run: can_approve and can_deploy_now from environment
+
+condition branch_pattern_c3a(branch: string, pattern: string) {
+  branch.matches(pattern)
+}

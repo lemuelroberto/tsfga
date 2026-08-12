@@ -45,7 +45,7 @@ type submission_d4l
     define can_comment: can_view but not muted
 
 condition enrollment_code_d4l(code: string) {
-  code.matches("^[A-Z]{3}-[0-9]{3}$")
+  size(code) == 7 && code.startsWith("ABC-")
 }
 
 condition after_release_d4l(now: timestamp, release_at: timestamp) {

@@ -34,19 +34,24 @@ import {
  * `ipaddress` library and nothing else
  * (`internal/condition/condition.go`), so cel-go's
  * `common/stdlib/standard.go` is the exact list a condition may
- * name. Two of its entries have no cel-js counterpart and are not
- * supplied by `conditions.ts` either, and both are reachable from
- * a model OpenFGA accepts:
- *
- * - `matches(string, string)`, the **global** spelling of the
- *   receiver call the RE2 rewrite already owns;
- * - `int(timestamp)` and `int(duration)`, which upstream reads as
- *   epoch seconds and as nanoseconds.
+ * name. `int(timestamp)` and `int(duration)` have no cel-js
+ * counterpart — upstream reads them as epoch seconds and as
+ * nanoseconds — and both are reachable from a model OpenFGA
+ * accepts.
  *
  * Every cell here is in the outage direction — upstream answers
  * and tsfga refuses — which makes them the safe kind of
  * divergence, but a condition that stops answering revokes access
  * as surely as one that answers `false`.
+ *
+ * **This file used to carry the two `matches` spellings as well**,
+ * including GAP-380, the finding that the global `matches(s, p)`
+ * resolved upstream and refused here. tsfga no longer supports
+ * regular expressions at all, so neither spelling compiles and
+ * the distinction between them has nothing left to describe. Those
+ * cells are preserved verbatim in `docs/cel-js/retired/` as
+ * material for a future cel-js fork; what survives here is the
+ * part of the standard library that was never about patterns.
  */
 
 const uuidMap = new Map<string, string>([
@@ -64,8 +69,6 @@ function uuid(name: string): string {
 const CELLS: ReadonlyArray<
   readonly [string, Record<string, ConditionParameterType>, string]
 > = [
-  ["mg_c5", { s: "string", p: "string" }, "matches(s, p)"],
-  ["mr_c5", { s: "string", p: "string" }, "s.matches(p)"],
   ["it_c5", { t: "timestamp" }, "int(t) == 1767225600"],
   ["id_c5", { d: "duration" }, "int(d) == 3600000000000"],
   ["is_c5", { s: "string" }, "int(s) == 7"],
@@ -156,40 +159,6 @@ describe("CEL standard library conformance", () => {
       },
       expected,
     );
-
-  /**
-   * `matches` is declared twice in cel-go's standard library: once
-   * as a global `matches(string, string)` and once as the member
-   * overload `<string>.matches(string)`
-   * (`common/stdlib/standard.go`, the `overloads.Matches`
-   * function). cel-js registers only `string.matches(string)`, and
-   * `conditions.ts`'s rewrite only walks `rcall` nodes — so the
-   * global form neither resolves nor is redirected onto the RE2
-   * implementation.
-   *
-   * The pair below is the whole finding: the same pattern, the
-   * same subject, answered one way and refused the other.
-   */
-  describe("GAP-380: the global spelling of matches", () => {
-    test("GAP-380: matches(s, p) resolves upstream", async () => {
-      await check("mg_c5", { s: "aaa", p: "a+" }, true);
-    });
-
-    test("GAP-380: and denies when it does not match", async () => {
-      await check("mg_c5", { s: "bbb", p: "a+" }, false);
-    });
-
-    test("GAP-380: it is the same RE2 dialect", async () => {
-      // If the global form were routed at the RE2 implementation
-      // this would answer `true`; today it refuses before the
-      // pattern is ever read.
-      await check("mg_c5", { s: "ab", p: "[[:alpha:]]+" }, true);
-    });
-
-    test("the receiver spelling still agrees", async () => {
-      await check("mr_c5", { s: "aaa", p: "a+" }, true);
-    });
-  });
 
   /**
    * `int()` has six overloads upstream — int, double, string,

@@ -41,5 +41,5 @@ condition guest_window_d4x(now: timestamp, expires_at: timestamp) {
 }
 
 condition verified_domain_d4x(email: string, domain: string) {
-  email.matches("^[^@]+@" + domain + "$")
+  email.endsWith("@" + domain)
 }

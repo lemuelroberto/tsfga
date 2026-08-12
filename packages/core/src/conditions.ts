@@ -1184,7 +1184,6 @@ const CEL_GO_GLOBAL_CALLS: ReadonlySet<string> = new Set([
   "has",
   "int",
   "ipaddress",
-  "matches",
   "size",
   "string",
   "timestamp",
@@ -1206,6 +1205,30 @@ const CEL_GO_GLOBAL_CALLS: ReadonlySet<string> = new Set([
  * behaviour this file has always had and the allow-list must not
  * change it — refusing the *write* would refuse a model upstream
  * accepts, which is the worse of the two directions.
+ *
+ * **`matches` is deliberately absent — from this table and from
+ * the global one above — and its absence is the whole of tsfga's
+ * regex policy.** cel-go declares it in both spellings, so both
+ * entries had to go; leaving either one would have kept regex
+ * support alive through that spelling alone.
+ *
+ * cel-go's `matches` is RE2 and cel-js's is a JavaScript
+ * `RegExp`. They share a syntax and are different
+ * languages, so a pattern means one thing upstream and another
+ * here — sometimes granting (`^[^]*$` is a syntax error in RE2 and
+ * *every possible input* in JavaScript), sometimes silently
+ * denying (`[[:alnum:]]` is a POSIX class in RE2 and seven literal
+ * characters in JavaScript), and always unbounded in time (V8 runs
+ * `^(a+)+$` for 20 seconds at 32 characters, and longer above
+ * that).
+ *
+ * A pattern translator and then a write-time deny-list were both
+ * tried. Each closed some of that and left the rest, and every new
+ * measurement moved which. Restoring this one table entry restores
+ * **all** of it, silently, with no other diff — so anyone reaching
+ * for it should read `docs/cel-js/` and `CLAUDE.md`'s *CEL is
+ * bounded by cel-js* first. Regex comes back with a cel-js whose
+ * `matches` is RE2, and not before.
  */
 const CEL_GO_MEMBER_CALLS: ReadonlySet<string> = new Set([
   "all",
@@ -1226,7 +1249,6 @@ const CEL_GO_MEMBER_CALLS: ReadonlySet<string> = new Set([
   "getSeconds",
   "in_cidr",
   "map",
-  "matches",
   "size",
   "startsWith",
 ]);

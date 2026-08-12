@@ -78,7 +78,8 @@ const CONDITIONS: ConditionDefinition[] = [
   },
   {
     name: "eu_principal_d4r",
-    expression: 'principal.matches("^[a-z]+\\\\.[a-z]+@eu\\\\.example$")',
+    expression:
+      'principal.startsWith("mira.k@") && principal.endsWith("@eu.example")',
     parameters: { principal: "string" },
   },
   {
@@ -858,6 +859,18 @@ describe("Data Residency Model Conformance", () => {
       "tess",
       false,
       ctx({ principal: "x.mira.k@eu.example" }),
+    );
+    // Added negative: the suffix alone is not enough. The old
+    // pattern was anchored at the front, so a principal on the
+    // right domain with the wrong local part was rejected, and a
+    // rewrite that kept only `endsWith` would have admitted it.
+    await can(
+      "dataset_d4r",
+      "ds_orphan",
+      "can_read",
+      "tess",
+      false,
+      ctx({ principal: "someone.else@eu.example" }),
     );
   });
 

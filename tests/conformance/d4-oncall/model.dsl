@@ -54,9 +54,9 @@ condition on_shift_d4c(now: timestamp, shift_start: timestamp, shift_end: timest
 }
 
 condition sev_scope_d4c(severity: string) {
-  severity.matches("^sev-[1-3]$")
+  severity in ["sev-1", "sev-2", "sev-3"]
 }
 
 condition webhook_host_d4c(endpoint: string) {
-  endpoint.matches("^https://hooks\\.acme\\.io/")
+  endpoint.startsWith("https://hooks.acme.io/")
 }

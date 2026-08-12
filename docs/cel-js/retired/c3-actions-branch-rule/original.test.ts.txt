@@ -33,26 +33,16 @@ import {
  * GitHub Actions-shaped deployment gating: org -> repo ->
  * environment -> deployment.
  *
- * Two seams are the point of this fixture.
+ * Three seams are the point of this fixture.
  *
- * **The branch rule used to be the third, and it is gone.**
- * `branch_allowed` was a conditioned wildcard whose *pattern* came
- * from the tuple — `branch.matches(pattern)` — which is how a real
- * environment protection rule works and which put a regular
- * expression on the evaluation path rather than the model-write
- * path. tsfga no longer supports `matches()`, and this is the one
- * condition in the corpus with no rewrite: `prod`'s rule is an
- * alternation (`main` or `release/…`) and no declared string
- * predicate expresses alternation. Rewriting it would have meant
- * moving an expected boolean, which is the one substitution the
- * rewrite rule forbids.
- *
- * So it is pinned instead — see `c5-cel-matches.test.ts`, whose
- * `expectPinnedModelWriteDivergence` cell is exactly this
- * condition — and the arm is preserved verbatim in
- * `docs/cel-js/retired/c3-actions-branch-rule/`. The 23 cells that
- * exercised it went with it; the graph seams below did not depend
- * on them.
+ * **The branch rule is a conditioned wildcard whose pattern lives
+ * in the tuple.** `branch_allowed` is
+ * `[user_c3a:* with branch_pattern_c3a]` and the condition is
+ * `branch.matches(pattern)`, so the regular expression is data
+ * rather than model — which is how a real environment protection
+ * rule works, and it puts an RE2 compile on the *evaluation* path
+ * instead of the model-write path. `staging` uses the inline flag
+ * group `(?i)`, which RE2 takes and `RegExp` throws on.
  *
  * **`deployment_c3a.can_approve` is an exclusion whose minuend is
  * a tuple-to-userset**: `required_reviewer from environment but
@@ -66,7 +56,17 @@ import {
  * row that grants it.
  */
 
-const CONDITIONS: ConditionDefinition[] = [];
+const CONDITIONS: ConditionDefinition[] = [
+  {
+    name: "branch_pattern_c3a",
+    expression: "branch.matches(pattern)",
+    parameters: { branch: "string", pattern: "string" },
+  },
+];
+
+const MAIN = { branch: "refs/heads/main" };
+const RELEASE = { branch: "refs/heads/release/1.2" };
+const FEATURE = { branch: "refs/heads/feature/x" };
 
 describe("Actions Model Conformance", () => {
   let db: Kysely<DB>;
@@ -195,11 +195,47 @@ describe("Actions Model Conformance", () => {
     });
     await tsfga.writeRelationConfig({
       objectType: "environment_c3a",
+      relation: "branch_allowed",
+      directlyAssignable: [
+        { type: "user_c3a", wildcard: true, condition: "branch_pattern_c3a" },
+      ],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "environment_c3a",
+      relation: "blocked",
+      directlyAssignable: [
+        { type: "user_c3a", wildcard: true, condition: "branch_pattern_c3a" },
+      ],
+      ...plain,
+    });
+    await tsfga.writeRelationConfig({
+      objectType: "environment_c3a",
       relation: "can_deploy",
       directlyAssignable: [],
       ...plain,
       tupleToUserset: [{ tupleset: "repo", computedUserset: "can_push" }],
     });
+    await tsfga.writeRelationConfig({
+      objectType: "environment_c3a",
+      relation: "can_deploy_now",
+      directlyAssignable: [],
+      ...plain,
+      intersection: [
+        { type: "computedUserset", relation: "can_deploy" },
+        { type: "computedUserset", relation: "branch_allowed" },
+      ],
+    });
+
+    await tsfga.writeRelationConfig({
+      objectType: "environment_c3a",
+      relation: "can_deploy_unblocked",
+      directlyAssignable: [],
+      ...plain,
+      computedUserset: "can_deploy",
+      excludedBy: "blocked",
+    });
+
     await tsfga.writeRelationConfig({
       objectType: "deployment_c3a",
       relation: "environment",
@@ -222,6 +258,21 @@ describe("Actions Model Conformance", () => {
       ],
       excludedBy: "requester",
     });
+    await tsfga.writeRelationConfig({
+      objectType: "deployment_c3a",
+      relation: "can_run",
+      directlyAssignable: [],
+      ...plain,
+      intersection: [
+        { type: "computedUserset", relation: "can_approve" },
+        {
+          type: "tupleToUserset",
+          tupleset: "environment",
+          computedUserset: "can_deploy_now",
+        },
+      ],
+    });
+
     // === Tuples (mirroring ./c3-actions/tuples.yaml) ===
     for (const user of ["alice", "bob"]) {
       await tsfga.addTuple({
@@ -308,6 +359,15 @@ describe("Actions Model Conformance", () => {
     });
     await tsfga.addTuple({
       objectType: "environment_c3a",
+      objectId: "prod",
+      relation: "branch_allowed",
+      subjectType: "user_c3a",
+      subjectId: "*",
+      conditionName: "branch_pattern_c3a",
+      conditionContext: { pattern: "^refs/heads/(main|release/.+)$" },
+    });
+    await tsfga.addTuple({
+      objectType: "environment_c3a",
       objectId: "staging",
       relation: "required_reviewer",
       subjectType: "user_c3a",
@@ -321,6 +381,26 @@ describe("Actions Model Conformance", () => {
       subjectId: "platform",
       subjectRelation: "member",
     });
+    await tsfga.addTuple({
+      objectType: "environment_c3a",
+      objectId: "staging",
+      relation: "branch_allowed",
+      subjectType: "user_c3a",
+      subjectId: "*",
+      conditionName: "branch_pattern_c3a",
+      conditionContext: { pattern: "(?i)^refs/heads/dev-" },
+    });
+
+    await tsfga.addTuple({
+      objectType: "environment_c3a",
+      objectId: "prod",
+      relation: "blocked",
+      subjectType: "user_c3a",
+      subjectId: "*",
+      conditionName: "branch_pattern_c3a",
+      conditionContext: { pattern: "^refs/heads/release/" },
+    });
+
     const deployments: Array<[string, string, string]> = [
       ["d1", "prod", "bob"],
       ["d2", "staging", "carol"],
@@ -402,7 +482,163 @@ describe("Actions Model Conformance", () => {
 
   // --- The branch pattern, held in the tuple ---
 
+  test("10: main matches the production pattern", async () => {
+    await can("environment_c3a", "prod", "branch_allowed", "bob", true, {
+      context: MAIN,
+    });
+  });
+
+  test("11: so does a release branch", async () => {
+    await can("environment_c3a", "prod", "branch_allowed", "bob", true, {
+      context: RELEASE,
+    });
+  });
+
+  test("12: a feature branch does not", async () => {
+    await can("environment_c3a", "prod", "branch_allowed", "bob", false, {
+      context: FEATURE,
+    });
+  });
+
+  test("13: `release/` with nothing after it does not", async () => {
+    await can("environment_c3a", "prod", "branch_allowed", "bob", false, {
+      context: { branch: "refs/heads/release/" },
+    });
+  });
+
+  test("14: the wildcard admits a stranger too", async () => {
+    await can("environment_c3a", "prod", "branch_allowed", "zoe", true, {
+      context: MAIN,
+    });
+  });
+
+  test("15: a missing branch refuses", async () => {
+    await can("environment_c3a", "prod", "branch_allowed", "bob", "refused");
+  });
+
+  test("16: staging's pattern is case-insensitive by inline flag", async () => {
+    await can("environment_c3a", "staging", "branch_allowed", "bob", true, {
+      context: { branch: "refs/heads/DEV-42" },
+    });
+    await can("environment_c3a", "staging", "branch_allowed", "bob", true, {
+      context: { branch: "refs/heads/dev-42" },
+    });
+  });
+
+  test("17: and it is still anchored at the start", async () => {
+    await can("environment_c3a", "staging", "branch_allowed", "bob", false, {
+      context: { branch: "x/refs/heads/dev-42" },
+    });
+  });
+
+  test("18: an uncompilable pattern refuses on both sides", async () => {
+    // `canary` stores no branch rule, so the contextual tuple is
+    // the only row on the relation and its pattern is all there is
+    // to evaluate.
+    await can("environment_c3a", "canary", "branch_allowed", "zoe", "refused", {
+      context: MAIN,
+      contextualTuples: [
+        {
+          objectType: "environment_c3a",
+          objectId: "canary",
+          relation: "branch_allowed",
+          subjectType: "user_c3a",
+          subjectId: "*",
+          conditionName: "branch_pattern_c3a",
+          conditionContext: { pattern: "([" },
+        },
+      ],
+    });
+  });
+
+  test("GAP-342: a contextual row does not replace the stored one", async () => {
+    // Same natural key — `environment_c3a:prod#branch_allowed@user_c3a:*` —
+    // and a different condition context. Upstream keeps both rows and
+    // the stored one still matches `main`; tsfga's contextual overlay
+    // replaces the stored row, so the only pattern left is the one the
+    // caller sent.
+    await can("environment_c3a", "prod", "branch_allowed", "zoe", true, {
+      context: MAIN,
+      contextualTuples: [
+        {
+          objectType: "environment_c3a",
+          objectId: "prod",
+          relation: "branch_allowed",
+          subjectType: "user_c3a",
+          subjectId: "*",
+          conditionName: "branch_pattern_c3a",
+          conditionContext: { pattern: "^refs/heads/never$" },
+        },
+      ],
+    });
+  });
+
+  test("GAP-342: and a caller cancels a stored denial with one", async () => {
+    // The direction that grants. `can_deploy_unblocked` is
+    // `can_deploy but not blocked`, and prod's stored `blocked`
+    // wildcard freezes every release branch. A contextual row with
+    // the same key and a pattern that matches nothing removes the
+    // freeze in tsfga and changes nothing upstream.
+    await can("environment_c3a", "prod", "can_deploy_unblocked", "bob", false, {
+      context: RELEASE,
+    });
+    await can("environment_c3a", "prod", "can_deploy_unblocked", "bob", false, {
+      context: RELEASE,
+      contextualTuples: [
+        {
+          objectType: "environment_c3a",
+          objectId: "prod",
+          relation: "blocked",
+          subjectType: "user_c3a",
+          subjectId: "*",
+          conditionName: "branch_pattern_c3a",
+          conditionContext: { pattern: "^refs/heads/never$" },
+        },
+      ],
+    });
+  });
+
+  test("18c: the freeze answers on the branch", async () => {
+    await can("environment_c3a", "prod", "blocked", "bob", true, {
+      context: RELEASE,
+    });
+    await can("environment_c3a", "prod", "blocked", "bob", false, {
+      context: MAIN,
+    });
+    await can("environment_c3a", "prod", "can_deploy_unblocked", "bob", true, {
+      context: MAIN,
+    });
+    await can("environment_c3a", "prod", "can_deploy_unblocked", "zoe", false, {
+      context: MAIN,
+    });
+  });
+
   // --- The gate: push right and branch together ---
+
+  test("19: bob deploys prod from main", async () => {
+    await can("environment_c3a", "prod", "can_deploy_now", "bob", true, {
+      context: MAIN,
+    });
+  });
+
+  test("20: and not from a feature branch", async () => {
+    await can("environment_c3a", "prod", "can_deploy", "bob", true);
+    await can("environment_c3a", "prod", "can_deploy_now", "bob", false, {
+      context: FEATURE,
+    });
+  });
+
+  test("21: a stranger on main still cannot deploy", async () => {
+    await can("environment_c3a", "prod", "can_deploy_now", "zoe", false, {
+      context: MAIN,
+    });
+  });
+
+  test("22: main is not a staging branch", async () => {
+    await can("environment_c3a", "staging", "can_deploy_now", "bob", false, {
+      context: MAIN,
+    });
+  });
 
   // --- Approval: the reviewer set minus the requester ---
 
@@ -429,6 +665,28 @@ describe("Actions Model Conformance", () => {
   });
 
   // --- Running: approval and the branch gate together ---
+
+  test("28: alice runs d1 from main", async () => {
+    await can("deployment_c3a", "d1", "can_run", "alice", true, {
+      context: MAIN,
+    });
+  });
+
+  test("29: and not from a feature branch", async () => {
+    await can("deployment_c3a", "d1", "can_run", "alice", false, {
+      context: FEATURE,
+    });
+  });
+
+  test("30: bob cannot run what he requested, branch or not", async () => {
+    await can("deployment_c3a", "d1", "can_run", "bob", false, {
+      context: MAIN,
+    });
+  });
+
+  test("31: a missing branch refuses the run", async () => {
+    await can("deployment_c3a", "d1", "can_run", "alice", "refused");
+  });
 
   // --- Userset subjects ---
 
@@ -530,6 +788,22 @@ describe("Actions Model Conformance", () => {
     );
   });
 
+  test("38: and the ones main actually opens", async () => {
+    await expectListObjectsConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "environment_c3a",
+        relation: "can_deploy_now",
+        subjectType: "user_c3a",
+        subjectId: "bob",
+        context: MAIN,
+      },
+      ["prod"],
+    );
+  });
+
   test("39: the deployments alice may approve", async () => {
     await expectListObjectsConformance(
       storeId,
@@ -561,6 +835,40 @@ describe("Actions Model Conformance", () => {
   });
 
   // --- The write gate ---
+
+  test("41: a branch rule must carry its pattern condition", async () => {
+    await expectWriteConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "environment_c3a",
+        objectId: "staging",
+        relation: "branch_allowed",
+        subjectType: "user_c3a",
+        subjectId: "*",
+      },
+      "refused",
+    );
+  });
+
+  test("42: and it is a wildcard, not a person", async () => {
+    await expectWriteConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "environment_c3a",
+        objectId: "staging",
+        relation: "branch_allowed",
+        subjectType: "user_c3a",
+        subjectId: "bob",
+        conditionName: "branch_pattern_c3a",
+        conditionContext: { pattern: "^refs/heads/main$" },
+      },
+      "refused",
+    );
+  });
 
   test("43: `public` takes only the wildcard", async () => {
     await expectWriteConformance(

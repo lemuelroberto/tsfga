@@ -70,12 +70,12 @@ const CONDITIONS: ConditionDefinition[] = [
   },
   {
     name: "sev_scope_d4c",
-    expression: 'severity.matches("^sev-[1-3]$")',
+    expression: 'severity in ["sev-1", "sev-2", "sev-3"]',
     parameters: { severity: "string" },
   },
   {
     name: "webhook_host_d4c",
-    expression: 'endpoint.matches("^https://hooks\\\\.acme\\\\.io/")',
+    expression: 'endpoint.startsWith("https://hooks.acme.io/")',
     parameters: { endpoint: "string" },
   },
 ];
@@ -819,12 +819,24 @@ describe("On-call Platform Model Conformance", () => {
     await can("incident_d4c", "inc1", "can_ack", "kim", false, SEV9);
   });
 
-  test("24: the pattern is anchored at both ends", async () => {
+  test("24: the membership is exact at both ends", async () => {
     await can("incident_d4c", "inc1", "can_ack", "kim", false, {
       severity: "sev-1x",
     });
     await can("incident_d4c", "inc1", "can_ack", "kim", false, {
       severity: "xsev-1",
+    });
+    // Added negative: a severity just past the enumerated range,
+    // which the old character class rejected too. A list admits
+    // exactly what it lists, and this is the cell that says so.
+    await can("incident_d4c", "inc1", "can_ack", "kim", false, {
+      severity: "sev-4",
+    });
+    // Added negative for the webhook rewrite: the host prefix must
+    // be a prefix. The old pattern was anchored, so a host reached
+    // through a redirect parameter was rejected.
+    await can("alert_rule_d4c", "r_cpu", "notifier", "hookbot", false, {
+      endpoint: "https://evil.example/?to=https://hooks.acme.io/",
     });
   });
 

@@ -55,5 +55,5 @@ condition escrow_state_d4m(state: string, allowed: list<string>) {
 }
 
 condition order_ref_d4m(ref: string) {
-  ref.matches("^ord-[0-9]{4}\\.[a-z]+$")
+  ref.startsWith("ord-") && ref.endsWith(".web") && size(ref) == 12
 }

@@ -76,7 +76,7 @@ const CONDITIONS: ConditionDefinition[] = [
   },
   {
     name: "device_trusted_d4o",
-    expression: 'device_id.matches("^dev-[0-9a-f]{8}$")',
+    expression: 'device_id.startsWith("dev-") && size(device_id) == 12',
     parameters: { device_id: "string" },
   },
 ];
@@ -668,9 +668,15 @@ describe("Okta Model Conformance", () => {
     });
   });
 
-  test("24: the bounded repetition rejects a short id", async () => {
+  test("24: the length rejects a short id", async () => {
     await can("session_d4o", "s1", "can_open", "alice", false, {
       context: BAD_DEVICE,
+    });
+    // Added negative: the right length with no `dev-` prefix. The
+    // old pattern rejected it and so must the rewrite, otherwise
+    // the size test is doing all the work on its own.
+    await can("session_d4o", "s1", "can_open", "alice", false, {
+      context: { device_id: "tmp-0a1b2c3d" },
     });
   });
 

@@ -53,5 +53,5 @@ condition in_window_d4g(now: timestamp, not_before: timestamp, not_after: timest
 }
 
 condition svc_account_d4g(principal: string) {
-  principal.matches("^svc-[a-z0-9-]+@ex\\.io$")
+  principal.startsWith("svc-") && principal.endsWith("@ex.io")
 }

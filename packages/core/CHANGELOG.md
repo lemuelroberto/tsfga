@@ -7,6 +7,46 @@ releases may contain breaking changes).
 
 ## Unreleased
 
+### Removed
+
+- **BREAKING: `matches()` is no longer supported.** A condition
+  whose expression calls it — in either the receiver spelling
+  `s.matches(p)` or the global `matches(s, p)` — is refused at
+  `writeConditionDefinition` with `ConditionCompileError:
+  undeclared reference to 'matches'`. OpenFGA supports it, so this
+  is a large, permanent, refusing-direction divergence: a model
+  ported from OpenFGA whose conditions use `matches` will not
+  load.
+
+  **What breaks:** any stored condition definition using
+  `matches`. Rewriting is usually mechanical — `startsWith`,
+  `endsWith`, `contains`, `size` and `in` are all supported and
+  behave identically on both engines, and nine of the ten fixtures
+  in this repository's own corpus rewrote with no expected result
+  changing. `packages/core/README.md` carries the substitution
+  table.
+
+  **Why, in the granting direction first**, because that is the
+  half a consumer cannot detect: cel-go's `matches` is RE2 and
+  cel-js's is a JavaScript `RegExp`, and fourteen measured
+  constructs are ones RE2 rejects and JavaScript accepts. The
+  sharpest is `^[^]*$` — a syntax error in RE2, so OpenFGA will not
+  store the model, and *any character including newline* in
+  JavaScript, so a pattern its author wrote as a whitelist admitted
+  every possible input. Seven more are accepted by both and read
+  differently, usually denying silently: `[[:alnum:]]` is a POSIX
+  class in RE2 and seven literal characters in JavaScript. And
+  `^(a+)+$` runs 20.9 seconds against a 32-character subject on V8,
+  with no bound above that.
+
+  A pattern translator shipped previously and a write-time
+  deny-list was considered. Each closed part of that and left the
+  rest. `docs/cel-js/` carries every measurement, the retired
+  suites, and what a future cel-js fork would have to fix.
+
+- The RE2 pattern translator, the AST source-splice, and the
+  `tsfga_re2_matches` overloads are unreachable as of this change.
+
 ### Changed
 
 - **BREAKING: `TupleStore.insertTuple` returns `Promise<boolean>`

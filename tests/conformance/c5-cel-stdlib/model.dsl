@@ -5,8 +5,6 @@ type user_c5
 
 type doc_c5
   relations
-    define mg_c5: [user_c5 with mg_c5_c]
-    define mr_c5: [user_c5 with mr_c5_c]
     define it_c5: [user_c5 with it_c5_c]
     define id_c5: [user_c5 with id_c5_c]
     define is_c5: [user_c5 with is_c5_c]
@@ -17,14 +15,6 @@ type doc_c5
     define by_c5: [user_c5 with by_c5_c]
     define bo_c5: [user_c5 with bo_c5_c]
     define sz_c5: [user_c5 with sz_c5_c]
-
-condition mg_c5_c(s: string, p: string) {
-  matches(s, p)
-}
-
-condition mr_c5_c(s: string, p: string) {
-  s.matches(p)
-}
 
 condition it_c5_c(t: timestamp) {
   int(t) == 1767225600

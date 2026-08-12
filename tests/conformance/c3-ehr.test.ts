@@ -55,7 +55,7 @@ import {
 const CONDITIONS: ConditionDefinition[] = [
   {
     name: "active_emergency_c3h",
-    expression: 'emergency && facility.matches("^ward-[0-9]+$")',
+    expression: 'emergency && facility.startsWith("ward-")',
     parameters: { emergency: "bool", facility: "string" },
   },
   {
@@ -427,9 +427,16 @@ describe("EHR Model Conformance", () => {
     });
   });
 
-  test("8: nor from a facility the pattern does not admit", async () => {
+  test("8: nor from a facility the condition does not admit", async () => {
     await can("patient_c3h", "p1", "can_view", "dre", false, {
       context: { emergency: true, facility: "lab-3" },
+    });
+    // Added negative: the prefix is a prefix, not a substring. The
+    // condition this replaced was anchored, so a facility carrying
+    // `ward-` in the middle was rejected and must stay rejected —
+    // without a cell like this one a rewrite to `true` would pass.
+    await can("patient_c3h", "p1", "can_view", "dre", false, {
+      context: { emergency: true, facility: "annex-ward-3" },
     });
   });
 

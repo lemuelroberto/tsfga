@@ -39,5 +39,5 @@ condition mfa_ok_d4o(mfa_level: string, required_levels: list<string>) {
 }
 
 condition device_trusted_d4o(device_id: string) {
-  device_id.matches("^dev-[0-9a-f]{8}$")
+  device_id.startsWith("dev-") && size(device_id) == 12
 }

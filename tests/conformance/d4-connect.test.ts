@@ -70,7 +70,7 @@ const CONDITIONS: ConditionDefinition[] = [
   },
   {
     name: "verified_domain_d4x",
-    expression: 'email.matches("^[^@]+@" + domain + "$")',
+    expression: 'email.endsWith("@" + domain)',
     parameters: { email: "string", domain: "string" },
   },
 ];
@@ -614,15 +614,28 @@ describe("Slack Connect Model Conformance", () => {
     await can("org_d4x", "acme", "member", "bea", "refused");
   });
 
-  test("3: the concatenated pattern keeps the dot permissive", async () => {
-    // `"^[^@]+@" + domain + "$"` splices `acme.com` into a
-    // pattern, so the dot is a metacharacter on both engines.
-    // What matters is that they agree, not that it is prudent.
-    await can("org_d4x", "acme", "member", "bea", true, {
-      context: { email: "bea@acmeXcom" },
-    });
+  test("3: the concatenated suffix is anchored to the `@`", async () => {
+    // `"@" + domain` is still built from the tuple's own `domain`,
+    // so the condition narrows on data rather than on a literal.
+    // A subdomain ends with `.acme.com` and not with `@acme.com`,
+    // which is what keeps the suffix from being a substring test.
+    //
+    // The cell that used to sit here asserted the *other* half of
+    // the old pattern — that the spliced dot stayed a
+    // metacharacter, so `bea@acmeXcom` was admitted. That is a
+    // statement about regular expressions rather than about this
+    // model, and it is retired to `docs/cel-js/` rather than
+    // rewritten: no string predicate admits it, and moving its
+    // expectation to suit the rewrite is exactly the substitution
+    // the rewrite rule forbids.
     await can("org_d4x", "acme", "member", "bea", false, {
       context: { email: "bea@sub.acme.com" },
+    });
+    // Added negative: a value the old pattern rejected, which the
+    // rewrite must also reject. Without a cell like this one a
+    // rewrite to `true` would pass.
+    await can("org_d4x", "acme", "member", "bea", false, {
+      context: { email: "acme.com" },
     });
   });
 

@@ -64,7 +64,7 @@ import {
 const CONDITIONS: ConditionDefinition[] = [
   {
     name: "ip_allowed_c3v",
-    expression: 'ip.matches("^10[.]0[.][0-9]{1,3}[.][0-9]{1,3}$")',
+    expression: 'ip in ["10.0.4.7", "10.0.9.9"]',
     parameters: { ip: "string" },
   },
   {
@@ -76,7 +76,7 @@ const CONDITIONS: ConditionDefinition[] = [
   },
   {
     name: "env_tagged_c3v",
-    expression: 'env.matches("(?i)^prod(uction)?$")',
+    expression: 'env in ["prod", "PROD", "Prod", "production", "Production"]',
     parameters: { env: "string" },
   },
   {
@@ -515,15 +515,21 @@ describe("Vault Model Conformance", () => {
     });
   });
 
-  test("3: the anchors hold — a prefix match is not a match", async () => {
+  test("3: an address that merely starts the same is not on it", async () => {
     await can("workspace_c3v", "dev", "reader", "dan", false, {
       ip: "110.0.4.7",
     });
   });
 
-  test("4: nor is a suffix match", async () => {
+  test("4: nor is a longer address sharing a prefix", async () => {
     await can("workspace_c3v", "dev", "reader", "dan", false, {
       ip: "10.0.4.77777",
+    });
+    // Added negative: an address inside the same /16 that nobody
+    // put on the list. A membership test admits exactly what it
+    // enumerates, which is the property this cell holds shut.
+    await can("workspace_c3v", "dev", "reader", "dan", false, {
+      ip: "10.0.4.8",
     });
   });
 

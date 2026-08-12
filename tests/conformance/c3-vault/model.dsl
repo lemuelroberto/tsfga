@@ -40,7 +40,7 @@ type secret_c3v
     define can_read: path_reader or admin from workspace
 
 condition ip_allowed_c3v(ip: string) {
-  ip.matches("^10[.]0[.][0-9]{1,3}[.][0-9]{1,3}$")
+  ip in ["10.0.4.7", "10.0.9.9"]
 }
 
 condition business_hours_c3v(now: timestamp) {
@@ -48,7 +48,7 @@ condition business_hours_c3v(now: timestamp) {
 }
 
 condition env_tagged_c3v(env: string) {
-  env.matches("(?i)^prod(uction)?$")
+  env in ["prod", "PROD", "Prod", "production", "Production"]
 }
 
 condition under_budget_c3v(cost: double, budget: double) {

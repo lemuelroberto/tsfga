@@ -29,7 +29,7 @@ type record_c3h
     define can_amend: author and can_view from patient
 
 condition active_emergency_c3h(emergency: bool, facility: string) {
-  emergency && facility.matches("^ward-[0-9]+$")
+  emergency && facility.startsWith("ward-")
 }
 
 condition min_clearance_c3h(clearance: int, required: int) {

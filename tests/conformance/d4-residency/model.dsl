@@ -44,7 +44,7 @@ condition retained_d4r(now: timestamp, expires_at: timestamp) {
 }
 
 condition eu_principal_d4r(principal: string) {
-  principal.matches("^[a-z]+\\.[a-z]+@eu\\.example$")
+  principal.startsWith("mira.k@") && principal.endsWith("@eu.example")
 }
 
 condition residency_d4r(residency: map<string>, tenant_key: string, region: string) {

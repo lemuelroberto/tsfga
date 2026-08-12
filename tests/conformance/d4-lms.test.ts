@@ -60,7 +60,7 @@ import {
 const CONDITIONS: ConditionDefinition[] = [
   {
     name: "enrollment_code_d4l",
-    expression: 'code.matches("^[A-Z]{3}-[0-9]{3}$")',
+    expression: 'size(code) == 7 && code.startsWith("ABC-")',
     parameters: { code: "string" },
   },
   {
@@ -632,12 +632,18 @@ describe("LMS Model Conformance", () => {
     });
   });
 
-  test("11: the bounded repetitions are exact", async () => {
+  test("11: the length is exact", async () => {
     await can("section_d4l", "sec1", "can_view", "zoe", false, {
       context: { code: "ABCD-123" },
     });
     await can("section_d4l", "sec1", "can_view", "zoe", false, {
       context: { code: "ABC-12" },
+    });
+    // Added negative: the right length with the wrong prefix. The
+    // size test alone would admit it, so this cell is what proves
+    // both halves of the rewrite are load-bearing.
+    await can("section_d4l", "sec1", "can_view", "zoe", false, {
+      context: { code: "XYZ-123" },
     });
   });
 

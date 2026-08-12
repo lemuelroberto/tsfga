@@ -1117,33 +1117,67 @@ check algorithm evaluates them automatically.
 Context merge rule: tuple context properties take precedence
 over request context properties (matching OpenFGA behavior).
 
-**`matches()` reads its pattern as RE2, not as a JavaScript
-`RegExp`.** Upstream is cel-go, so the dialect is Go's `regexp`,
-and the two are not a superset of one another. The pattern is
-translated before it reaches a `RegExp`:
+### `matches()` is not supported
 
-- the leading inline flags `(?i)`, `(?s)`, `(?m)` become
-  JavaScript flags, and `(?U)` inverts every quantifier's
-  greediness;
-- `(?P<name>` becomes `(?<name>`;
-- the POSIX classes (`[[:alpha:]]`, `[[:digit:]]`, …) expand, and
-  `\pL` becomes `\p{L}`, compiled with the `u` flag — without
-  which a `RegExp` reads it as a literal `p` and the grant
-  silently disappears;
-- the constructs RE2 does not accept — lookahead, lookbehind and
-  backreferences — are **refused**, which is what upstream does,
-  rather than matched.
+**tsfga has no regular-expression support.** A condition whose
+expression calls `matches()` is refused when you write it:
 
-Everything else passes through. Two forms are refused rather than
-translated because no faithful JavaScript spelling exists: an
-inline flag group that is not at the start of the pattern
-(`a(?i)b`), which scopes differently in the two dialects, and a
-negated POSIX class (`[[:^alpha:]]`). Both are refusals, not wrong
-answers.
+```
+ConditionCompileError: undeclared reference to 'matches'
+```
 
-No RE2 engine is involved. A native binding such as `node-re2`
-would break the Node, Deno and smoke matrix those test
-directories exist to hold.
+OpenFGA supports it. This is the largest deliberate difference
+between the two, it is permanent, and it is first here because it
+is the one most likely to affect you — if you are porting a model
+from OpenFGA and any condition uses `matches`, that model will not
+load.
+
+**What to use instead.** Most real patterns are a prefix, a
+suffix, a substring or a membership test, and all of those are
+supported and behave identically on both engines:
+
+| instead of | write |
+|---|---|
+| `s.matches("^ward-[0-9]+$")` | `s.startsWith("ward-")` |
+| `s.matches("^https://hooks[.]acme[.]io/")` | `s.startsWith("https://hooks.acme.io/")` |
+| `s.matches("@eu[.]example$")` | `s.endsWith("@eu.example")` |
+| `s.matches("^sev-[1-3]$")` | `s in ["sev-1", "sev-2", "sev-3"]` |
+| `s.matches("^dev-[0-9a-f]{8}$")` | `s.startsWith("dev-") && size(s) == 12` |
+
+These are narrower than the patterns they replace. That is the
+trade, and it is deliberate: a condition is a narrowing device,
+and a predicate you can read at a glance is worth more in an
+authorization rule than one you cannot.
+
+If your rule genuinely needs a regular expression — validating a
+user-supplied format, say — do it in your application before the
+check, and pass the result to the condition as a boolean.
+
+**Why.** tsfga evaluates CEL with
+[`@marcbachmann/cel-js`](https://github.com/nicholasgasior/cel-js);
+OpenFGA evaluates it with cel-go, whose `matches()` is RE2.
+cel-js's is a JavaScript `RegExp`. The two are different languages
+that share a syntax, and the differences do not fail loudly:
+
+- `[[:alnum:]]` is a character class in RE2 and, in JavaScript,
+  the seven literal characters `[ : a l n u m` — so an email
+  allow-list silently stops matching and access disappears with no
+  error anywhere.
+- `[^]` is a syntax error in RE2 and matches **any character
+  including newline** in JavaScript — so a pattern written as a
+  whitelist admits everything.
+- `^(a+)+$` is linear in RE2 and exponential in JavaScript:
+  measured on V8, 5.2 seconds for a 30-character input, 20.9
+  seconds at 32, and longer inputs did not finish.
+
+An earlier release papered over this with a pattern translator. It
+was a second regular-expression implementation owned by this
+project, in the path of every authorization decision. Rather than
+keep it, or replace it with a validator that would have caught
+some of these and not others, the feature was removed. The full
+analysis, including the measured backtracking curves on three
+runtimes and the complete RE2-versus-cel-js gap table, is checked
+in under [`docs/cel-js/`](../../docs/cel-js/).
 
 `string(duration)` and `string(timestamp)` are absent from cel-js
 and registered by tsfga, formatted as cel-go formats them: total

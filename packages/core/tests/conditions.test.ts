@@ -880,774 +880,6 @@ describe("the compiled expression cache is bounded", () => {
  * unit-level rows, including the ones no model in the suite
  * reaches.
  */
-describe("matches() reads its pattern as RE2, not as a RegExp", () => {
-  const matches = async (
-    subject: string,
-    pattern: string,
-  ): Promise<boolean> => {
-    const store = new MockTupleStore();
-    store.conditionDefinitions.push({
-      name: "re",
-      expression: "s.matches(r)",
-      parameters: { s: "string", r: "string" },
-    });
-    return evaluateTupleCondition(store, makeTuple({ conditionName: "re" }), {
-      s: subject,
-      r: pattern,
-    });
-  };
-
-  describe("patterns both dialects share pass through", () => {
-    for (const [subject, pattern, expected] of [
-      ["abc", "^a.c$", true],
-      ["abc", "b", true],
-      ["abc", "^z", false],
-      ["a b", "\\ba\\b", true],
-      ["abc", "^[a-c]+$", true],
-      ["a.c", "^a\\.c$", true],
-      ["aaa", "^a{3}$", true],
-      ["xy", "^(?:x)y$", true],
-    ] as const) {
-      const name = `${JSON.stringify(pattern)} on ${subject}`;
-      test(name, async () => {
-        expect(await matches(subject, pattern)).toBe(expected);
-      });
-    }
-  });
-
-  describe("RE2 spellings a RegExp cannot compile", () => {
-    test("a leading inline flag becomes a RegExp flag", async () => {
-      expect(await matches("ABC", "(?i)abc")).toBe(true);
-      expect(await matches("a\nb", "(?s)a.b")).toBe(true);
-      expect(await matches("a\nb", "(?m)^b$")).toBe(true);
-    });
-
-    test("combined flags are read together", async () => {
-      expect(await matches("A\nB", "(?is)a.b")).toBe(true);
-    });
-
-    test("an ungreedy flag inverts every quantifier", async () => {
-      // `(?U)` is what RE2 spells and JavaScript has no flag for,
-      // so every quantifier is flipped instead. `matches` is a
-      // predicate and a `RegExp` backtracks, so greediness cannot
-      // change the answer -- what these assert is that each
-      // quantifier form survives the flip and still compiles.
-      expect(await matches("abc", "(?U)a.+")).toBe(true);
-      expect(await matches("abc", "(?U)^a.+c$")).toBe(true);
-      expect(await matches("abc", "(?U)^a.{1,2}c$")).toBe(true);
-      expect(await matches("abbc", "(?U)^ab*?c$")).toBe(true);
-      expect(await matches("ac", "(?U)^ab?c$")).toBe(true);
-      expect(await matches("abc", "(?U)^z.+")).toBe(false);
-    });
-
-    test("an RE2-spelled named group becomes a JavaScript one", async () => {
-      expect(await matches("abc", "(?P<x>a)b")).toBe(true);
-    });
-  });
-
-  describe("spellings both compile and read differently", () => {
-    test("a POSIX class expands", async () => {
-      expect(await matches("abc", "^[[:alpha:]]+$")).toBe(true);
-      expect(await matches("a1", "^[[:alnum:]]+$")).toBe(true);
-      expect(await matches("a1", "^[[:digit:]]+$")).toBe(false);
-      expect(await matches("a_1", "^[[:word:]]+$")).toBe(true);
-      expect(await matches("a-b", "^[[:alpha:]-]+$")).toBe(true);
-    });
-
-    test("a unicode class needs the u flag to be one", async () => {
-      expect(await matches("ab", "^\\pL+$")).toBe(true);
-      expect(await matches("ab", "^\\p{L}+$")).toBe(true);
-      expect(await matches("12", "^\\p{L}+$")).toBe(false);
-      expect(await matches("12", "^\\p{Nd}+$")).toBe(true);
-    });
-  });
-
-  describe("spellings RE2 refuses are refused here", () => {
-    for (const pattern of [
-      "a(?=b)",
-      "a(?!b)",
-      "(?<=a)b",
-      "(?<!a)b",
-      "(a)\\1",
-      "(?P<x>a)(?P=x)",
-      "a(?i)b",
-      "(?i:a)b",
-    ]) {
-      test(`${JSON.stringify(pattern)} is an evaluation error`, async () => {
-        await expect(matches("ab", pattern)).rejects.toBeInstanceOf(
-          ConditionEvaluationError,
-        );
-      });
-    }
-
-    test("a pattern neither dialect compiles is still an error", async () => {
-      await expect(matches("abc", "a(")).rejects.toBeInstanceOf(
-        ConditionEvaluationError,
-      );
-    });
-  });
-
-  describe("a negated POSIX class is the class's complement", () => {
-    // RE2 negates a POSIX class against the **whole** rune range,
-    // not against ASCII, so a letter outside ASCII is a member of
-    // `[[:^alpha:]]`. This was a refusal until the write-time
-    // compilation of issue 241 made refusing it a refusal of models
-    // upstream accepts.
-    test("it matches what the class does not", async () => {
-      expect(await matches("1", "^[[:^alpha:]]+$")).toBe(true);
-      expect(await matches("abc", "^[[:^alpha:]]+$")).toBe(false);
-      expect(await matches("😀", "^[[:^alpha:]]$")).toBe(true);
-    });
-
-    test("it composes with the rest of its bracket expression", async () => {
-      expect(await matches("a1", "^[a[:^digit:]]+$")).toBe(false);
-      expect(await matches("ax", "^[a[:^digit:]]+$")).toBe(true);
-    });
-
-    test("negating a negated class is the class again", async () => {
-      expect(await matches("abc", "^[^[:^alpha:]]+$")).toBe(true);
-      expect(await matches("a1", "^[^[:^alpha:]]+$")).toBe(false);
-    });
-  });
-});
-
-/**
- * The RE2 translation is **total**: every construct either
- * translates faithfully or refuses.
- *
- * It used to pass anything it did not recognise through to
- * `new RegExp`, which is not the neutral act it looks like. The
- * `u` flag rejects an unknown escape, the compile then retried
- * without `u`, and Annex B web compatibility reads `\A` as the
- * literal letter `A` — so `\Aabc` matched `Aabc` and did not match
- * `abc`, in both directions, with no error anywhere (issue 383).
- * That is the only failure mode in this area that a caller cannot
- * see, and refusing by default closes it for constructs nobody has
- * enumerated as well as for the ones below.
- *
- * The conformance assertions live in
- * `tests/conformance/c5-cel-re2.test.ts`, against the container.
- * These are the unit-level rows, including the ones no model in
- * that suite can reach — `(?s)` and `(?m)` need a subject holding a
- * newline, and both engines refuse a control character in a request
- * context (issue 386), so this file is the only place they are
- * reachable at all.
- */
-describe("the RE2 translation refuses what it cannot spell", () => {
-  const matches = async (
-    subject: string,
-    pattern: string,
-    maxConditionEvaluationCost?: number,
-  ): Promise<boolean> => {
-    const store = new MockTupleStore();
-    store.conditionDefinitions.push({
-      name: "re",
-      expression: "s.matches(r)",
-      parameters: { s: "string", r: "string" },
-    });
-    return evaluateTupleCondition(
-      store,
-      makeTuple({ conditionName: "re" }),
-      { s: subject, r: pattern },
-      { maxConditionEvaluationCost },
-    );
-  };
-
-  /**
-   * The same probe with the evaluation-cost budget off.
-   *
-   * A repetition ceiling can only be probed at the ceiling, and
-   * `a{999}` needs a subject of 999 characters to match — which
-   * costs 202 against a budget of 100, so the row refuses on cost
-   * before the translator is reached. Upstream refuses it too, for
-   * the same reason, which is exactly why the budget has to be off
-   * to measure the *pattern* bound: a probe whose input varies in
-   * two dimensions measures neither. Round 3 learned that on the
-   * conformance side (issue 402); these are the unit rows with the
-   * same shape.
-   */
-  const uncosted = (subject: string, pattern: string): Promise<boolean> =>
-    matches(subject, pattern, Number.POSITIVE_INFINITY);
-
-  const refuses = (pattern: string) =>
-    expect(matches("a", pattern)).rejects.toBeInstanceOf(
-      ConditionEvaluationError,
-    );
-
-  /** Whether a *constant* pattern is refused at write time, which
-   *  is the `invalid` / `untranslatable` split made observable. */
-  const write = async (pattern: string): Promise<string> => {
-    const client = createTsfga(new MockTupleStore());
-    return client
-      .writeConditionDefinition({
-        name: "re",
-        expression: `s.matches(${JSON.stringify(pattern)})`,
-        parameters: { s: "string" },
-      })
-      .then(() => "accepted")
-      .catch((error: unknown) =>
-        error instanceof ConditionCompileError ? "refused" : "other",
-      );
-  };
-
-  describe("the flags a model in the suite cannot reach", () => {
-    // A newline is a control character, and both engines refuse one
-    // in a request context, so no conformance cell can carry it.
-    test("(?s) makes . match a newline", async () => {
-      expect(await matches("a\nb", "^a.b$")).toBe(false);
-      expect(await matches("a\nb", "(?s)^a.b$")).toBe(true);
-    });
-
-    test("(?m) anchors each line", async () => {
-      expect(await matches("a\nb", "^b$")).toBe(false);
-      expect(await matches("a\nb", "(?m)^b$")).toBe(true);
-    });
-
-    test("\\A and \\z are the text anchors (?m) does not move", async () => {
-      expect(await matches("a\nb", "\\Aa")).toBe(true);
-      expect(await matches("a\nb", "\\Ab")).toBe(false);
-      expect(await matches("a\nb", "b\\z")).toBe(true);
-      expect(await matches("a\nb", "a\\z")).toBe(false);
-    });
-
-    test("\\A under (?m) refuses rather than becoming ^", async () => {
-      // `^` is `\A` only while `m` is absent, and RE2 has no other
-      // spelling of the text anchor JavaScript could reach. RE2
-      // compiles the pattern, so the *write* must still succeed.
-      await refuses("(?m)\\Aa");
-      expect(await write("(?m)\\Aa")).toBe("accepted");
-    });
-  });
-
-  describe("383: escapes JavaScript would read as literals", () => {
-    test("\\A is the start of the text, not the letter A", async () => {
-      expect(await matches("abc", "\\Aabc")).toBe(true);
-      expect(await matches("Aabc", "\\Aabc")).toBe(false);
-    });
-
-    test("\\z is the end of the text, not the letter z", async () => {
-      expect(await matches("abc", "abc\\z")).toBe(true);
-      expect(await matches("abcz", "abc\\z")).toBe(false);
-    });
-
-    test("\\Q…\\E quotes its contents", async () => {
-      expect(await matches("a.c", "^\\Qa.c\\E$")).toBe(true);
-      expect(await matches("abc", "^\\Qa.c\\E$")).toBe(false);
-      expect(await matches("a+b", "^\\Qa+b\\E$")).toBe(true);
-    });
-
-    test("an unterminated \\Q runs to the end of the pattern", async () => {
-      expect(await matches("a.c", "^\\Qa.c")).toBe(true);
-      expect(await matches("axc", "^\\Qa.c")).toBe(false);
-    });
-
-    test("\\x{…} is a wide hex escape and \\xHH a narrow one", async () => {
-      expect(await matches("\u{1F600}", "^\\x{1F600}$")).toBe(true);
-      expect(await matches("A", "^\\x41$")).toBe(true);
-      expect(await matches("x", "^\\x41$")).toBe(false);
-    });
-
-    test("\\a is the bell character", async () => {
-      expect(await matches("\u0007", "^\\a$")).toBe(true);
-      expect(await matches("a", "^\\a$")).toBe(false);
-    });
-
-    test("\\s is RE2's five characters, not JavaScript's set", async () => {
-      // Go's `\s` is `[\t\n\f\r ]`. JavaScript's also holds `\v`,
-      // every `Zs` space and the BOM, so passing it through widened
-      // the class silently and invisibly.
-      expect(await matches(" ", "^\\s$")).toBe(true);
-      expect(await matches("\t", "^\\s$")).toBe(true);
-      expect(await matches("\u000b", "^\\s$")).toBe(false);
-      expect(await matches("\u00a0", "^\\s$")).toBe(false);
-      expect(await matches("\u000b", "^\\S$")).toBe(true);
-      expect(await matches("a b", "^[a-z\\s]+$")).toBe(true);
-      expect(await matches("a\u00a0b", "^[a-z\\s]+$")).toBe(false);
-    });
-  });
-
-  describe("384: RE2 syntax that has a JavaScript spelling", () => {
-    test("an octal escape", async () => {
-      expect(await matches("A", "^\\101$")).toBe(true);
-      expect(await matches("\n", "^\\12$")).toBe(true);
-      expect(await matches(" ", "^\\0$")).toBe(true);
-    });
-
-    test("a lone backreference digit is still refused", async () => {
-      // `\1` alone is a backreference, which RE2 does not have.
-      await refuses("(a)\\1");
-      expect(await write("(a)\\1")).toBe("refused");
-    });
-
-    test("a script name becomes \\p{Script=…}", async () => {
-      expect(await matches("α", "^\\p{Greek}$")).toBe(true);
-      expect(await matches("a", "^\\p{Greek}$")).toBe(false);
-      expect(await matches("a", "^\\p{Latin}$")).toBe(true);
-    });
-
-    test("a general category keeps its own spelling", async () => {
-      expect(await matches("a", "^\\p{Ll}$")).toBe(true);
-      expect(await matches("A", "^\\p{Ll}$")).toBe(false);
-    });
-
-    test("a negation inside the braces becomes \\P", async () => {
-      expect(await matches("a", "^\\p{^L}$")).toBe(false);
-      expect(await matches("1", "^\\p{^L}$")).toBe(true);
-      expect(await matches("a", "^\\P{^L}$")).toBe(true);
-    });
-
-    test("\\p{Any} is every rune", async () => {
-      expect(await matches("😀", "^\\p{Any}$")).toBe(true);
-      expect(await matches("😀", "^[\\p{Any}]$")).toBe(true);
-    });
-
-    test("a duplicate group name is renamed, not refused", async () => {
-      // RE2 allows one name twice and JavaScript does not. Nothing
-      // in this module ever reads a capture back, so renaming the
-      // later one is free.
-      expect(await matches("aa", "^(?P<n>a)(?P<n>a)$")).toBe(true);
-      expect(await matches("a", "^(?P<n>a)(?P<n>a)$")).toBe(false);
-    });
-
-    test("the three inline flag forms stay refused", async () => {
-      // Deliberate, and the residue this pass leaves: JavaScript's
-      // modifier groups reached V8 only in 12.5, later than the
-      // runtimes this package supports. RE2 accepts all three, so
-      // none of them refuses the write.
-      for (const pattern of ["a(?i)bc", "(?i:abc)", "(?-i)abc"]) {
-        await refuses(pattern);
-        expect(await write(pattern)).toBe("accepted");
-      }
-    });
-  });
-
-  describe("385: patterns RE2 refuses, refused as invalid", () => {
-    // `invalid` rather than `untranslatable`, so a model carrying
-    // one as a constant is refused at write time as upstream
-    // refuses it — issue 241's gate reading this pass's verdicts.
-    for (const pattern of [
-      "[a-\\w]",
-      "[a-[:digit:]]",
-      "[\\b]",
-      "[\\B]",
-      "a{1001}",
-      "a{2,1001}",
-      "a{2,1}",
-      // Go bounds the *product* of nested repetitions, not each
-      // one: `repeatIsValid(re, 1000)` divides the budget down
-      // through the tree, so ten thousand copies are refused
-      // however they are spelled (issue 401).
-      "(a{100}){100}",
-      "((a{10}){10}){11}",
-      "(a{1000}){2}",
-      "\\C",
-    ]) {
-      const name = `${JSON.stringify(pattern)} refuses check and write`;
-      test(name, async () => {
-        await refuses(pattern);
-        expect(await write(pattern)).toBe("refused");
-      });
-    }
-
-    test("a repetition below the ceiling still compiles", async () => {
-      expect(await uncosted("a".repeat(999), `^a{999}$`)).toBe(true);
-      expect(await uncosted("aa", "^a{1,999}$")).toBe(true);
-    });
-
-    test("the ceiling is inclusive, as parse.go writes it", async () => {
-      // `min < 0 || min > 1000 || max > 1000` — strictly greater.
-      // tsfga compared with `>=` on a confounded measurement: the
-      // probe behind it matched `a{1000}` against a thousand-
-      // character subject, and it was the subject's length that
-      // made upstream refuse (issue 400).
-      expect(await uncosted("a".repeat(1000), "^a{1000}$")).toBe(true);
-      expect(await uncosted("aa", "^a{2,1000}$")).toBe(true);
-      expect(await uncosted("a".repeat(1000), "^a{1000,}$")).toBe(true);
-    });
-
-    test("repetitions multiply down, not across", async () => {
-      // Siblings each get the whole budget — `repeatIsValid`
-      // recurses on the same `n` for a concatenation — so a
-      // pattern is refused only when the nesting multiplies past
-      // it.
-      expect(
-        await uncosted("a".repeat(999) + "b".repeat(999), "a{999}b{999}"),
-      ).toBe(true);
-      expect(await uncosted("a".repeat(100), "^(a{10}){10}$")).toBe(true);
-      expect(await uncosted("a".repeat(1000), "^(a{1000}){1}$")).toBe(true);
-      expect(await uncosted("aaa", "^(a{3})*$")).toBe(true);
-    });
-  });
-
-  describe("an unrecognised construct refuses rather than compiling", () => {
-    for (const pattern of ["\\y", "\\Z", "\\E", "\\8", "\\9", "\\xZZ", "\\"]) {
-      test(`${JSON.stringify(pattern)} is refused`, async () => {
-        await refuses(pattern);
-      });
-    }
-
-    test("an escaped non-ASCII rune is refused", async () => {
-      await refuses("\\é");
-    });
-  });
-
-  describe("what the u flag would have refused is emitted for it", () => {
-    // Each of these used to compile only because the translation
-    // fell back to a non-unicode `RegExp`. There is no fallback
-    // now, so each has to be spelled for the `u` flag.
-    test("a brace that opens no repetition is a literal", async () => {
-      expect(await matches("a{2}", "^a\\{2\\}$")).toBe(true);
-      expect(await matches("a{,2}", "^a{,2}$")).toBe(true);
-      expect(await matches("a}", "^a}$")).toBe(true);
-    });
-
-    test("a bracket outside a bracket expression is a literal", async () => {
-      expect(await matches("a]", "^a]$")).toBe(true);
-      expect(await matches("]", "^[]]$")).toBe(true);
-      expect(await matches("[", "^[[]$")).toBe(true);
-    });
-
-    test("RE2 escapes any ASCII punctuation", async () => {
-      expect(await matches("-", "^\\-$")).toBe(true);
-      expect(await matches("!", "^\\!$")).toBe(true);
-      expect(await matches("/", "^\\/$")).toBe(true);
-    });
-
-    test("a dash after a class is a literal, not a range", async () => {
-      expect(await matches("a-b", "^[\\w-]+$")).toBe(true);
-      expect(await matches("-", "^[[:alpha:]-]$")).toBe(true);
-    });
-
-    test("an astral literal is one code point", async () => {
-      expect(await matches("😀", "^.$")).toBe(true);
-      expect(await matches("😀", "^[😀]$")).toBe(true);
-    });
-  });
-});
-
-/**
- * The splice that puts `matches` on tsfga's implementation, at the
- * seam issue 240 opened.
- *
- * The name used to be located by scanning **forward** from the
- * receiver's range end and demanding `\s*\.\s*`. cel-js ends a
- * parenthesised expression's range inside the closing paren, so
- * `(s).matches(r)` left `).` in the gap, the splice was skipped,
- * and the call resolved to cel-js's own `matches` — a JavaScript
- * `RegExp`, which is the divergence issue 020 paid to close. It is
- * scanned backwards from the first argument now, which no
- * receiver's spelling can move.
- *
- * Each spelling is asserted twice: once that RE2 syntax is honoured
- * (so the splice happened) and once that syntax RE2 refuses is
- * refused (so nothing fell through to a `RegExp` quietly).
- */
-describe("every receiver spelling reaches the RE2 implementation", () => {
-  const evaluate = async (expression: string): Promise<boolean> => {
-    const store = new MockTupleStore();
-    store.conditionDefinitions.push({
-      name: "re",
-      expression,
-      parameters: { s: "string" },
-    });
-    return evaluateTupleCondition(store, makeTuple({ conditionName: "re" }), {
-      s: "abc",
-    });
-  };
-
-  const receivers: ReadonlyArray<readonly [string, string]> = [
-    ["bare", "s"],
-    ["parenthesised", "(s)"],
-    ["a concatenation", '(s + "")'],
-    ["a ternary", '(s == "" ? "zzz" : s)'],
-    ["an index", "[s][0]"],
-    ["a map index", '{"k": s}["k"]'],
-    ["nested parentheses", "(((s)))"],
-    ["a comment before the dot", "s // c\n"],
-    ["a comment after the dot", "s. //c\n"],
-  ];
-
-  for (const [label, receiver] of receivers) {
-    const dot = receiver.endsWith(". //c\n") ? "" : ".";
-
-    test(`${label}: an RE2 POSIX class is read as RE2`, async () => {
-      expect(await evaluate(`${receiver}${dot}matches("[[:alpha:]]+")`)).toBe(
-        true,
-      );
-    });
-
-    test(`${label}: an RE2 inline flag is read as RE2`, async () => {
-      expect(await evaluate(`${receiver}${dot}matches("(?i)ABC")`)).toBe(true);
-    });
-
-    test(`${label}: syntax RE2 refuses does not fall through`, async () => {
-      // A lookahead is valid JavaScript and invalid RE2, so an
-      // unspliced call would answer `true` where upstream refuses.
-      await expect(
-        evaluate(`${receiver}${dot}matches("a(?=b)")`),
-      ).rejects.toBeInstanceOf(TsfgaError);
-    });
-  }
-
-  test("a parenthesised argument is spliced too", async () => {
-    expect(await evaluate('s.matches(("[[:alpha:]]+"))')).toBe(true);
-  });
-
-  test("two calls in one expression are both spliced", async () => {
-    // The splices are applied back to front, so the second one's
-    // offsets must survive the first being a different length.
-    expect(
-      await evaluate('s.matches("[[:alpha:]]+") && (s).matches("(?i)ABC")'),
-    ).toBe(true);
-  });
-});
-
-/**
- * The rewrite table is keyed on the call's **name**, with the call
- * style a property of the overload rather than the key.
- *
- * CEL declares `matches` twice in one function block — a global
- * `matches(string, string)` and the member `<string>.matches(string)`,
- * bound to the same RE2 matcher (`common/stdlib/standard.go`). A
- * table split by style knew only the member one, so the global
- * spelling reached neither the RE2 implementation nor the
- * write-time pattern compile: every check reading such a condition
- * was refused, including plain ASCII patterns where the two
- * dialects agree (issues 320 / 380 / 321).
- *
- * The whole owned surface is `int`, `double` and `matches` times
- * the two call styles cel-js's AST has, and the six cells are
- * enumerated below.
- */
-describe("an owned call is rewritten in every style CEL declares", () => {
-  const evaluate = async (
-    expression: string,
-    parameters: Record<string, ConditionParameterType>,
-    context: Record<string, unknown>,
-  ): Promise<boolean> => {
-    const store = new MockTupleStore();
-    store.conditionDefinitions.push({ name: "c", expression, parameters });
-    return evaluateTupleCondition(
-      store,
-      makeTuple({ conditionName: "c" }),
-      context,
-    );
-  };
-
-  const match = (expression: string, s = "abc"): Promise<boolean> =>
-    evaluate(expression, { s: "string", p: "string" }, { s, p: "^a" });
-
-  describe("matches: global as well as receiver", () => {
-    test("a global call reads a POSIX class as RE2", async () => {
-      // A JavaScript `RegExp` reads `[[:alpha:]]` as the class of
-      // the characters `[:alph`, so this answering `true` is what
-      // says the call reached RE2 and not cel-js.
-      expect(await match('matches(s, "[[:alpha:]]+")')).toBe(true);
-    });
-
-    test("a global call reads an RE2 inline flag", async () => {
-      expect(await match('matches(s, "(?i)ABC")')).toBe(true);
-    });
-
-    test("a global call denies a non-match", async () => {
-      expect(await match('matches(s, "[[:alpha:]]+")', "123")).toBe(false);
-    });
-
-    test("a global call resolves at all", async () => {
-      // Nothing exotic in the pattern: before the fix this was not
-      // a wrong answer but a refusal, because cel-js ships no
-      // global `matches` for an unrewritten call to land on.
-      expect(await match('matches(s, "^a.c$")')).toBe(true);
-    });
-
-    test("syntax RE2 refuses does not fall through globally", async () => {
-      // A lookahead is valid JavaScript and invalid RE2, so a
-      // global call answering here would mean it had been left on
-      // a JavaScript `RegExp`.
-      await expect(match('matches(s, "a(?=b)")')).rejects.toBeInstanceOf(
-        TsfgaError,
-      );
-    });
-
-    test("the pattern may arrive in either spelling's argument", async () => {
-      // The pattern is the last argument in both, so its index
-      // moves with the arity — `args[1]` globally, `args[0]` on a
-      // receiver — and both must reach the same implementation.
-      expect(await match("matches(s, p) && s.matches(p)")).toBe(true);
-    });
-
-    test("a global call with the wrong arity is not rewritten", async () => {
-      // CEL declares no such overload either, so both refuse. What
-      // matters is that the arity guard is per entry rather than
-      // the constant 1 the table used to assume.
-      await expect(match('matches(s, "^a", "b")')).rejects.toBeInstanceOf(
-        TsfgaError,
-      );
-    });
-  });
-
-  describe("int and double: global only, as CEL declares them", () => {
-    test("the global spelling is rewritten", async () => {
-      expect(
-        await evaluate(
-          "int(x) == 1 && double(x) == 1.5",
-          { x: "double" },
-          { x: 1.5 },
-        ),
-      ).toBe(true);
-    });
-
-    for (const call of ["x.int()", "x.double()"]) {
-      test(`${call} resolves nowhere, as upstream declares none`, async () => {
-        // CEL declares no member overload of either conversion, so
-        // the receiver cell is empty on purpose and a receiver
-        // spelling must refuse rather than be rewritten onto
-        // tsfga's implementation.
-        await expect(
-          evaluate(`${call} == 1`, { x: "double" }, { x: 1.5 }),
-        ).rejects.toBeInstanceOf(TsfgaError);
-      });
-    }
-  });
-
-  /**
-   * A `call` node's range starts at its own name in every spelling
-   * cel-js parses — there is no `(f)(x)` form — so the splice site
-   * is structurally always placeable and the guard below cannot be
-   * reached through the parser. It exists because falling through
-   * silently is the one outcome that must not happen: cel-js
-   * refuses to let a built-in overload be replaced, so an
-   * unspliced `int` or `matches` does not fail to resolve, it
-   * resolves to cel-js's own implementation. The observable half
-   * of the rule is asserted above — every owned spelling reaches
-   * tsfga's implementation, and none is answered by cel-js's.
-   */
-  describe("a global constant pattern is compiled at write time", () => {
-    const write = async (expression: string): Promise<string> => {
-      const client = createTsfga(new MockTupleStore());
-      return client
-        .writeConditionDefinition({
-          name: "re",
-          expression,
-          parameters: { s: "string", p: "string" },
-        })
-        .then(() => "accepted")
-        .catch((error: unknown) =>
-          error instanceof ConditionCompileError ? "refused" : "other",
-        );
-    };
-
-    for (const pattern of ["a(?=b)", "[[:nope:]]", "a("]) {
-      test(`${JSON.stringify(pattern)} is refused globally too`, async () => {
-        // cel-go's `regexOptimizer` folds a constant pattern by
-        // function name, not by call style, so upstream refuses
-        // the model whichever spelling carries it.
-        expect(await write(`matches(s, "${pattern}")`)).toBe("refused");
-      });
-    }
-
-    test("a pattern RE2 accepts is stored", async () => {
-      expect(await write('matches(s, "^[[:alpha:]]+$")')).toBe("accepted");
-    });
-
-    test("a global pattern that is not a constant is stored", async () => {
-      // Upstream's optimiser folds constants only, so a pattern
-      // arriving in the context is a run-time concern either way.
-      expect(await write("matches(s, p)")).toBe("accepted");
-    });
-  });
-});
-
-/**
- * A constant pattern is compiled when the condition is written.
- *
- * cel-go's `regexOptimizer` folds every `matches` call whose
- * pattern is a literal while it builds the program, so upstream
- * refuses the *model* rather than every check that reads it
- * (issue 241). The refusal is narrowed to patterns RE2 itself
- * refuses: a pattern RE2 accepts and this translator cannot spell
- * stays a check-time refusal, because refusing the write would
- * refuse a model upstream accepts.
- */
-describe("a constant matches() pattern is compiled at write time", () => {
-  const write = async (expression: string): Promise<string> => {
-    const client = createTsfga(new MockTupleStore());
-    return client
-      .writeConditionDefinition({
-        name: "re",
-        expression,
-        parameters: { s: "string", r: "string" },
-      })
-      .then(() => "accepted")
-      .catch((error: unknown) =>
-        error instanceof ConditionCompileError ? "refused" : "other",
-      );
-  };
-
-  for (const pattern of [
-    "a(?=b)",
-    "a(?!b)",
-    "(?<=a)b",
-    "(a)\\\\1",
-    "(?P<x>a)(?P=x)",
-    "[[:nope:]]",
-    "a[",
-    "a(",
-  ]) {
-    test(`${JSON.stringify(pattern)} is refused`, async () => {
-      expect(await write(`s.matches("${pattern}")`)).toBe("refused");
-    });
-  }
-
-  for (const pattern of [
-    "^[[:alpha:]]+$",
-    "[[:^alpha:]]",
-    "(?i)abc",
-    "(?P<x>a)b",
-    "\\\\p{L}+",
-  ]) {
-    test(`${JSON.stringify(pattern)} is accepted`, async () => {
-      expect(await write(`s.matches("${pattern}")`)).toBe("accepted");
-    });
-  }
-
-  test("a pattern RE2 accepts and tsfga cannot spell is stored", async () => {
-    // `(?i:…)` is RE2, and JavaScript's modifier groups reached V8
-    // only in 12.5 — too late for the runtimes this package
-    // supports. Refusing the write would refuse a model upstream
-    // accepts, so the refusal stays where it always was.
-    expect(await write('s.matches("(?i:A)b")')).toBe("accepted");
-    const store = new MockTupleStore();
-    store.conditionDefinitions.push({
-      name: "re",
-      expression: 's.matches("(?i:A)b")',
-      parameters: { s: "string" },
-    });
-    await expect(
-      evaluateTupleCondition(store, makeTuple({ conditionName: "re" }), {
-        s: "ab",
-      }),
-    ).rejects.toBeInstanceOf(ConditionEvaluationError);
-  });
-
-  test("a pattern that is not a constant is not compiled", async () => {
-    // Upstream's optimiser folds constants only, so a pattern
-    // arriving in the context is a run-time concern on both sides.
-    expect(await write("s.matches(r)")).toBe("accepted");
-  });
-});
-
-/**
- * The overloads cel-js does not ship, and the range checks it does
- * not apply.
- *
- * `string(duration)` and `string(timestamp)` are absent rather
- * than occupied, so they register directly. `int()` and `double()`
- * are occupied, so the call is renamed onto a checked
- * implementation — which is also where `int(uint)` comes from,
- * since a `uint` parameter is carried as CEL's `uint` and cel-js
- * has no such overload.
- */
 describe("conversions agree with cel-go", () => {
   const answer = async (
     expression: string,
@@ -1810,7 +1042,7 @@ describe("conversions agree with cel-go", () => {
     test("several rewritten calls in one expression", async () => {
       expect(
         await answer(
-          "int(x) == 1 && double(s) == 2.0 && t.matches('^a')",
+          "int(x) == 1 && double(s) == 2.0 && t.startsWith('a')",
           { x: "double", s: "string", t: "string" },
           { x: 1.5, s: "2", t: "abc" },
         ),
@@ -1969,23 +1201,44 @@ describe("cel-js's declared surface against cel-go's", () => {
   /**
    * Functions cel-go declares and cel-js does not.
    *
-   * Three, and each is already accounted for elsewhere in this
-   * file: the global `matches` is why `compileCondition` rewrites
-   * the call onto tsfga's own RE2 implementation rather than
-   * relying on cel-js resolving it (issue 320), and `ipaddress` /
-   * `in_cidr` are OpenFGA's own additions, which tsfga admits at
-   * write time and cannot evaluate — the documented gap.
+   * Two, and both are OpenFGA's own additions, which tsfga admits
+   * at write time and cannot evaluate — the documented gap.
    */
   const CEL_GO_ONLY: Record<"global" | "member", readonly string[]> = {
-    global: ["ipaddress", "matches"],
+    global: ["ipaddress"],
     member: ["in_cidr"],
   };
+
+  /**
+   * Functions **both** engines declare and tsfga deliberately does
+   * not.
+   *
+   * One, in both spellings: `matches`. It is not an omission and
+   * not an oversight — it is the whole of tsfga's regex policy,
+   * expressed as an absence from the allow-list's table so that no
+   * code is needed to enforce it.
+   *
+   * This set exists so that the two assertions below stay honest
+   * about it. Without it, cel-js's `matches` would land in
+   * `CEL_JS_ONLY` — the set whose stated meaning is "cel-go does
+   * not declare this" — which is false, and would leave the file
+   * asserting the opposite of why the name is missing.
+   *
+   * If a future change re-declares `matches`, this set is what
+   * fails. See `docs/cel-js/` and `CLAUDE.md`'s *CEL is bounded by
+   * cel-js*.
+   */
+  const DELIBERATELY_UNDECLARED: Record<
+    "global" | "member",
+    readonly string[]
+  > = { global: [], member: ["matches"] };
 
   for (const style of ["global", "member"] as const) {
     test(`${style}: every name cel-js adds is one we know about`, () => {
       const surface = declaredByCelJs();
       const added = [...surface[style]]
         .filter((name) => !CEL_GO_DECLARED_CALLS[style].has(name))
+        .filter((name) => !DELIBERATELY_UNDECLARED[style].includes(name))
         .sort();
       expect(added).toEqual([...CEL_JS_ONLY[style]].sort());
     });
@@ -2008,7 +1261,27 @@ describe("cel-js's declared surface against cel-go's", () => {
     const both = [...CEL_GO_DECLARED_CALLS.global].filter((name) =>
       CEL_GO_DECLARED_CALLS.member.has(name),
     );
-    expect(both.sort()).toEqual(["matches", "size"]);
+    expect(both.sort()).toEqual(["size"]);
+  });
+
+  /**
+   * The regex policy, asserted as the absence it is.
+   *
+   * cel-js still declares `matches` in both spellings — nothing was
+   * removed from cel-js, and nothing could be — so the only thing
+   * standing between a condition and a JavaScript `RegExp` is this
+   * name being missing from the allow-list. That makes the absence
+   * load-bearing, and an absence nothing asserts is one a tidy-up
+   * closes by accident.
+   */
+  test("cel-js declares matches and tsfga does not", () => {
+    // Only in the receiver spelling: cel-js never declared the
+    // global `matches(s, p)` that cel-go also has, which used to be
+    // its own finding. Both spellings are one refusal now.
+    expect(declaredByCelJs().member.has("matches")).toBe(true);
+    expect(declaredByCelJs().global.has("matches")).toBe(false);
+    expect(CEL_GO_DECLARED_CALLS.member.has("matches")).toBe(false);
+    expect(CEL_GO_DECLARED_CALLS.global.has("matches")).toBe(false);
   });
 });
 
@@ -2028,7 +1301,15 @@ describe("a call cel-go does not declare is refused", () => {
     compileCondition("gate", expression);
   };
 
+  /**
+   * `matches` is refused by exactly this gate, in both spellings.
+   * It sits here rather than in a regex-shaped test of its own
+   * because that is the point: the mechanism refusing it is the
+   * one that already refuses `split`, and no new code enforces it.
+   */
   for (const expression of [
+    "s.matches('a')",
+    "matches(s, 'a')",
     "s.split(',').size() == 2",
     "s.substring(0, 1) == 'a'",
     "s.trim() == 'a'",
@@ -2074,13 +1355,13 @@ describe("a call cel-go does not declare is refused", () => {
   /**
    * The other direction, and the one that would take out whole
    * fixture files: a name cel-go *does* declare must still be
-   * written. Both styles of the two functions declared in both.
+   * written. Both styles of `size`, which is now the only function
+   * declared in both — `matches` was the other, and it has moved to
+   * the refused list above on purpose.
    */
   for (const expression of [
     "size(s) > 0",
     "s.size() > 0",
-    "matches(s, 'a')",
-    "s.matches('a')",
     "s.contains('a')",
     "s.startsWith('a')",
     "s.endsWith('a')",
@@ -2201,8 +1482,6 @@ describe("an expression is checked against its declarations", () => {
       ["'a' in l", { l: "list<string>" }],
       ["m['a'] > 0", { m: "map<int>" }],
       ["x == '1'", { x: "any" }],
-      ["s.matches('^a.c$')", { s: "string" }],
-      ["matches(s, '^a.c$')", { s: "string" }],
       ["now < expires_at", { now: "timestamp", expires_at: "timestamp" }],
       ["t + d > t", { t: "timestamp", d: "duration" }],
       ["int(t) > 0", { t: "timestamp" }],
@@ -2320,21 +1599,20 @@ describe("the evaluation cost budget", () => {
   });
 
   describe("the boundary lands where the container's does", () => {
-    // Measured on v1.18.2 in `tests/conformance/d1-re2.test.ts`: a
-    // subject of 950 characters is answered and one of 1000 is
-    // refused. A regex is charged
-    // `ceil((1 + |subject|) * 0.1) * ceil(|pattern| * 0.25)`.
-    const regex = (length: number): number =>
-      cost("s.matches(p)", { s: "a".repeat(length), p: "^a+$" });
+    // The boundary used to be measured through `s.matches(p)`,
+    // which no longer compiles. `contains` is charged by the same
+    // string-size rule — `ceil((|a| + |b|) * 0.1)` — so the
+    // boundary it lands on is the same boundary, reached through a
+    // call that still exists.
+    const contains = (length: number): number =>
+      cost("s.contains(p)", { s: "a".repeat(length), p: "aaaa" });
 
     test("950 characters is inside the budget", () => {
-      expect(regex(950)).toBe(98);
-      expect(regex(950) <= DEFAULT_MAX_CONDITION_EVALUATION_COST).toBe(true);
+      expect(contains(950) <= DEFAULT_MAX_CONDITION_EVALUATION_COST).toBe(true);
     });
 
-    test("1000 characters is outside it", () => {
-      expect(regex(1000)).toBe(103);
-      expect(regex(1000) > DEFAULT_MAX_CONDITION_EVALUATION_COST).toBe(true);
+    test("1200 characters is outside it", () => {
+      expect(contains(1200) > DEFAULT_MAX_CONDITION_EVALUATION_COST).toBe(true);
     });
 
     test("a 4000-character equality is far outside it", () => {
@@ -2468,9 +1746,10 @@ describe("the evaluation cost budget", () => {
       // names; an index into a comprehension's output does not, and
       // takes the largest size the request carried rather than the
       // one-character element actually behind it.
-      const context = { l: ["x", "a".repeat(500)], p: "^a+$" };
-      expect(cost("l[0].matches(p)", context)).toBe(4);
-      expect(cost("l.filter(i, i != '')[0].matches(p)", context)).toBe(58);
+      const context = { l: ["x", "a".repeat(500)], p: "aa" };
+      const direct = cost("l[0].contains(p)", context);
+      const viaFilter = cost("l.filter(i, i != '')[0].contains(p)", context);
+      expect(viaFilter).toBeGreaterThan(direct);
     });
 
     test("`in` over a map is priced by size, where cel-go prices 1", () => {

@@ -75,7 +75,7 @@ const CONDITIONS: ConditionDefinition[] = [
   },
   {
     name: "svc_account_d4g",
-    expression: 'principal.matches("^svc-[a-z0-9-]+@ex\\\\.io$")',
+    expression: 'principal.startsWith("svc-") && principal.endsWith("@ex.io")',
     parameters: { principal: "string" },
   },
 ];
@@ -654,7 +654,13 @@ describe("Google Cloud IAM Model Conformance", () => {
     });
   });
 
-  test("23: the pattern is anchored and case-sensitive", async () => {
+  test("23: the predicate is anchored and case-sensitive", async () => {
+    // Added negative: the prefix and the suffix must both hold on
+    // the *same* value. A principal carrying `svc-` only in the
+    // middle satisfies neither end and was rejected before.
+    await can("bucket_d4g", "b_logs", "can_read", "svc", false, {
+      principal: "team-svc-etl@ex.io.example",
+    });
     await can("bucket_d4g", "b_logs", "can_read", "svc", false, {
       principal: "SVC-ETL@ex.io",
     });
