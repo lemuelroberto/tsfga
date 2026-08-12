@@ -24,7 +24,9 @@ import {
   DEFAULT_WRITE_CONTEXT_BYTE_LIMIT,
   directSubjectRef,
   isSelfDefining,
+  validateIdDomain,
   validateRequestContext,
+  validateSubjectIdDomain,
   validateTupleDelete,
   validateTupleWrite,
 } from "./tuple-validation.ts";
@@ -373,6 +375,15 @@ export function createTsfga(
       // exist", which is what makes a bad model change
       // recoverable.
       validateTupleDelete(request);
+      // The store's id gate, behind upstream's rules and ahead of
+      // the row read -- the delete path's copy of the position
+      // `validateIdDomain` argues for. It is a call site here
+      // rather than a predicate inside `validateTupleDelete`,
+      // which is exported and deliberately takes no store: it
+      // reads nothing, and a store parameter it consulted for one
+      // rule would say otherwise.
+      validateSubjectIdDomain(store, request.subjectType, request.subjectId);
+      validateIdDomain(store, "object", request.objectType, request.objectId);
       const removed = await store.deleteTuple(request);
       // Upstream's `on_missing` defaults to `error`, so a delete
       // of a row that is not there is refused. The boolean stays
@@ -464,6 +475,9 @@ export function createTsfga(
           "an object id must be non-empty and hold no whitespace",
         );
       }
+      // And then the store's own gate, behind the upstream rule
+      // and ahead of the config read, as everywhere else.
+      validateIdDomain(store, "object", objectType, objectId);
       const config = await store.findRelationConfig(objectType, relation);
       if (config === null) {
         throw new RelationConfigNotFoundError(objectType, relation);
@@ -650,7 +664,11 @@ export {
   type SubjectShape,
   subjectShape,
   type TupleWriteValidationOptions,
+  // A store author reimplementing a gate needs these two the way
+  // they need `validateTupleWrite`: they are the id half of it.
+  validateIdDomain,
   validateRequestContext,
+  validateSubjectIdDomain,
   validateTupleDelete,
   validateTupleWrite,
 } from "./tuple-validation.ts";

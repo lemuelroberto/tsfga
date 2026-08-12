@@ -1,6 +1,8 @@
 import { coerceContext } from "./conditions.ts";
 import {
   type ConditionalTupleCause,
+  IdDomainError,
+  type IdPosition,
   InvalidConditionalTupleError,
   InvalidObjectError,
   InvalidRequestContextError,
@@ -366,6 +368,96 @@ function isWellFormedId(id: string, reserved: readonly string[]): boolean {
   if (id.length === 0) return false;
   if (hasControlChar(id)) return false;
   return !reserved.some((char) => id.includes(char));
+}
+
+/**
+ * The store's own id gate: refuse an id the store has declared it
+ * cannot hold.
+ *
+ * **A capability refusal, not a parity claim.** Every id this
+ * refuses is one OpenFGA accepts, which is why it carries a rule
+ * id from `CAPABILITY_RULE_IDS` and has an entry in
+ * `capability-refusals.json` rather than a cause in the upstream
+ * inventory.
+ *
+ * **Where it sits is the decision: after every upstream rule about
+ * the request's own strings, and before the first rule about the
+ * model.** An id can be malformed by upstream's rules *and*
+ * outside the store's domain — every malformed id is, since none
+ * of them is a canonical UUID — so the order is observable on
+ * nearly every refusing input, and a caller must hear the refusal
+ * that is portable rather than the one that is local to this
+ * deployment. `doc:*` reports the typed-wildcard rule; a subject
+ * holding `#` reports the malformed-subject rule; a perfectly
+ * well-formed `user:alice` is what is left over, and that is the
+ * request this rule exists to answer.
+ *
+ * It goes *before* the model rules for the symmetric reason. This
+ * is a rule about a string, and upstream settles every string
+ * question — `ValidateUser`, `ValidateObject` — before it consults
+ * a single type restriction. A store that cannot hold the id has
+ * nothing to say about whether the relation would have admitted
+ * the subject, and asking anyway would make this the one string
+ * rule in the gate that runs after the model.
+ *
+ * **Absence is refused, and refused named.** `store.idDomain` may
+ * be `undefined` at runtime — a JavaScript consumer, a spread
+ * clone, a `Proxy`. Reading `.defect` off it there would throw a
+ * bare `TypeError` from inside `check()`, breaking the invariant
+ * that every error on the check and write paths extends
+ * `TsfgaError`, and shipping the same unnamed crash this whole
+ * design was bought to fix one layer up. So the read is
+ * defensive and fails closed.
+ *
+ * `"*"` never reaches here: the typed wildcard is a subject
+ * *shape*, not an id, and it is exempted at every call site.
+ */
+export function validateIdDomain(
+  store: TupleStore,
+  position: IdPosition,
+  type: string,
+  id: string,
+): void {
+  const domain: TupleStore["idDomain"] | undefined = store.idDomain;
+  if (domain === undefined || domain === null) {
+    throw new IdDomainError(
+      position,
+      type,
+      id,
+      "unknown",
+      "store declares no id domain",
+      "ID-DOMAIN-OUT-OF-DOMAIN",
+    );
+  }
+  const defect = domain.defect(id);
+  if (defect !== null) {
+    throw new IdDomainError(
+      position,
+      type,
+      id,
+      domain.name,
+      defect,
+      "ID-DOMAIN-OUT-OF-DOMAIN",
+    );
+  }
+}
+
+/**
+ * The subject half, with the typed wildcard exempted.
+ *
+ * `user:*` is a subject shape rather than an id — it names no
+ * subject at all — so no store has to be able to hold `*` as one,
+ * and refusing it here would refuse every wildcard grant there is.
+ * Object ids get no such exemption: `validateObjectRef` already
+ * refuses `doc:*` outright, before this runs.
+ */
+export function validateSubjectIdDomain(
+  store: TupleStore,
+  subjectType: string,
+  subjectId: string,
+): void {
+  if (subjectId === "*") return;
+  validateIdDomain(store, "subject", subjectType, subjectId);
 }
 
 /** `IsValidUserID`'s reserved set. */
@@ -737,6 +829,13 @@ export async function validateTupleWrite(
       tooLong: "TUPLE-OBJECT-TOO-LONG",
     },
   );
+
+  // The last of the string rules, and the only one that is not
+  // upstream's. Same order as the two above it -- subject, then
+  // object -- and ahead of every question about the model. See
+  // `validateIdDomain`.
+  validateSubjectIdDomain(store, request.subjectType, request.subjectId);
+  validateIdDomain(store, "object", request.objectType, request.objectId);
 
   if (!admitsSubjectShape(config, shape)) {
     throw new InvalidSubjectTypeError(

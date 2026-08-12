@@ -10,6 +10,12 @@
       "reason": "cel-go's `matches` is RE2 and cel-js's is a JavaScript `RegExp`. They disagree on which patterns are legal, on what several constructs mean, and on whether a pattern terminates at all; a write-time gate over literal patterns closed one of those three groups and none of the others. So the call is not declared, and a condition using it is refused at the model write.",
       "readmeAnchor": "packages/core/README.md#conditions",
       "pin": "tests/conformance/c5-cel-matches.test.ts:RM: a wholly portable literal pattern"
+    },
+    {
+      "id": "ID-DOMAIN-OUT-OF-DOMAIN",
+      "reason": "A store declares which ids it can hold, and core refuses the rest before any read. `@tsfga/kysely` holds canonical lower-case hyphenated UUIDs only: `object_id` and `subject_id` are `uuid` columns, and that column's input grammar is many-to-one where upstream's id space is one-to-one -- five spellings of one UUID store as one row and are five distinct ids upstream, so admitting more than the canonical spelling would let a grant written for one answer true for another. `user:alice` and a 300-character id are ordinary ids upstream and this store refuses them, permanently. Contextual-tuple ids are gated too, which the storage does not require: such a tuple is never written, so it could only ever fail to match a stored row.",
+      "readmeAnchor": "packages/core/README.md#known-divergence-the-stores-id-domain",
+      "pin": "tests/conformance/b6-id-domain.test.ts:a slug upstream accepts and a uuid column cannot hold"
     }
   ]
 }

@@ -934,3 +934,60 @@ export async function expectDeleteConformance(
   expect(tsfgaOutcome).toBe(openFgaOutcome);
   expect(tsfgaOutcome).toBe(expected);
 }
+
+/**
+ * Pin a *delete* divergence: assert what **each** engine does with
+ * the same delete, knowing they do different things.
+ *
+ * The delete-path counterpart to `expectPinnedWriteDivergence`,
+ * and it exists for a reason the write path never had. Seven rows
+ * of `e1-delete-gate.test.ts` assert that tsfga accepts a delete
+ * syntactically and reaches the row — the guard against reusing
+ * the write validators on a delete, which would strand every row
+ * written under a dropped relation. Every one of those rows is
+ * built on an id a `uuid` column cannot express, because that is
+ * what makes them test anything, so once the store declares its id
+ * domain tsfga refuses them by design. As parity assertions they
+ * would go red; collapsed into "both refused" they would go green
+ * and vacuous, losing the guard entirely.
+ *
+ * Pinned, they keep it: the assertion is still two-sided, it
+ * still fails if tsfga's refusal moves, and it fails the day
+ * upstream starts refusing them too — at which point the row
+ * belongs back in the parity set.
+ *
+ * Refuses to pass on agreement, like every pin helper here.
+ */
+export async function expectPinnedDeleteDivergence(
+  storeId: string,
+  authorizationModelId: string,
+  tsfgaClient: TsfgaClient,
+  tuple: RemoveTupleRequest,
+  expected: { openfga: DeleteOutcome; tsfga: DeleteOutcome },
+): Promise<void> {
+  expect(expected.openfga).not.toBe(expected.tsfga);
+
+  const openFgaOutcome = await fgaDeleteOutcome(storeId, authorizationModelId, {
+    objectType: tuple.objectType,
+    objectId: tuple.objectId,
+    relation: tuple.relation,
+    subjectType: tuple.subjectType,
+    subjectId: tuple.subjectId,
+    subjectRelation: tuple.subjectRelation ?? null,
+  });
+
+  let tsfgaOutcome: DeleteOutcome;
+  try {
+    await tsfgaClient.removeTuple(tuple);
+    tsfgaOutcome = "accepted";
+  } catch (error: unknown) {
+    // Only tsfga's own refusal counts, as everywhere else: a
+    // dropped connection reported as a refusal would satisfy the
+    // assertion it was meant to test.
+    if (!(error instanceof TsfgaError)) throw error;
+    tsfgaOutcome = error instanceof MissingTupleError ? "missing" : "refused";
+  }
+
+  expect(openFgaOutcome).toBe(expected.openfga);
+  expect(tsfgaOutcome).toBe(expected.tsfga);
+}

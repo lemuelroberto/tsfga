@@ -21,7 +21,9 @@ import {
   refsAdmit,
   requestSubjectDefect,
   subjectShape,
+  validateIdDomain,
   validateObjectRef,
+  validateSubjectIdDomain,
   validateTupleWrite,
 } from "./tuple-validation.ts";
 import {
@@ -714,6 +716,13 @@ export async function validateCheckSubject(
     }
   }
 
+  // The last string rule, and the only one that is not upstream's:
+  // an id upstream accepts and this store cannot hold. Ahead of
+  // the model questions below and behind every request rule above,
+  // which is where it sits on the write path too --
+  // `validateIdDomain` says why.
+  validateSubjectIdDomain(store, request.subjectType, request.subjectId);
+
   // The type itself must be one the model defines. Upstream reports
   // it here and nowhere else: `ValidateUser` runs `IsValidUser`
   // first (every refusal above), then `TypeNotFoundError` on the
@@ -771,6 +780,7 @@ export async function runCheck(
     request.objectId,
     CHECK_OBJECT_RUNE_LIMIT,
   );
+  validateIdDomain(scope.store, "object", request.objectType, request.objectId);
 
   // Before the contextual tuples, which is upstream's order:
   // `validateCheckRequest` validates the request's own tuple key

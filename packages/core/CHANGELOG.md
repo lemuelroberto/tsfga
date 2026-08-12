@@ -28,8 +28,34 @@ releases may contain breaking changes).
   request gate lands.
 
   `IdDomainError` is exported, extends `TsfgaError`, and carries
-  `position`, `type`, `id`, `domain` and `detail`. Nothing raises
-  it yet.
+  `position`, `type`, `id`, `domain` and `detail`.
+
+- **An id outside the store's domain is refused at the request
+  boundary**, before any store read, on `check`, `checkMany`,
+  `listObjects`, `listSubjects`, `addTuple`, `removeTuple` and
+  contextual tuples. The read paths **raise rather than answering
+  `false`** — upstream returns HTTP 400 for every id it cannot
+  represent and never answers `false`, and a silent deny is
+  indistinguishable from a real one.
+
+  Nothing changes for a store declaring `OPAQUE_IDS`, which is
+  every store in this repository at this release.
+
+  `IdDomainError.ruleId` is `ID-DOMAIN-OUT-OF-DOMAIN`, the second
+  entry in `CAPABILITY_RULE_IDS` and in
+  `capability-refusals.json`. It is a **capability refusal, not a
+  parity claim**: every id it refuses is one OpenFGA accepts.
+
+  **Precedence.** The domain rule runs behind every upstream rule
+  about the request's own strings and ahead of the first rule
+  about the model. A malformed id keeps reporting the upstream
+  rule that refuses it — `doc:*` reports the typed wildcard, a
+  subject holding `#` reports the malformed subject — because a
+  caller should hear the refusal that is portable rather than the
+  one that is local to a deployment.
+
+  `validateIdDomain` and `validateSubjectIdDomain` are exported
+  for a store author reimplementing a gate.
 
 - **`writeRelationConfig` refuses a rewrite cycle**, with
   `InvalidRelationConfigError` and cause `"rewrite cycle"`.

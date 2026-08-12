@@ -1,4 +1,5 @@
 import {
+  CANONICAL_UUID_IDS,
   type CheckTuples,
   type CheckTuplesQuery,
   type ConditionDefinition,
@@ -77,21 +78,10 @@ function requireSubject(id: string): void {
  * visible here.
  */
 class StrictIdStore implements TupleStore {
-  /**
-   * Opaque, deliberately — **not** `CANONICAL_UUID_IDS`.
-   *
-   * Declaring the narrow domain would move the refusal into core,
-   * where it becomes a `TsfgaError` and therefore the outcome
-   * "refused", which a conformance assertion is allowed to expect.
-   * A residual slug is not an outcome; it is a defect in the test
-   * file, and it must be impossible to satisfy an expectation
-   * with. So the domain stays opaque, core's gate passes the id
-   * through, and `IdResidueError` — which is not a `TsfgaError` —
-   * is what the file gets.
-   */
-  readonly idDomain: IdDomain = OPAQUE_IDS;
-
-  constructor(private readonly inner: TupleStore) {}
+  constructor(
+    private readonly inner: TupleStore,
+    readonly idDomain: IdDomain,
+  ) {}
 
   findCheckTuples(query: CheckTuplesQuery): Promise<CheckTuples> {
     requireUuid("object", query.objectId);
@@ -156,6 +146,33 @@ class StrictIdStore implements TupleStore {
   }
 }
 
+/**
+ * The residue detector: raises on any id a `uuid` column could not
+ * hold, and declares its domain **opaque** while doing it.
+ *
+ * The opaque declaration is deliberate. Declaring
+ * `CANONICAL_UUID_IDS` would move the refusal into core, where it
+ * becomes a `TsfgaError` and therefore the outcome `"refused"` —
+ * which a conformance assertion is allowed to expect. A residual
+ * slug is not an outcome; it is a defect in the test file, and it
+ * must be impossible to satisfy an expectation with. So core's
+ * gate passes the id through and `IdResidueError`, which is not a
+ * `TsfgaError`, is what the file gets.
+ */
 export function strictIdStore(inner: TupleStore): TupleStore {
-  return new StrictIdStore(inner);
+  return new StrictIdStore(inner, OPAQUE_IDS);
+}
+
+/**
+ * The opposite wrapper: declares the narrow domain and lets core
+ * do the refusing, so a fixture can assert the id gate itself
+ * against a store that has not adopted it yet.
+ *
+ * Its own `requireUuid` calls are then unreachable — core refuses
+ * before the store is touched — which is the property under test.
+ * Retired with the rest of this file once `KyselyTupleStore`
+ * declares the domain natively.
+ */
+export function canonicalIdStore(inner: TupleStore): TupleStore {
+  return new StrictIdStore(inner, CANONICAL_UUID_IDS);
 }

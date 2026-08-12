@@ -2,12 +2,14 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { check } from "../src/check.ts";
 import {
   DuplicateTupleError,
+  IdDomainError,
   InvalidConditionalTupleError,
   InvalidObjectError,
   InvalidSubjectTypeError,
   TsfgaError,
 } from "../src/errors.ts";
 import { createTsfga, type TsfgaClient } from "../src/index.ts";
+import { CANONICAL_UUID_IDS } from "../src/store-interface.ts";
 import { DEFAULT_WRITE_CONTEXT_BYTE_LIMIT } from "../src/tuple-validation.ts";
 import type { AddTupleRequest, CheckRequest } from "../src/types.ts";
 import { MockTupleStore } from "./helpers/mock-store.ts";
@@ -46,6 +48,16 @@ function seed(store: MockTupleStore): void {
         { type: "user" },
         { type: "user", condition: "big" },
       ],
+      impliedBy: null,
+      computedUserset: null,
+      tupleToUserset: null,
+      excludedBy: null,
+      intersection: null,
+    },
+    {
+      objectType: "doc",
+      relation: "wildcard_only",
+      directlyAssignable: [{ type: "user", wildcard: true }],
       impliedBy: null,
       computedUserset: null,
       tupleToUserset: null,
@@ -829,10 +841,12 @@ describe("addTuple refuses a duplicate", () => {
  * Five of the twenty silent sites, one line each. The rest are
  * listed in the commit that added these.
  *
- * **Three of these are about a malformed id**, and a rule that
- * gates the id domain itself would take precedence over all of
- * them. That is a decision about where such a rule belongs, not a
- * test to quietly update.
+ * **Three of these are about a malformed id**, and the id-domain
+ * rule takes precedence over none of them. It runs after every
+ * upstream rule about the request's strings and before the first
+ * rule about the model, so a malformed id keeps reporting the
+ * upstream rule that refuses it. The block below asserts that
+ * position from both sides.
  */
 describe("two defects at once report the earlier rule", () => {
   let store: MockTupleStore;
@@ -911,6 +925,187 @@ describe("two defects at once report the earlier rule", () => {
     expect(await ruleFor(conditioned({ s: 5, stray: "x" }))).toBe(
       "TUPLE-CONTEXT-PARAMETER-TYPE",
     );
+  });
+});
+
+/**
+ * Where the store's own id rule sits, asserted from both sides.
+ *
+ * `ID-DOMAIN-OUT-OF-DOMAIN` refuses an id OpenFGA accepts, so its
+ * position in the order is observable on nearly every refusing
+ * input: no malformed id is a canonical UUID, so a store with a
+ * narrow domain has two rules that both apply to almost every bad
+ * request. The decision is that upstream's rule wins — a caller
+ * hears the refusal that is portable rather than the one that is
+ * local to this deployment — and that the domain rule still runs
+ * ahead of every question about the model, because it is a rule
+ * about a string and upstream settles all of those first.
+ *
+ * The mock's domain is opaque by default, which is why none of the
+ * assertions above moved when this landed.
+ */
+describe("the id domain runs behind the request rules and ahead of the model", () => {
+  let store: MockTupleStore;
+  let fga: TsfgaClient;
+
+  beforeEach(() => {
+    store = new MockTupleStore();
+    seed(store);
+    store.idDomain = CANONICAL_UUID_IDS;
+    fga = createTsfga(store);
+  });
+
+  const UUID = "00000000-0000-4000-a000-000000000001";
+
+  async function ruleFor(request: AddTupleRequest): Promise<string> {
+    try {
+      await fga.addTuple(request);
+      return "accepted";
+    } catch (error) {
+      if (!(error instanceof TsfgaError)) throw error;
+      return error.ruleId ?? "unnamed";
+    }
+  }
+
+  test("a malformed subject beats the domain rule", async () => {
+    expect(
+      await ruleFor({
+        objectType: "doc",
+        objectId: UUID,
+        relation: "both",
+        subjectType: "user",
+        subjectId: "a b",
+      }),
+    ).toBe("TUPLE-SUBJECT-MALFORMED");
+  });
+
+  test("a malformed object beats the domain rule", async () => {
+    expect(
+      await ruleFor({
+        objectType: "doc",
+        objectId: "a:b",
+        relation: "both",
+        subjectType: "user",
+        subjectId: UUID,
+      }),
+    ).toBe("TUPLE-OBJECT-MALFORMED");
+  });
+
+  test("the typed wildcard object beats the domain rule", async () => {
+    expect(
+      await ruleFor({
+        objectType: "doc",
+        objectId: "*",
+        relation: "both",
+        subjectType: "user",
+        subjectId: UUID,
+      }),
+    ).toBe("TUPLE-OBJECT-WILDCARD");
+  });
+
+  test("the domain rule beats an unadmitted subject type", async () => {
+    // The model half. `team` is not admitted by `both`, and the
+    // subject id is a slug -- upstream would report the type, and
+    // this store cannot get that far.
+    expect(
+      await ruleFor({
+        objectType: "doc",
+        objectId: UUID,
+        relation: "both",
+        subjectType: "team",
+        subjectId: "t1",
+      }),
+    ).toBe("ID-DOMAIN-OUT-OF-DOMAIN");
+  });
+
+  test("the subject half runs before the object half", async () => {
+    const error = await fga
+      .addTuple({
+        objectType: "doc",
+        objectId: "readme.md",
+        relation: "both",
+        subjectType: "user",
+        subjectId: "alice",
+      })
+      .catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(IdDomainError);
+    if (error instanceof IdDomainError) {
+      expect(error.position).toBe("subject");
+      expect(error.id).toBe("alice");
+      expect(error.domain).toBe("canonical UUID");
+    }
+  });
+
+  test("the typed wildcard subject is exempt", async () => {
+    // `user:*` is a subject shape, not an id. Refusing it would
+    // refuse every wildcard grant there is.
+    expect(
+      await ruleFor({
+        objectType: "doc",
+        objectId: UUID,
+        relation: "wildcard_only",
+        subjectType: "user",
+        subjectId: "*",
+      }),
+    ).toBe("accepted");
+  });
+
+  test("a store declaring no domain fails closed and named", async () => {
+    // Not reachable from TypeScript -- the property is required --
+    // but a JavaScript consumer, a spread clone or a `Proxy` can
+    // produce it. Reading `.defect` off `undefined` would throw a
+    // bare `TypeError` from inside the gate, which is the unnamed
+    // crash this whole design was bought to fix.
+    const undeclared = new MockTupleStore();
+    seed(undeclared);
+    Reflect.deleteProperty(undeclared, "idDomain");
+    const error = await createTsfga(undeclared)
+      .addTuple({
+        objectType: "doc",
+        objectId: UUID,
+        relation: "both",
+        subjectType: "user",
+        subjectId: UUID,
+      })
+      .catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(IdDomainError);
+    if (error instanceof IdDomainError) {
+      expect(error.detail).toBe("store declares no id domain");
+    }
+  });
+
+  test("the check path refuses rather than answering false", async () => {
+    // Upstream returns HTTP 400 for every id it cannot represent
+    // and never answers `false`. A silent deny is
+    // indistinguishable from a real one.
+    const error = await check(store, {
+      objectType: "doc",
+      objectId: UUID,
+      relation: "both",
+      subjectType: "user",
+      subjectId: "alice",
+    }).catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(IdDomainError);
+  });
+
+  test("removeTuple refuses too", async () => {
+    const error = await fga
+      .removeTuple({
+        objectType: "doc",
+        objectId: UUID,
+        relation: "both",
+        subjectType: "user",
+        subjectId: "alice",
+      })
+      .catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(IdDomainError);
+  });
+
+  test("listSubjects refuses on the object id", async () => {
+    const error = await fga
+      .listSubjects("doc", "readme.md", "both")
+      .catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(IdDomainError);
   });
 });
 

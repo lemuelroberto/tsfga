@@ -88,7 +88,10 @@ export const UPSTREAM_RULE_IDS = [
  * agreement, so an entry has to exhibit a case where OpenFGA
  * demonstrably accepts what tsfga refuses.
  */
-export const CAPABILITY_RULE_IDS = ["CEL-MATCHES-UNSUPPORTED"] as const;
+export const CAPABILITY_RULE_IDS = [
+  "CEL-MATCHES-UNSUPPORTED",
+  "ID-DOMAIN-OUT-OF-DOMAIN",
+] as const;
 
 export type UpstreamRuleId = (typeof UPSTREAM_RULE_IDS)[number];
 export type CapabilityRuleId = (typeof CAPABILITY_RULE_IDS)[number];

@@ -361,7 +361,7 @@ and the relation lookup.
 `listObjects` takes the same field and reaches the objects the
 whole userset reaches.
 
-### Two request shapes are refused rather than denied
+### Some request shapes are refused rather than denied
 
 The subject of a check is validated before any of it is resolved,
 as upstream validates the `user` field at the command layer:
@@ -386,11 +386,64 @@ upstream's:** `check` validates the subject first, then the
 contextual tuples; `listObjects` validates contextual tuples, then
 the target relation, then the subject.
 
-The **write** path does not yet apply the id rule: `addTuple`
-accepts a `subjectId` containing `:` or `#`, which upstream
-refuses. Such a row is therefore writable and, since the check
-gate landed, uncheckable. Closing it is a one-line rule in the
-shared write validation and is not yet done.
+The **write** path applies the same id rule. `addTuple` used to
+accept a `subjectId` containing `:` or `#`, so such a row was
+writable and — once the check gate landed — uncheckable. Both
+gates now run the same predicate.
+
+### Known divergence: the store's id domain
+
+OpenFGA accepts any non-empty id with no control character and no
+`#`, `:` or space. `café`, `alice` and a 300-character id are
+ordinary ids there. A store may hold fewer of them than that, and
+`@tsfga/kysely` on PostgreSQL does: its `object_id` and
+`subject_id` are `uuid` columns.
+
+So `TupleStore` declares an `idDomain`, and core refuses an id
+outside it with `IdDomainError` — at the request boundary, before
+any store read, on `check`, `checkMany`, `listObjects`,
+`listSubjects`, `addTuple`, `removeTuple` and contextual tuples.
+
+**The domain `@tsfga/kysely` declares is deliberately narrower
+than the `uuid` column's own input grammar.** PostgreSQL accepts a
+UUID uppercased, hyphenless, braced, or hyphenated oddly, and
+stores all of them as one value — while OpenFGA treats each
+spelling as a distinct id. Admitting more than the canonical
+spelling would let a grant written for one answer `true` for
+another. Only lower-case, hyphenated, 8-4-4-4-12 is admitted.
+Nothing about the version or variant digits is checked: the nil
+UUID is an ordinary id here, and that is the point — the typed
+wildcard lives in a column of its own, so **no id value is
+reserved**.
+
+**Every refusal is in the refusing direction and none is in the
+granting one.** A refused request is one no grant was computed
+for. The read paths raise rather than answering `false`, which is
+upstream's own shape: measured on v1.18.2, `Check` returns HTTP
+400 for every id it cannot represent and never answers `false`. A
+silent deny is indistinguishable from a real one, and the day an
+identity provider changes its id format a fleet would lose access
+with nothing reporting it.
+
+The refused set is a class, not a list: **every id upstream admits
+that is not a canonical UUID**.
+`tests/conformance/b6-id-domain.test.ts` pins representatives of
+it, and `capability-refusals.json` carries the inventory entry
+under `ID-DOMAIN-OUT-OF-DOMAIN`.
+
+**Precedence: upstream's rules first.** An id can be malformed by
+upstream's rules *and* outside the store's domain — every
+malformed id is, since none of them is a canonical UUID — so a
+request carrying both reports the upstream rule. `doc:*` reports
+the typed wildcard; a subject holding `#` reports the malformed
+subject; a well-formed `user:alice` is what is left over. The
+domain gate also runs *before* the first question about the
+model, because it is a rule about a string and upstream settles
+every string question before it consults a type restriction.
+
+This is a permanent, declared limitation of the store, not a bug
+awaiting a fix. A store whose ids are opaque strings declares
+`OPAQUE_IDS` and none of it applies.
 
 ## Cycles and indeterminacy
 
