@@ -1,6 +1,10 @@
 import { check } from "./check.ts";
 import { type CheckOutcome, checkMany } from "./check-many.ts";
-import { compileCondition, evaluateTupleCondition } from "./conditions.ts";
+import {
+  compileCondition,
+  evaluateTupleCondition,
+  resolveMaxConditionEvaluationCost,
+} from "./conditions.ts";
 import {
   validateConditionWrite,
   validateRelationConfigWrite,
@@ -257,6 +261,14 @@ export function createTsfga(
     );
   }
 
+  // `listSubjects` evaluates conditions without building a
+  // `CheckScope`, so it resolves the budget here. Every other entry
+  // point reaches it through the scope. Validated at construction
+  // for the same reason the byte limit is: an option nobody reads
+  // until the first conditioned row would otherwise be reported far
+  // from where it was set.
+  const maxConditionEvaluationCost = resolveMaxConditionEvaluationCost(options);
+
   return {
     async check(request: CheckRequest): Promise<boolean> {
       // Before any store read, as upstream validates it before it
@@ -465,7 +477,10 @@ export function createTsfga(
         subjectRelation: string | null;
       }> = [];
       for (const tuple of admitted) {
-        if (!(await evaluateTupleCondition(store, tuple, context))) continue;
+        const held = await evaluateTupleCondition(store, tuple, context, {
+          maxConditionEvaluationCost,
+        });
+        if (!held) continue;
         rows.push({
           subjectType: tuple.subjectType,
           subjectId: tuple.subjectId,
@@ -518,7 +533,11 @@ export function createTsfga(
 // Re-exports
 export { check } from "./check.ts";
 export { type CheckOutcome, checkMany } from "./check-many.ts";
-export { coerceContext, evaluateTupleCondition } from "./conditions.ts";
+export {
+  type ConditionEvaluationOptions,
+  coerceContext,
+  evaluateTupleCondition,
+} from "./conditions.ts";
 export {
   validateConditionWrite,
   validateRelationConfigWrite,

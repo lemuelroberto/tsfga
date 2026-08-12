@@ -4,7 +4,9 @@ import {
   CEL_GO_DECLARED_CALLS,
   coerceContext,
   compileCondition,
+  DEFAULT_MAX_CONDITION_EVALUATION_COST,
   EXPR_CACHE_MAX_ENTRIES,
+  estimateEvaluationCost,
   evaluateTupleCondition,
   hasCompiledExpression,
 } from "../src/conditions.ts";
@@ -1035,6 +1037,7 @@ describe("the RE2 translation refuses what it cannot spell", () => {
   const matches = async (
     subject: string,
     pattern: string,
+    maxConditionEvaluationCost?: number,
   ): Promise<boolean> => {
     const store = new MockTupleStore();
     store.conditionDefinitions.push({
@@ -1042,11 +1045,29 @@ describe("the RE2 translation refuses what it cannot spell", () => {
       expression: "s.matches(r)",
       parameters: { s: "string", r: "string" },
     });
-    return evaluateTupleCondition(store, makeTuple({ conditionName: "re" }), {
-      s: subject,
-      r: pattern,
-    });
+    return evaluateTupleCondition(
+      store,
+      makeTuple({ conditionName: "re" }),
+      { s: subject, r: pattern },
+      { maxConditionEvaluationCost },
+    );
   };
+
+  /**
+   * The same probe with the evaluation-cost budget off.
+   *
+   * A repetition ceiling can only be probed at the ceiling, and
+   * `a{999}` needs a subject of 999 characters to match — which
+   * costs 202 against a budget of 100, so the row refuses on cost
+   * before the translator is reached. Upstream refuses it too, for
+   * the same reason, which is exactly why the budget has to be off
+   * to measure the *pattern* bound: a probe whose input varies in
+   * two dimensions measures neither. Round 3 learned that on the
+   * conformance side (issue 402); these are the unit rows with the
+   * same shape.
+   */
+  const uncosted = (subject: string, pattern: string): Promise<boolean> =>
+    matches(subject, pattern, Number.POSITIVE_INFINITY);
 
   const refuses = (pattern: string) =>
     expect(matches("a", pattern)).rejects.toBeInstanceOf(
@@ -1229,8 +1250,8 @@ describe("the RE2 translation refuses what it cannot spell", () => {
     }
 
     test("a repetition below the ceiling still compiles", async () => {
-      expect(await matches("a".repeat(999), `^a{999}$`)).toBe(true);
-      expect(await matches("aa", "^a{1,999}$")).toBe(true);
+      expect(await uncosted("a".repeat(999), `^a{999}$`)).toBe(true);
+      expect(await uncosted("aa", "^a{1,999}$")).toBe(true);
     });
 
     test("the ceiling is inclusive, as parse.go writes it", async () => {
@@ -1239,9 +1260,9 @@ describe("the RE2 translation refuses what it cannot spell", () => {
       // probe behind it matched `a{1000}` against a thousand-
       // character subject, and it was the subject's length that
       // made upstream refuse (issue 400).
-      expect(await matches("a".repeat(1000), "^a{1000}$")).toBe(true);
-      expect(await matches("aa", "^a{2,1000}$")).toBe(true);
-      expect(await matches("a".repeat(1000), "^a{1000,}$")).toBe(true);
+      expect(await uncosted("a".repeat(1000), "^a{1000}$")).toBe(true);
+      expect(await uncosted("aa", "^a{2,1000}$")).toBe(true);
+      expect(await uncosted("a".repeat(1000), "^a{1000,}$")).toBe(true);
     });
 
     test("repetitions multiply down, not across", async () => {
@@ -1250,11 +1271,11 @@ describe("the RE2 translation refuses what it cannot spell", () => {
       // pattern is refused only when the nesting multiplies past
       // it.
       expect(
-        await matches("a".repeat(999) + "b".repeat(999), "a{999}b{999}"),
+        await uncosted("a".repeat(999) + "b".repeat(999), "a{999}b{999}"),
       ).toBe(true);
-      expect(await matches("a".repeat(100), "^(a{10}){10}$")).toBe(true);
-      expect(await matches("a".repeat(1000), "^(a{1000}){1}$")).toBe(true);
-      expect(await matches("aaa", "^(a{3})*$")).toBe(true);
+      expect(await uncosted("a".repeat(100), "^(a{10}){10}$")).toBe(true);
+      expect(await uncosted("a".repeat(1000), "^(a{1000}){1}$")).toBe(true);
+      expect(await uncosted("aaa", "^(a{3})*$")).toBe(true);
     });
   });
 
@@ -2243,5 +2264,222 @@ describe("an expression is checked against its declarations", () => {
    */
   test("no declarations means no check", () => {
     expect(() => compileCondition("untyped", "n != 'a'")).not.toThrow();
+  });
+});
+
+/**
+ * The CEL evaluation cost budget (issues 402 / 444).
+ *
+ * OpenFGA compiles every condition with `cel.CostLimit(100)`
+ * (`internal/condition/condition.go`,
+ * `DefaultMaxConditionEvaluationCost`), and cel-go charges by the
+ * *size of the values*, so a stored expression crosses the budget
+ * purely on request data. cel-js has no runtime metering of any
+ * kind, so tsfga charges a pre-pass over the compiled AST with the
+ * coerced context in hand and refuses before evaluating.
+ *
+ * The numbers below are the contract. Two of them are upstream's
+ * own unit table (`internal/condition/condition_test.go`) and three
+ * are the boundary the conformance suite measured against the
+ * v1.18.2 container; if the transcription drifts, these move before
+ * any answer does.
+ */
+describe("the evaluation cost budget", () => {
+  const cost = (expression: string, context: Record<string, unknown>): number =>
+    estimateEvaluationCost(compileCondition("c", expression).ast, context);
+
+  const evaluate = (
+    expression: string,
+    parameters: Record<string, ConditionParameterType>,
+    context: Record<string, unknown>,
+    maxConditionEvaluationCost?: number,
+  ): Promise<boolean> => {
+    const store = new MockTupleStore();
+    store.conditionDefinitions.push({ name: "c", expression, parameters });
+    return evaluateTupleCondition(
+      store,
+      makeTuple({ conditionName: "c" }),
+      context,
+      { maxConditionEvaluationCost },
+    );
+  };
+
+  describe("the model reproduces cel-go's own figures", () => {
+    // `internal/condition/condition_test.go:320-435`: `x == y` over
+    // two two-character strings costs 3, and `'a' in strlist` over
+    // three entries costs 4. Two identifiers at `SelectAndIdentCost`
+    // plus `ceil(min(2, 2) * 0.1)`; one identifier plus one element
+    // per entry, the literal `'a'` being free.
+    test("a two-character equality costs 3", () => {
+      expect(cost("x == y", { x: "ab", y: "ab" })).toBe(3);
+    });
+
+    test("membership of a three-entry list costs 4", () => {
+      expect(cost("'a' in strlist", { strlist: ["a", "b", "c"] })).toBe(4);
+    });
+  });
+
+  describe("the boundary lands where the container's does", () => {
+    // Measured on v1.18.2 in `tests/conformance/d1-re2.test.ts`: a
+    // subject of 950 characters is answered and one of 1000 is
+    // refused. A regex is charged
+    // `ceil((1 + |subject|) * 0.1) * ceil(|pattern| * 0.25)`.
+    const regex = (length: number): number =>
+      cost("s.matches(p)", { s: "a".repeat(length), p: "^a+$" });
+
+    test("950 characters is inside the budget", () => {
+      expect(regex(950)).toBe(98);
+      expect(regex(950) <= DEFAULT_MAX_CONDITION_EVALUATION_COST).toBe(true);
+    });
+
+    test("1000 characters is outside it", () => {
+      expect(regex(1000)).toBe(103);
+      expect(regex(1000) > DEFAULT_MAX_CONDITION_EVALUATION_COST).toBe(true);
+    });
+
+    test("a 4000-character equality is far outside it", () => {
+      const long = "a".repeat(4000);
+      expect(cost("x == y", { x: long, y: long })).toBe(402);
+    });
+
+    test("a 300-entry membership is far outside it", () => {
+      const haystack = Array.from({ length: 300 }, (_, i) => `e${i}`);
+      expect(cost("needle in haystack", { needle: "absent", haystack })).toBe(
+        302,
+      );
+    });
+  });
+
+  describe("what the refusal is", () => {
+    const long = "a".repeat(4000);
+
+    test("it is a ConditionEvaluationError", async () => {
+      await expect(
+        evaluate("x == y", { x: "string", y: "string" }, { x: long, y: long }),
+      ).rejects.toBeInstanceOf(ConditionEvaluationError);
+    });
+
+    // P0's contract with the docs: `cause` is free-form, so the one
+    // refusal tsfga raises on its own account is told apart by this
+    // prefix and by nothing else.
+    test("its cause begins with the agreed prefix", async () => {
+      const error = await evaluate(
+        "x == y",
+        { x: "string", y: "string" },
+        { x: long, y: long },
+      ).catch((raised: unknown) => raised);
+      expect(error).toBeInstanceOf(ConditionEvaluationError);
+      if (!(error instanceof ConditionEvaluationError)) return;
+      expect(error.cause).toBeInstanceOf(Error);
+      if (!(error.cause instanceof Error)) return;
+      expect(
+        error.cause.message.startsWith("evaluation cost limit exceeded"),
+      ).toBe(true);
+    });
+
+    // A budget refusal is charged before the expression runs, so an
+    // expression that would have answered `false` refuses too. That
+    // is upstream's behaviour: a cancelled program has no answer.
+    test("it refuses rather than denying", async () => {
+      const haystack = Array.from({ length: 300 }, (_, i) => `e${i}`);
+      await expect(
+        evaluate(
+          "needle in haystack",
+          { needle: "string", haystack: "list<string>" },
+          { needle: "absent", haystack },
+        ),
+      ).rejects.toBeInstanceOf(ConditionEvaluationError);
+    });
+  });
+
+  describe("the option", () => {
+    const long = "a".repeat(4000);
+
+    test("Infinity opts out", async () => {
+      expect(
+        await evaluate(
+          "x == y",
+          { x: "string", y: "string" },
+          { x: long, y: long },
+          Number.POSITIVE_INFINITY,
+        ),
+      ).toBe(true);
+    });
+
+    // Upstream floors a *server's* configured value at 100. tsfga is
+    // a library, so a caller who says 5 gets 5.
+    test("it is not floored at 100", async () => {
+      expect(
+        await evaluate("x == y", { x: "string" }, { x: "ab", y: "ab" }),
+      ).toBe(true);
+      await expect(
+        evaluate("x == y", { x: "string" }, { x: "ab", y: "ab" }, 2),
+      ).rejects.toBeInstanceOf(ConditionEvaluationError);
+    });
+
+    for (const invalid of [0, -1, 1.5, Number.NaN]) {
+      test(`${invalid} is refused`, async () => {
+        await expect(
+          evaluate("x == y", { x: "string" }, { x: "a", y: "a" }, invalid),
+        ).rejects.toBeInstanceOf(TsfgaError);
+      });
+    }
+
+    // Validated where the other options are: at construction, so a
+    // mistyped budget is not first heard about at the first
+    // conditioned row.
+    test("createTsfga refuses an invalid budget", () => {
+      expect(() =>
+        createTsfga(new MockTupleStore(), {
+          maxConditionEvaluationCost: Number.NaN,
+        }),
+      ).toThrow(TsfgaError);
+    });
+  });
+
+  /**
+   * The approximation's residue, asserted rather than described.
+   *
+   * Each row is a shape where the pre-pass and cel-go's runtime
+   * tracker disagree, and every one of them charges **more** than
+   * upstream would. That direction is the whole safety argument: a
+   * model tsfga refuses and upstream answers is an outage, and a
+   * visible one; the reverse would leave 444's granting divergence
+   * open.
+   */
+  describe("the residue over-charges, never under-charges", () => {
+    test("an unevaluated || arm is still charged", () => {
+      // cel-go short-circuits and never charges the right arm, so
+      // it would charge this expression nothing at all.
+      const long = "a".repeat(400);
+      expect(cost("true", {})).toBe(0);
+      expect(cost("true || x == y", { x: long, y: long })).toBe(42);
+    });
+
+    test("both ternary branches are charged", () => {
+      const long = "a".repeat(400);
+      expect(cost("true ? 1 : (x == y ? 1 : 2)", { x: long, y: long })).toBe(
+        cost("false ? 1 : (x == y ? 1 : 2)", { x: long, y: long }),
+      );
+    });
+
+    test("a value the walk cannot reach is charged at the ceiling", () => {
+      // An index into a stored list resolves to the element it
+      // names; an index into a comprehension's output does not, and
+      // takes the largest size the request carried rather than the
+      // one-character element actually behind it.
+      const context = { l: ["x", "a".repeat(500)], p: "^a+$" };
+      expect(cost("l[0].matches(p)", context)).toBe(4);
+      expect(cost("l.filter(i, i != '')[0].matches(p)", context)).toBe(58);
+    });
+
+    test("`in` over a map is priced by size, where cel-go prices 1", () => {
+      // cel-go's `in_map` falls to the default branch and costs 1;
+      // the pre-pass has no types, so it charges `in_list`'s rule to
+      // both. 300 entries is 302 rather than 3.
+      const m: Record<string, string> = {};
+      for (let i = 0; i < 300; i += 1) m[`k${i}`] = "v";
+      expect(cost("k in m", { k: "k1", m })).toBe(302);
+    });
   });
 });

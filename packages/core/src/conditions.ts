@@ -7,6 +7,7 @@ import {
   ConditionCompileError,
   ConditionEvaluationError,
   ConditionNotFoundError,
+  TsfgaError,
 } from "./errors.ts";
 import type { TupleStore } from "./store-interface.ts";
 import type {
@@ -2545,6 +2546,502 @@ export function coerceContext(
   return { coerced, missing };
 }
 
+// ---------------------------------------------------------------
+// The evaluation cost budget (issues 402 / 444)
+// ---------------------------------------------------------------
+
+/**
+ * cel-go's cost constants, transcribed from `common/cost.go` at the
+ * version OpenFGA v1.18.2 builds against (cel-go v0.29.2; read at
+ * v0.26.1, where the file is unchanged).
+ *
+ * They are spelled out here rather than folded into the call sites
+ * because the whole model is a transcription: a reader checking it
+ * against `interpreter/runtimecost.go` should find the same names.
+ */
+const SELECT_AND_IDENT_COST = 1;
+const LIST_CREATE_BASE_COST = 10;
+const MAP_CREATE_BASE_COST = 30;
+const STRING_TRAVERSAL_COST_FACTOR = 0.1;
+const REGEX_STRING_LENGTH_COST_FACTOR = 0.25;
+
+/**
+ * OpenFGA's `DefaultMaxConditionEvaluationCost`
+ * (`pkg/server/config/config.go`), which it also refuses to start
+ * below. tsfga does not floor it — see
+ * `CheckOptions.maxConditionEvaluationCost`.
+ */
+export const DEFAULT_MAX_CONDITION_EVALUATION_COST = 100;
+
+/**
+ * A per-evaluation cost ceiling, as an options object rather than a
+ * fourth positional: `evaluateTupleCondition` is re-exported from
+ * `index.ts` and store authors call it directly.
+ */
+export interface ConditionEvaluationOptions {
+  /** See `CheckOptions.maxConditionEvaluationCost`. */
+  readonly maxConditionEvaluationCost?: number;
+}
+
+/**
+ * The prefix every cost refusal's cause carries.
+ *
+ * `ConditionEvaluationError.cause` is free-form by design, so the
+ * one refusal tsfga raises there on its own account is told apart
+ * by this string and not by a cause value. The same sentence is
+ * written on the error class and on the option; this constant is
+ * what keeps the three from drifting.
+ */
+const COST_REFUSAL = "evaluation cost limit exceeded";
+
+/**
+ * Validate `maxConditionEvaluationCost` and resolve its default.
+ *
+ * The same negated predicate the other five options use, so `NaN`
+ * is rejected rather than admitted — a `NaN` ceiling would compare
+ * false against every cost and silently remove the budget from a
+ * caller who was setting one. A fraction would admit a cost above
+ * the stated figure, and `0` is a budget no expression evaluates
+ * inside, because a bare identifier already costs 1.
+ *
+ * **Not floored at 100.** Upstream floors a *server's*
+ * configuration; tsfga is a library and a caller who sets 50 means
+ * 50.
+ */
+export function resolveMaxConditionEvaluationCost(
+  options?: ConditionEvaluationOptions,
+): number {
+  const limit =
+    options?.maxConditionEvaluationCost ??
+    DEFAULT_MAX_CONDITION_EVALUATION_COST;
+  if (
+    !(limit >= 1) ||
+    (limit !== Number.POSITIVE_INFINITY && !Number.isInteger(limit))
+  ) {
+    throw new TsfgaError(
+      "maxConditionEvaluationCost must be a positive integer or " +
+        `Infinity, got ${limit}`,
+    );
+  }
+  return limit;
+}
+
+/** `ceil(n * 0.1)`, cel-go's charge for traversing `n` units. */
+function traversal(size: number): number {
+  return Math.ceil(size * STRING_TRAVERSAL_COST_FACTOR);
+}
+
+/** Whether a value is a `{}`-shaped map rather than a class. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * cel-go's `actualSize`: a `Sizer`'s size, and 1 for everything
+ * else.
+ *
+ * A string is sized in **code points**, because cel-go's
+ * `String.Size()` is `len([]rune(s))` — so an astral character is
+ * one unit here and two UTF-16 units in `String.length`.
+ */
+function valueSize(value: unknown): number {
+  if (typeof value === "string") {
+    let points = 0;
+    for (const _ of value) points += 1;
+    return points;
+  }
+  if (Array.isArray(value)) return value.length;
+  if (value instanceof Uint8Array) return value.length;
+  if (isPlainObject(value)) return Object.keys(value).length;
+  return 1;
+}
+
+/** How deep `contextCeiling` reads before it stops descending. */
+const CONTEXT_SCAN_DEPTH = 8;
+
+/**
+ * The size charged for a value the pre-pass cannot resolve.
+ *
+ * The largest size anywhere in the coerced context, which is the
+ * "larger plausible value" rule the approximation is built on: a
+ * node whose value is computed cannot be bigger than the biggest
+ * thing the request carried, unless the expression built it, and
+ * the shapes that build one — concatenation, a comprehension's
+ * output — are sized from their operands instead.
+ */
+function contextCeiling(value: unknown, depth: number): number {
+  let largest = valueSize(value);
+  if (depth >= CONTEXT_SCAN_DEPTH) return largest;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      largest = Math.max(largest, contextCeiling(item, depth + 1));
+    }
+  } else if (isPlainObject(value)) {
+    for (const item of Object.values(value)) {
+      largest = Math.max(largest, contextCeiling(item, depth + 1));
+    }
+  }
+  return largest;
+}
+
+/** What one node charges, and how large its value is. */
+interface Charge {
+  readonly cost: number;
+  readonly size: number;
+}
+
+interface CostScope {
+  readonly context: Readonly<Record<string, unknown>>;
+  /** `contextCeiling` over the whole context, at least 1. */
+  readonly unknown: number;
+  /** Comprehension iteration variables, by the size they carry. */
+  readonly bindings: ReadonlyMap<string, number>;
+}
+
+/**
+ * The comprehension macros. cel-js parses each as an `rcall` whose
+ * arguments are the iteration variable and the body, so the body's
+ * cost is charged once per element of the receiver.
+ */
+const COMPREHENSION_MACROS: ReadonlySet<string> = new Set([
+  "all",
+  "exists",
+  "exists_one",
+  "filter",
+  "map",
+]);
+
+/**
+ * The value a node evaluates to, when the pre-pass can reach it
+ * without evaluating anything — a literal, a context variable, or a
+ * constant path into one. `undefined` means "not resolvable", which
+ * is why a literal `null` is returned as `null`.
+ */
+function resolveValue(node: ASTNode, scope: CostScope): unknown {
+  switch (node.op) {
+    case "value":
+      return node.args;
+    case "id":
+      return node.args in scope.context ? scope.context[node.args] : undefined;
+    case ".":
+    case ".?": {
+      const receiver = resolveValue(node.args[0], scope);
+      if (!isPlainObject(receiver)) return undefined;
+      return receiver[node.args[1]];
+    }
+    case "[]":
+    case "[?]": {
+      const target = resolveValue(node.args[0], scope);
+      const key = resolveValue(node.args[1], scope);
+      if (typeof key === "string" && isPlainObject(target)) return target[key];
+      if (typeof key === "bigint" && Array.isArray(target)) {
+        return target[Number(key)];
+      }
+      return undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+/** The size of a node's value, falling back to the ceiling. */
+function resolvedSize(node: ASTNode, scope: CostScope): number {
+  const value = resolveValue(node, scope);
+  return value === undefined ? scope.unknown : valueSize(value);
+}
+
+/**
+ * The largest element of a resolvable list, for the iteration
+ * variable of a comprehension over it.
+ */
+function elementCeiling(node: ASTNode, scope: CostScope): number {
+  const value = resolveValue(node, scope);
+  if (!Array.isArray(value)) return scope.unknown;
+  let largest = 1;
+  for (const item of value) largest = Math.max(largest, valueSize(item));
+  return largest;
+}
+
+function chargeAll(nodes: readonly ASTNode[], scope: CostScope): Charge[] {
+  return nodes.map((node) => chargeNode(node, scope));
+}
+
+function sumCost(charges: readonly Charge[]): number {
+  let total = 0;
+  for (const charge of charges) total += charge.cost;
+  return total;
+}
+
+/**
+ * How wide a scalar rendered by `string()` is charged as. Long
+ * enough for an RFC 3339 timestamp with nanoseconds, which is the
+ * widest cel-go produces.
+ */
+const FORMATTED_SCALAR_SIZE = 32;
+
+/** The loop bookkeeping a comprehension charges per element. */
+const COMPREHENSION_STEP_COST = 1;
+
+/**
+ * Charge a function call, receiver folded in as operand 0 — which
+ * is where cel-go's runtime cost model finds it too: a member
+ * overload's `args[0]` *is* the receiver.
+ */
+function chargeCall(
+  name: string,
+  operands: readonly ASTNode[],
+  scope: CostScope,
+): Charge {
+  const parts = chargeAll(operands, scope);
+  const base = sumCost(parts);
+  const first = parts[0]?.size ?? 1;
+  const second = parts[1]?.size ?? 1;
+  switch (name) {
+    // `tsfga_re2_matches` is what `rewriteCalls` renames both
+    // spellings of `matches` to; the author's own name never
+    // reaches an evaluation, but it is priced here too so the
+    // model reads the same as cel-go's.
+    case "matches":
+    case "tsfga_re2_matches": {
+      // cel-go adds one to the subject's length so an empty
+      // subject against an expensive pattern is not free.
+      const subject = traversal(1 + first);
+      const pattern = Math.ceil(second * REGEX_STRING_LENGTH_COST_FACTOR);
+      return { cost: base + subject * pattern, size: 1 };
+    }
+    case "contains":
+      return {
+        cost: base + traversal(first) * traversal(second),
+        size: 1,
+      };
+    case "startsWith":
+    case "endsWith":
+      return { cost: base + traversal(first), size: 1 };
+    case "bytes":
+      return { cost: base + traversal(first), size: first };
+    case "string":
+      // `string(bytes)` traverses; the scalar conversions do not,
+      // and `traversal(1)` is 1 either way. The *result* is sized
+      // at the widest a formatted scalar reaches, because a
+      // timestamp renders as 20-odd characters from a value of
+      // size 1 and sizing it at 1 would under-charge a comparison
+      // against it.
+      return {
+        cost: base + traversal(first),
+        size: Math.max(first, FORMATTED_SCALAR_SIZE),
+      };
+    default:
+      // Every other declared function is O(1) in cel-go's model,
+      // including the conversions, `size()`, `has()` and `type()`.
+      return { cost: base + 1, size: 1 };
+  }
+}
+
+function chargeComprehension(
+  name: string,
+  receiver: ASTNode,
+  args: readonly ASTNode[],
+  scope: CostScope,
+): Charge {
+  const source = chargeNode(receiver, scope);
+  const iterations = source.size;
+  const [iterVar, ...body] = args;
+  const bindings = new Map(scope.bindings);
+  if (iterVar !== undefined && iterVar.op === "id") {
+    bindings.set(iterVar.args, elementCeiling(receiver, scope));
+  }
+  const inner: CostScope = { ...scope, bindings };
+  const perElement = sumCost(chargeAll(body, inner)) + COMPREHENSION_STEP_COST;
+  return {
+    cost: source.cost + iterations * perElement,
+    // `map` and `filter` produce a list; the predicates produce a
+    // bool. `filter` returns at most as many elements as it read.
+    size: name === "map" || name === "filter" ? iterations : 1,
+  };
+}
+
+/**
+ * cel-go's runtime cost for one node and its subtree, charged
+ * against the coerced context.
+ *
+ * Transcribed from `interpreter/runtimecost.go` — `costTrackerFactory.
+ * Observe` for the per-node charges and `CostTracker.costCall` for
+ * the per-overload ones. Three places it deliberately differs, all
+ * of them **over**-charging, which is the direction the residue is
+ * required to fail in:
+ *
+ * - **No short-circuit.** Both arms of `||` and `&&` and all three
+ *   of a ternary are charged, where cel-go charges only what it
+ *   evaluated. A pre-pass cannot know which arm runs without
+ *   running it, and this is the price of refusing *before* the work
+ *   rather than after.
+ * - **Computed sizes.** `+` on strings is sized exactly, a
+ *   comprehension's output at its input, and anything else the
+ *   walk cannot reach at the largest value the request carried.
+ * - **Operators whose overload cel-go prices at 1** — `in` over a
+ *   map, `+` over a list — are priced by size here, because the
+ *   pre-pass has no types.
+ */
+function chargeNode(node: ASTNode, scope: CostScope): Charge {
+  switch (node.op) {
+    // A constant is free (`ConstCost`), and it is the one place a
+    // size is known exactly.
+    case "value":
+      return { cost: 0, size: valueSize(node.args) };
+
+    case "id": {
+      const bound = scope.bindings.get(node.args);
+      if (bound !== undefined) {
+        return { cost: SELECT_AND_IDENT_COST, size: bound };
+      }
+      return {
+        cost: SELECT_AND_IDENT_COST,
+        size: resolvedSize(node, scope),
+      };
+    }
+
+    case ".":
+    case ".?": {
+      const receiver = chargeNode(node.args[0], scope);
+      return {
+        cost: receiver.cost + SELECT_AND_IDENT_COST,
+        size: resolvedSize(node, scope),
+      };
+    }
+
+    // An index is a `Qualifier`, which costs one.
+    case "[]":
+    case "[?]": {
+      const parts = chargeAll(node.args, scope);
+      return { cost: sumCost(parts) + 1, size: resolvedSize(node, scope) };
+    }
+
+    case "!_":
+    case "-_": {
+      const operand = chargeNode(node.args, scope);
+      return { cost: operand.cost + 1, size: 1 };
+    }
+
+    // `evalOr` / `evalAnd` have no charge of their own.
+    case "||":
+    case "&&": {
+      const parts = chargeAll(node.args, scope);
+      return { cost: sumCost(parts), size: 1 };
+    }
+
+    // Nor has a ternary: all of its cost is in its three arms.
+    case "?:": {
+      const parts = chargeAll(node.args, scope);
+      const truthy = parts[1]?.size ?? 1;
+      const falsy = parts[2]?.size ?? 1;
+      return { cost: sumCost(parts), size: Math.max(truthy, falsy) };
+    }
+
+    // O(min(m, n)): the shorter operand decides, because a
+    // comparison stops at the first difference. On two scalars both
+    // sizes are 1 and `traversal(1)` is 1, which is the cost of
+    // every fixed-width comparison in cel-go's default branch — so
+    // one formula covers both.
+    case "==":
+    case "!=":
+    case "<":
+    case "<=":
+    case ">":
+    case ">=": {
+      const parts = chargeAll(node.args, scope);
+      const left = parts[0]?.size ?? 1;
+      const right = parts[1]?.size ?? 1;
+      return {
+        cost: sumCost(parts) + traversal(Math.min(left, right)),
+        size: 1,
+      };
+    }
+
+    // `in_list` is charged one per element of the list. cel-go
+    // prices `in_map` at 1 instead; this charges the map's entry
+    // count there too, which over-charges and so is safe.
+    case "in": {
+      const parts = chargeAll(node.args, scope);
+      const container = parts[1]?.size ?? 1;
+      return { cost: sumCost(parts) + Math.max(1, container), size: 1 };
+    }
+
+    // O(m+n) on strings: the worst case reallocates and copies both
+    // operands. `traversal(1 + 1)` is 1, so numeric addition lands
+    // on cel-go's default charge of one without a type to check.
+    case "+": {
+      const parts = chargeAll(node.args, scope);
+      const left = parts[0]?.size ?? 1;
+      const right = parts[1]?.size ?? 1;
+      return {
+        cost: sumCost(parts) + traversal(left + right),
+        size: left + right,
+      };
+    }
+
+    case "-":
+    case "*":
+    case "/":
+    case "%": {
+      const parts = chargeAll(node.args, scope);
+      return { cost: sumCost(parts) + 1, size: 1 };
+    }
+
+    case "list": {
+      const parts = chargeAll(node.args, scope);
+      return {
+        cost: sumCost(parts) + LIST_CREATE_BASE_COST,
+        size: node.args.length,
+      };
+    }
+
+    case "map": {
+      let cost = MAP_CREATE_BASE_COST;
+      for (const [key, value] of node.args) {
+        cost += chargeNode(key, scope).cost + chargeNode(value, scope).cost;
+      }
+      return { cost, size: node.args.length };
+    }
+
+    case "call":
+      return chargeCall(node.args[0], node.args[1], scope);
+
+    case "rcall": {
+      const [name, receiver, args] = node.args;
+      if (COMPREHENSION_MACROS.has(name)) {
+        return chargeComprehension(name, receiver, args, scope);
+      }
+      return chargeCall(name, [receiver, ...args], scope);
+    }
+
+    default:
+      // A node shape this transcription does not know. One unit,
+      // and the ceiling for its size — the same fallback an
+      // unresolvable value takes.
+      return { cost: 1, size: scope.unknown };
+  }
+}
+
+/**
+ * What evaluating `ast` against `context` would cost cel-go.
+ *
+ * Exported for the unit tests, which state the calibration points
+ * as numbers rather than as answers.
+ */
+export function estimateEvaluationCost(
+  ast: ASTNode,
+  context: Readonly<Record<string, unknown>>,
+): number {
+  let ceiling = 1;
+  for (const value of Object.values(context)) {
+    ceiling = Math.max(ceiling, contextCeiling(value, 0));
+  }
+  return chargeNode(ast, { context, unknown: ceiling, bindings: new Map() })
+    .cost;
+}
+
 /**
  * Evaluate a tuple's condition. Returns true if:
  * - The tuple has no condition (unconditional access)
@@ -2556,11 +3053,22 @@ export function coerceContext(
  * as its declared type, or if CEL evaluation fails — matching
  * OpenFGA's check path, where all three are evaluation errors
  * rather than an unmet condition.
+ *
+ * It also refuses an expression whose estimated evaluation cost
+ * exceeds `options.maxConditionEvaluationCost` (default 100,
+ * upstream's `DefaultMaxConditionEvaluationCost`), raising a
+ * `ConditionEvaluationError` whose cause begins `evaluation cost
+ * limit exceeded`. The estimate is charged **before** evaluating,
+ * where upstream cancels a program part-way through; both refuse,
+ * and the cost model is an approximation of cel-go's that
+ * over-charges where it cannot be exact. See
+ * `CheckOptions.maxConditionEvaluationCost`.
  */
 export async function evaluateTupleCondition(
   store: TupleStore,
   tuple: Tuple,
   requestContext?: Record<string, unknown>,
+  options?: ConditionEvaluationOptions,
 ): Promise<boolean> {
   if (!tuple.conditionName) {
     return true;
@@ -2594,6 +3102,25 @@ export async function evaluateTupleCondition(
   }
 
   const compiled = compileCondition(condDef.name, condDef.expression);
+
+  // Before evaluating, not after: the budget exists to bound work
+  // driven by whoever is asking, and a charge collected once the
+  // work is done bounds nothing. The estimate is over the
+  // *rewritten* AST — `compiled.ast` — which is the program that
+  // actually runs.
+  const maxCost = resolveMaxConditionEvaluationCost(options);
+  if (maxCost !== Number.POSITIVE_INFINITY) {
+    const cost = estimateEvaluationCost(compiled.ast, context);
+    if (cost > maxCost) {
+      throw new ConditionEvaluationError(
+        condDef.name,
+        new Error(
+          `${COST_REFUSAL}: estimated ${cost} against a limit of ` +
+            `${maxCost}`,
+        ),
+      );
+    }
+  }
 
   try {
     const result = compiled(context);

@@ -6,7 +6,6 @@ import {
   createTsfga,
   type RemoveTupleRequest,
   type TsfgaClient,
-  TsfgaError,
 } from "@tsfga/core";
 import type { DB } from "@tsfga/kysely";
 import { KyselyTupleStore } from "@tsfga/kysely";
@@ -17,6 +16,7 @@ import {
   expectConfigsMatchModel,
   expectConformance,
   expectListObjectsConformance,
+  expectPinnedListObjectsDivergence,
   expectWriteConformance,
   type FixtureRecord,
   recordFixture,
@@ -29,7 +29,6 @@ import {
 } from "./helpers/db.ts";
 import {
   fgaCreateStore,
-  fgaListObjects,
   fgaWriteModel,
   fgaWriteTuples,
 } from "./helpers/openfga.ts";
@@ -1170,46 +1169,73 @@ describe("Data Residency Model Conformance", () => {
     );
   });
 
-  test("GAP-460: listObjects answers a partial set where upstream refuses", async () => {
-    // FAILS TODAY, and deliberately left failing.
-    //
-    // Every `record.dataset` row but rec6's needs the request's
-    // `region`. rec6 pins it in the tuple, so its condition is
-    // evaluable and it grants.
-    //
-    // OpenFGA reverse-expands from mira, reaches a conditioned
-    // tupleset row it cannot evaluate, and refuses the whole call.
-    // tsfga meets the same row on a tupleset scan — not a read
-    // naming the request subject — so `listObjects` drops the
-    // candidate and answers the partial list `["rec6"]`.
-    //
-    // This is the drop rule in `packages/core/src/list-objects.ts`
-    // (`isDroppable` / `onSubjectRow`), already pinned two-sided
-    // for a bare TTU by `b4-listobjects-probes.test.ts`. It is
-    // asserted here as conformance rather than pinned because the
-    // shape is new — a *partial* answer beside a refusal, where
-    // the pinned case answers `[]`.
-    const params = {
-      objectType: "record_d4r",
-      relation: "can_view",
-      subjectType: "user_d4r",
-      subjectId: "mira",
-      context: without("region"),
-    };
-    const [ours, theirs] = await Promise.all([
-      tsfga
-        .listObjects(params)
-        .then((objects) => [...objects].sort().join(","))
-        .catch((error: unknown) => {
-          if (error instanceof TsfgaError) return "refused";
-          throw error;
-        }),
-      fgaListObjects(storeId, authorizationModelId, params)
-        .then((objects) => [...objects].sort().join(","))
-        .catch(() => "refused"),
-    ]);
-    expect(ours).toBe(theirs);
-    expect(ours).toBe("refused");
+  /**
+   * Pinned, and this is the third spelling of one divergence
+   * rather than a new one.
+   *
+   * Every `record.dataset` row but rec6's needs the request's
+   * `region`. rec6 pins it in the tuple, so its condition is
+   * evaluable and it grants.
+   *
+   * OpenFGA reverse-expands from mira, reaches a conditioned
+   * tupleset row it cannot evaluate, and refuses the whole call.
+   * tsfga meets the same row on a tupleset scan -- not a read
+   * naming the request subject -- so `listObjects` drops the
+   * candidate and answers `["rec6"]`.
+   *
+   * The rule is `isDroppable` / `onSubjectRow` in
+   * `packages/core/src/list-objects.ts`, already pinned for a bare
+   * tuple-to-userset answering `[]`, and for a non-empty partial
+   * list in `c3-vault.test.ts`. What is new here is only how
+   * ordinary the shape is: a conditioned tupleset row is how a
+   * data-residency model is written.
+   *
+   * Not closed, and the reason is a proof rather than a
+   * preference. Separating the row that must be dropped from the
+   * row that must refuse needs reverse reachability over stored
+   * rows, which is the one thing a forward walk does not have --
+   * two candidates reach the identical branch with identical local
+   * information. Both alternatives re-open four cells in the
+   * refusing direction, including the one the issue called
+   * strictly weaker, which it is not.
+   *
+   * The honest caveat for a caller is written in the README: a
+   * `listObjects` answer here may be **partial and non-empty**,
+   * and nothing in it says so. That sentence is the condition on
+   * this pin.
+   */
+  test("ISSUE-460: a partial set where upstream refuses", async () => {
+    await expectPinnedListObjectsDivergence(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "record_d4r",
+        relation: "can_view",
+        subjectType: "user_d4r",
+        subjectId: "mira",
+        context: without("region"),
+      },
+      { openfga: "refused", tsfga: ["rec6"] },
+    );
+  });
+
+  test("ISSUE-460: supplying the region makes both engines agree", async () => {
+    // The boundary beside the pin: the divergence is the missing
+    // context, not the model's shape.
+    await expectListObjectsConformance(
+      storeId,
+      authorizationModelId,
+      tsfga,
+      {
+        objectType: "record_d4r",
+        relation: "can_view",
+        subjectType: "user_d4r",
+        subjectId: "mira",
+        context: ctx(),
+      },
+      ["rec1", "rec6"],
+    );
   });
 
   // --- checkMany over one scope ---

@@ -1,5 +1,8 @@
 import { CachingTupleStore } from "./caching-store.ts";
-import { evaluateTupleCondition } from "./conditions.ts";
+import {
+  evaluateTupleCondition,
+  resolveMaxConditionEvaluationCost,
+} from "./conditions.ts";
 import { ContextualTupleStore } from "./contextual-store.ts";
 import {
   DepthExceededError,
@@ -408,6 +411,12 @@ export interface CheckScope {
   readonly store: TupleStore;
   readonly maxDepth: number;
   readonly maxBreadth: number;
+  /**
+   * Resolved and validated once, then carried, so a whole
+   * `listObjects` or `checkMany` cannot disagree with itself about
+   * the budget and a bad value is refused before any store read.
+   */
+  readonly maxConditionEvaluationCost: number;
   readonly memo: NodeMemo;
   readonly inflight: NodeMap<InflightEntry>;
   /**
@@ -560,10 +569,17 @@ export function createCheckScope(
   const caching =
     store instanceof CachingTupleStore ? store : new CachingTupleStore(store);
 
+  // Validated in `conditions.ts`, which owns the option, so the
+  // predicate lives beside the model it bounds. Called here so a
+  // mistyped budget is a construction error like the other two,
+  // rather than a surprise at the first conditioned row.
+  const maxConditionEvaluationCost = resolveMaxConditionEvaluationCost(options);
+
   return {
     store: caching,
     maxDepth,
     maxBreadth,
+    maxConditionEvaluationCost,
     memo: new Map(),
     inflight: new Map(),
     reachability: createReachability(caching, maxBreadth),
@@ -1398,13 +1414,14 @@ function clampToQuery(
  * never be indeterminate.
  */
 async function evaluateCondition(
-  store: TupleStore,
+  scope: CheckScope,
   tuple: Tuple,
   context: Record<string, unknown> | undefined,
 ): Promise<CheckResult> {
-  return (await evaluateTupleCondition(store, tuple, context))
-    ? GRANTED
-    : DENIED;
+  const held = await evaluateTupleCondition(scope.store, tuple, context, {
+    maxConditionEvaluationCost: scope.maxConditionEvaluationCost,
+  });
+  return held ? GRANTED : DENIED;
 }
 
 /**
@@ -1472,7 +1489,7 @@ async function checkBase(
   // fetch) does not block the fanout below. Union semantics
   // apply: a sibling `true` beats a condition error.
   if (directTuple) {
-    handlers.push(() => evaluateCondition(store, directTuple, request.context));
+    handlers.push(() => evaluateCondition(scope, directTuple, request.context));
   }
   // One branch per conditioned wildcard row. They race as siblings
   // of a union, so a stored row whose condition holds still grants
@@ -1481,7 +1498,7 @@ async function checkBase(
   // it does not stand in for it.
   for (const wildcardTuple of wildcardTuples) {
     handlers.push(() =>
-      evaluateCondition(store, wildcardTuple, request.context),
+      evaluateCondition(scope, wildcardTuple, request.context),
     );
   }
   // Its own branch, outside the userset stash below: upstream reads
@@ -1489,7 +1506,7 @@ async function checkBase(
   // carries its own decision rather than being weighed against the
   // scan's other rows.
   if (selfTuple) {
-    handlers.push(() => evaluateCondition(store, selfTuple, request.context));
+    handlers.push(() => evaluateCondition(scope, selfTuple, request.context));
   }
 
   // Step 2: Userset expansion handlers. This moves to another
@@ -1515,7 +1532,9 @@ async function checkBase(
       if (branch.abandoned) throw new BranchAbandoned();
       let held: boolean;
       try {
-        held = await evaluateTupleCondition(store, userset, request.context);
+        held = await evaluateTupleCondition(store, userset, request.context, {
+          maxConditionEvaluationCost: scope.maxConditionEvaluationCost,
+        });
       } catch (error) {
         // Held, not raised: whether it becomes the answer depends
         // on what the sibling rows do, which is not known yet.
@@ -1608,7 +1627,7 @@ async function checkBase(
         // Only the rows this arm's tupleset relation admits whose
         // condition holds.
         const linkedTuples = await resolveTupleset(
-          store,
+          scope,
           request,
           tupleset,
           computedUserset,
@@ -1660,7 +1679,7 @@ async function checkIntersection(
   path: ReadonlySet<string>,
   frame: Frame,
 ): Promise<CheckResult> {
-  const { store, maxBreadth } = scope;
+  const { maxBreadth } = scope;
   const operands = config.intersection;
   // An intersection with no operands would resolve vacuously true,
   // granting access to every subject on a malformed config.
@@ -1702,7 +1721,7 @@ async function checkIntersection(
       handlers.push(async (branch) => {
         if (branch.abandoned) throw new BranchAbandoned();
         const linkedTuples = await resolveTupleset(
-          store,
+          scope,
           request,
           operand.tupleset,
           operand.computedUserset,
@@ -1770,11 +1789,12 @@ async function checkIntersection(
  * mirror-image of the fail-open this gate exists to remove.
  */
 async function resolveTupleset(
-  store: TupleStore,
+  scope: CheckScope,
   request: CheckRequest,
   tupleset: string,
   computedUserset: string,
 ): Promise<Tuple[]> {
+  const { store } = scope;
   const [linked, config] = await Promise.all([
     store.findTuplesByRelation(request.objectType, request.objectId, tupleset),
     store.findRelationConfig(request.objectType, tupleset),
@@ -1823,7 +1843,10 @@ async function resolveTupleset(
   const stash: ErrorStash = { error: null };
   for (const tuple of admitted) {
     try {
-      if (await evaluateTupleCondition(store, tuple, request.context)) {
+      const held = await evaluateTupleCondition(store, tuple, request.context, {
+        maxConditionEvaluationCost: scope.maxConditionEvaluationCost,
+      });
+      if (held) {
         satisfied.push(tuple);
       }
     } catch (error) {
