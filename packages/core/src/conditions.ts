@@ -1272,6 +1272,96 @@ function refuseUndeclaredCall(name: string, receiver: boolean): void {
   throw new Error(`undeclared reference to '${name}' (in container '')`);
 }
 
+/**
+ * Walk the parsed expression and refuse every call cel-go's
+ * environment does not declare.
+ *
+ * The gate asks one question of one node — *which function is
+ * this?* — so it reads no source text, masks no comments and knows
+ * nothing about where a call sits. It is the whole of the
+ * allow-list's reach into the AST, and it stands alone so the
+ * allow-list stays a separable refusal rather than a side effect
+ * of a walk that exists to do something else.
+ *
+ * Comprehension macros (`all`, `exists`, `exists_one`, `filter`,
+ * `map`) are ordinary `rcall` nodes carrying their body in the
+ * argument list, so the argument loop reaches it. A walk that
+ * descended only into the receiver would leave every macro body
+ * ungated.
+ */
+function refuseUndeclaredCalls(node: ASTNode): void {
+  switch (node.op) {
+    case "value":
+    case "id":
+      return;
+
+    case ".":
+    case ".?":
+      refuseUndeclaredCalls(node.args[0]);
+      return;
+
+    case "!_":
+    case "-_":
+      refuseUndeclaredCalls(node.args);
+      return;
+
+    case "[]":
+    case "[?]":
+    case "||":
+    case "&&":
+    case "==":
+    case "!=":
+    case "in":
+    case "+":
+    case "-":
+    case "*":
+    case "/":
+    case "%":
+    case "<":
+    case "<=":
+    case ">":
+    case ">=":
+      refuseUndeclaredCalls(node.args[0]);
+      refuseUndeclaredCalls(node.args[1]);
+      return;
+
+    case "?:":
+      refuseUndeclaredCalls(node.args[0]);
+      refuseUndeclaredCalls(node.args[1]);
+      refuseUndeclaredCalls(node.args[2]);
+      return;
+
+    case "list":
+      for (const item of node.args) refuseUndeclaredCalls(item);
+      return;
+
+    case "map":
+      for (const [key, value] of node.args) {
+        refuseUndeclaredCalls(key);
+        refuseUndeclaredCalls(value);
+      }
+      return;
+
+    case "call": {
+      const [name, args] = node.args;
+      refuseUndeclaredCall(name, false);
+      for (const argument of args) refuseUndeclaredCalls(argument);
+      return;
+    }
+
+    case "rcall": {
+      const [name, receiver, args] = node.args;
+      refuseUndeclaredCall(name, true);
+      refuseUndeclaredCalls(receiver);
+      for (const argument of args) refuseUndeclaredCalls(argument);
+      return;
+    }
+
+    default:
+      return;
+  }
+}
+
 /** One name replaced, as a half-open range of the source text. */
 interface Splice {
   start: number;
@@ -1442,13 +1532,12 @@ function unplaceableCall(name: string): string {
 }
 
 /**
- * Find every call this module owns an implementation for, and
- * refuse every call cel-go's environment does not declare.
+ * Find every call this module owns an implementation for.
  *
- * The two are one walk because they ask the same question of the
- * same node — *which function is this?* — and because a name the
- * allow-list refuses must be refused wherever it appears, not only
- * at the top of the expression.
+ * The allow-list used to ride along on this walk. It has its own
+ * now (`refuseUndeclaredCalls`), which runs first, so by the time
+ * this one starts every name in the expression is one cel-go
+ * declares.
  *
  * The rewrite is a **source-text splice**, not an AST edit: only
  * the function's name moves, every other byte of the author's
@@ -1519,7 +1608,6 @@ function collectSplices(node: ASTNode, scan: SpliceScan): void {
 
     case "call": {
       const [name, args] = node.args;
-      refuseUndeclaredCall(name, false);
       const rewrite = REWRITES.get(name)?.call ?? null;
       if (rewrite !== null && args.length === rewrite.arity) {
         // A `call` node starts at its own name, so the name is the
@@ -1542,7 +1630,6 @@ function collectSplices(node: ASTNode, scan: SpliceScan): void {
 
     case "rcall": {
       const [name, receiver, args] = node.args;
-      refuseUndeclaredCall(name, true);
       const rewrite = REWRITES.get(name)?.rcall ?? null;
       const first = args[0];
       if (
@@ -1852,6 +1939,11 @@ export function compileCondition(
   let compiled: ParseResult;
   try {
     compiled = env.parse(expression);
+    // Inside this `try` on purpose: `refuseUndeclaredCalls` throws
+    // a bare `Error`, and this `catch` is the only thing that
+    // launders one into a `ConditionCompileError`. Called a line
+    // above, a non-`TsfgaError` escapes `writeConditionDefinition`.
+    refuseUndeclaredCalls(compiled.ast);
     const rewritten = rewriteCalls(expression, compiled.ast);
     if (rewritten !== expression) compiled = env.parse(rewritten);
   } catch (error) {
