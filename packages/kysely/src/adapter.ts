@@ -16,16 +16,14 @@ import { type Kysely, sql } from "kysely";
 import type { DB, Json } from "./schema.ts";
 
 /**
- * Storage representation of the public wildcard subject `"*"`.
+ * The public wildcard subject, stored as itself.
  *
- * The `subject_id` column is `uuid`-typed, so the wildcard is stored
- * as the nil UUID and mapped back to `"*"` on every read path. This
- * reserves the nil UUID: a tuple written for a real subject with id
- * `00000000-0000-0000-0000-000000000000` would be indistinguishable
- * from a wildcard grant and would read back as `"*"`. Callers must
- * never use the nil UUID as a real subject id.
+ * `subject_id` is `text` since migration `006`, so `"*"` needs no
+ * encoding and no id is reserved. It used to be `uuid`-typed, which
+ * forced the wildcard into the nil UUID and made a grant to a real
+ * subject with that id indistinguishable from a grant to everyone.
  */
-const WILDCARD_SENTINEL = "00000000-0000-0000-0000-000000000000";
+const WILDCARD = "*";
 
 const SCALAR_PARAMETER_TYPES: ReadonlySet<string> = new Set([
   "string",
@@ -99,9 +97,6 @@ export class KyselyTupleStore implements TupleStore {
       return { direct: null, wildcard: null, usersets: [] };
     }
 
-    const dbSubjectId =
-      query.subjectId === "*" ? WILDCARD_SENTINEL : query.subjectId;
-
     const rows = await this.db
       .selectFrom("tsfga.tuples")
       .selectAll()
@@ -136,8 +131,8 @@ export class KyselyTupleStore implements TupleStore {
         };
 
         return eb.or([
-          ...probe(directRefs, dbSubjectId),
-          ...probe(wildcardRefs, WILDCARD_SENTINEL),
+          ...probe(directRefs, query.subjectId),
+          ...probe(wildcardRefs, WILDCARD),
           ...(!wanted(usersetRefs)
             ? []
             : usersetRefs === null
@@ -168,21 +163,18 @@ export class KyselyTupleStore implements TupleStore {
       const tuple = this.rowToTuple(row);
       if (row.subject_relation !== null) {
         usersets.push(tuple);
-      } else if (wanted(directRefs) && row.subject_id === dbSubjectId) {
+      } else if (wanted(directRefs) && row.subject_id === query.subjectId) {
         // Checked first, so a check *for* the wildcard subject —
         // where both disjuncts are the same query — lands in
         // `direct` rather than being reported twice.
         direct = tuple;
-      } else if (wanted(wildcardRefs) && row.subject_id === WILDCARD_SENTINEL) {
+      } else if (wanted(wildcardRefs) && row.subject_id === WILDCARD) {
         wildcard = tuple;
       }
-      // Partitioned on the raw column, never on the round-tripped
-      // tuple: `rowToTuple` maps the sentinel to `"*"`, so a real
-      // subject whose id happens to be the nil UUID would look
-      // like a wildcard here. Both arms are also positively
-      // matched rather than falling through to `wildcard`, so a
-      // row the query did not ask for is dropped instead of being
-      // filed under whichever slot is left.
+      // Both arms are positively matched rather than falling
+      // through to `wildcard`, so a row the query did not ask for
+      // is dropped instead of being filed under whichever slot is
+      // left.
     }
 
     return { direct, wildcard, usersets };
@@ -252,8 +244,6 @@ export class KyselyTupleStore implements TupleStore {
       ? JSON.stringify(tuple.conditionContext)
       : null;
     const now = new Date();
-    const dbSubjectId =
-      tuple.subjectId === "*" ? WILDCARD_SENTINEL : tuple.subjectId;
 
     await this.db
       .insertInto("tsfga.tuples")
@@ -262,7 +252,7 @@ export class KyselyTupleStore implements TupleStore {
         object_id: tuple.objectId,
         relation: tuple.relation,
         subject_type: tuple.subjectType,
-        subject_id: dbSubjectId,
+        subject_id: tuple.subjectId,
         subject_relation: tuple.subjectRelation ?? null,
         condition_name: tuple.conditionName ?? null,
         condition_context: condCtx,
@@ -284,15 +274,13 @@ export class KyselyTupleStore implements TupleStore {
   }
 
   async deleteTuple(tuple: RemoveTupleRequest): Promise<boolean> {
-    const dbSubjectId =
-      tuple.subjectId === "*" ? WILDCARD_SENTINEL : tuple.subjectId;
     const result = await this.db
       .deleteFrom("tsfga.tuples")
       .where("object_type", "=", tuple.objectType)
       .where("object_id", "=", tuple.objectId)
       .where("relation", "=", tuple.relation)
       .where("subject_type", "=", tuple.subjectType)
-      .where("subject_id", "=", dbSubjectId)
+      .where("subject_id", "=", tuple.subjectId)
       .$call((qb) => {
         if (
           tuple.subjectRelation !== null &&
@@ -412,7 +400,7 @@ export class KyselyTupleStore implements TupleStore {
       objectId: row.object_id,
       relation: row.relation,
       subjectType: row.subject_type,
-      subjectId: row.subject_id === WILDCARD_SENTINEL ? "*" : row.subject_id,
+      subjectId: row.subject_id,
       subjectRelation: row.subject_relation,
       conditionName: row.condition_name,
       conditionContext: this.parseConditionContext(row.condition_context),

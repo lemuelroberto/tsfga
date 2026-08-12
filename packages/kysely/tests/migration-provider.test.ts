@@ -89,6 +89,77 @@ describe("migrationProvider", () => {
   });
 
   /**
+   * `006` widens `subject_id` to `text`, so rolling it back is
+   * lossy by construction: `text` holds ids `uuid` cannot, the
+   * wildcard `"*"` among them. There is no honest conversion —
+   * mapping `"*"` onto the nil UUID reinstates exactly the
+   * collision `006` deletes — so the rollback casts and lets
+   * PostgreSQL refuse the row, naming it.
+   */
+  test("rolling back 006 refuses an id uuid cannot hold", async () => {
+    const tuples = db.withTables<{
+      "tsfga.tuples": {
+        object_type: string;
+        object_id: string;
+        relation: string;
+        subject_type: string;
+        subject_id: string;
+        created_at: Date;
+        updated_at: Date;
+      };
+    }>();
+    const now = new Date();
+    await tuples
+      .insertInto("tsfga.tuples")
+      .values({
+        object_type: "document",
+        object_id: "00000000-0000-0000-0000-00000000000a",
+        relation: "viewer",
+        subject_type: "user",
+        subject_id: "*",
+        created_at: now,
+        updated_at: now,
+      })
+      .execute();
+
+    const blocked = await new Migrator({
+      db,
+      provider: migrationProvider,
+    }).migrateDown();
+    expect(blocked.error).not.toBe(undefined);
+
+    // The failed migration is transactional, so the column is
+    // still `text` and the row is still there to be dealt with.
+    await tuples
+      .deleteFrom("tsfga.tuples")
+      .where("subject_id", "=", "*")
+      .execute();
+
+    const { error } = await new Migrator({
+      db,
+      provider: migrationProvider,
+    }).migrateDown();
+    expect(error).toBe(undefined);
+
+    const columns = await db
+      .withTables<{
+        "information_schema.columns": {
+          table_schema: string;
+          table_name: string;
+          column_name: string;
+          data_type: string;
+        };
+      }>()
+      .selectFrom("information_schema.columns")
+      .select("data_type")
+      .where("table_schema", "=", "tsfga")
+      .where("table_name", "=", "tuples")
+      .where("column_name", "=", "subject_id")
+      .execute();
+    expect(columns[0]?.data_type).toBe("uuid");
+  });
+
+  /**
    * Rolling `005` back must leave the restored column empty rather
    * than null: pre-005 core reads a null
    * `directly_assignable_types` as "no restriction", so a null

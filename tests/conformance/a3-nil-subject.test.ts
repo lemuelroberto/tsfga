@@ -21,16 +21,18 @@ import { fgaCreateStore, fgaWriteModel } from "./helpers/openfga.ts";
 /**
  * A grant to the nil-UUID subject.
  *
- * The Kysely adapter stores the public wildcard `"*"` as the nil
- * UUID, because `subject_id` is `uuid`-typed. It documents the
- * consequence — "callers must never use the nil UUID as a real
- * subject id" — but nothing enforces it, and OpenFGA reserves no
- * such id: `user:00000000-0000-0000-0000-000000000000` is an
- * ordinary subject upstream, distinct from `user:*`.
+ * OpenFGA reserves no subject id:
+ * `user:00000000-0000-0000-0000-000000000000` is an ordinary
+ * subject upstream, distinct from `user:*`. The Kysely adapter
+ * used to disagree — `subject_id` was `uuid`-typed, so the public
+ * wildcard `"*"` was stored as the nil UUID. A write both engines
+ * accepted then meant two different things: the row read back as
+ * the wildcard, granted every subject of its type, and stopped
+ * matching the one it was written for. That is the granting
+ * direction, and the widest failure there is.
  *
- * So the write is accepted by both engines and then means two
- * different things. This is the granting direction, and the
- * failure is the widest one there is.
+ * Migration `006` stores `"*"` as itself and reserves nothing.
+ * These tests hold that shut.
  */
 
 const NIL_UUID = "00000000-0000-0000-0000-000000000000";
@@ -115,9 +117,9 @@ describe("Nil-UUID Subject Conformance", () => {
   });
 
   test("GAP-045: the nil-UUID subject keeps its own grant", async () => {
-    // The other half of the collision: the row reads back as the
+    // One half of the old collision: the row read back as the
     // wildcard, so the subject it was written for no longer
-    // matches it.
+    // matched it.
     await expectConformance(
       storeId,
       authorizationModelId,
@@ -135,9 +137,9 @@ describe("Nil-UUID Subject Conformance", () => {
 
   test("GAP-045: a nil-UUID grant does not grant everybody", async () => {
     // `mixed` admits `user_a3n:*`, so the check asks the store for
-    // the wildcard row — and the adapter answers with the row
-    // written for the nil-UUID subject, which `rowToTuple` maps
-    // back to `"*"`. Upstream, that row grants exactly one subject.
+    // the wildcard row. The adapter used to answer with the row
+    // written for the nil-UUID subject; that row grants exactly
+    // one subject, here and upstream.
     await expectConformance(
       storeId,
       authorizationModelId,

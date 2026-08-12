@@ -602,9 +602,13 @@ describe("KyselyTupleStore", () => {
   });
 
   describe("Wildcard subjects", () => {
-    const sentinel = "00000000-0000-0000-0000-000000000000";
+    /**
+     * An ordinary subject id that used to be the wildcard's
+     * storage encoding. Since `006` it is reserved by nothing.
+     */
+    const nilUuid = "00000000-0000-0000-0000-000000000000";
 
-    test("insertTuple stores the wildcard as the nil UUID", async () => {
+    test("insertTuple stores the wildcard as itself", async () => {
       await store.insertTuple({
         objectType: "doc",
         objectId: uuid1,
@@ -619,10 +623,10 @@ describe("KyselyTupleStore", () => {
         .where("object_type", "=", "doc")
         .where("object_id", "=", uuid1)
         .executeTakeFirst();
-      expect(row?.subject_id).toBe(sentinel);
+      expect(row?.subject_id).toBe("*");
     });
 
-    test("the direct probe maps the sentinel back to *", async () => {
+    test("the direct probe reads the wildcard back as *", async () => {
       await store.insertTuple({
         objectType: "doc",
         objectId: uuid1,
@@ -636,7 +640,7 @@ describe("KyselyTupleStore", () => {
       expect(tuple?.subjectId).toBe("*");
     });
 
-    test("findTuplesByRelation maps the sentinel back to *", async () => {
+    test("findTuplesByRelation reads the wildcard back as *", async () => {
       await store.insertTuple({
         objectType: "doc",
         objectId: uuid1,
@@ -650,7 +654,7 @@ describe("KyselyTupleStore", () => {
       expect(tuples[0]?.subjectId).toBe("*");
     });
 
-    test("findTuplesByRelation maps the sentinel back to *", async () => {
+    test("a wildcard row and a concrete row stay distinct", async () => {
       await store.insertTuple({
         objectType: "doc",
         objectId: uuid1,
@@ -669,7 +673,75 @@ describe("KyselyTupleStore", () => {
       const subjects = await store.findTuplesByRelation("doc", uuid1, "viewer");
       expect(subjects).toHaveLength(2);
       expect(subjects.find((t) => t.subjectId === "*")).toBeTruthy();
-      expect(subjects.find((t) => t.subjectId === sentinel)).toBe(undefined);
+      expect(subjects.find((t) => t.subjectId === uuid2)).toBeTruthy();
+    });
+
+    /**
+     * GAP-045. The nil UUID used to *be* the wildcard's storage
+     * encoding, so a grant written for it read back as `"*"` and
+     * granted every subject of the type, while the subject it was
+     * written for stopped matching. Both halves are asserted:
+     * the grant belongs to the subject it names, and it is not
+     * the wildcard row.
+     */
+    test("the nil UUID is an ordinary subject, not the wildcard", async () => {
+      await store.insertTuple({
+        objectType: "doc",
+        objectId: uuid1,
+        relation: "viewer",
+        subjectType: "user",
+        subjectId: nilUuid,
+      });
+
+      const own = await readDirect("doc", uuid1, "viewer", "user", nilUuid);
+      expect(own?.subjectId).toBe(nilUuid);
+
+      const { wildcard } = await store.findCheckTuples({
+        objectType: "doc",
+        objectId: uuid1,
+        relation: "viewer",
+        subjectType: "user",
+        subjectId: uuid2,
+        directRefs: [],
+        wildcardRefs: null,
+        usersetRefs: [],
+      });
+      expect(wildcard).toBeNull();
+    });
+
+    test("a nil-UUID grant and a wildcard grant coexist", async () => {
+      await store.insertTuple({
+        objectType: "doc",
+        objectId: uuid1,
+        relation: "viewer",
+        subjectType: "user",
+        subjectId: nilUuid,
+      });
+      await store.insertTuple({
+        objectType: "doc",
+        objectId: uuid1,
+        relation: "viewer",
+        subjectType: "user",
+        subjectId: "*",
+      });
+
+      const tuples = await store.findTuplesByRelation("doc", uuid1, "viewer");
+      expect(tuples).toHaveLength(2);
+
+      // Deleting one leaves the other: they are different rows,
+      // not two spellings of one.
+      expect(
+        await store.deleteTuple({
+          objectType: "doc",
+          objectId: uuid1,
+          relation: "viewer",
+          subjectType: "user",
+          subjectId: nilUuid,
+        }),
+      ).toBe(true);
+      const left = await store.findTuplesByRelation("doc", uuid1, "viewer");
+      expect(left).toHaveLength(1);
+      expect(left[0]?.subjectId).toBe("*");
     });
 
     test("deleteTuple removes a wildcard tuple by *", async () => {
