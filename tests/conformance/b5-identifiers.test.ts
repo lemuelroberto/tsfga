@@ -1,9 +1,8 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, test } from "bun:test";
 import {
   type AddTupleRequest,
   createTsfga,
   type TsfgaClient,
-  TsfgaError,
 } from "@tsfga/core";
 import type { DB } from "@tsfga/kysely";
 import { KyselyTupleStore } from "@tsfga/kysely";
@@ -11,6 +10,7 @@ import type { Kysely } from "kysely";
 import {
   expectConfigsMatchModel,
   expectConformance,
+  expectPinnedWriteDivergence,
   expectWriteConformance,
   type FixtureRecord,
   recordFixture,
@@ -21,7 +21,7 @@ import {
   getDb,
   rollbackTransaction,
 } from "./helpers/db.ts";
-import { fgaCreateStore, fgaWrite, fgaWriteModel } from "./helpers/openfga.ts";
+import { fgaCreateStore, fgaWriteModel } from "./helpers/openfga.ts";
 
 /**
  * Identifier validity, on the write path and on the check path.
@@ -243,23 +243,17 @@ describe("Identifier validity conformance", () => {
       // things. It belongs in `packages/core/README.md` as a
       // documented consequence of the three-field subject, pinned
       // here so a change on either side fails.
-      const row = tuple({
-        relation: "userset_only",
-        subjectType: "team_b5",
-        subjectId: `${uuid("team1")}#member`,
-      });
-      const [ours, theirs] = await Promise.all([
-        tsfgaClient
-          .addTuple(row)
-          .then(() => "accepted")
-          .catch((error: unknown) => {
-            if (error instanceof TsfgaError) return "refused";
-            throw error;
-          }),
-        fgaWrite(storeId, authorizationModelId, row),
-      ]);
-      expect(ours).toBe("refused");
-      expect(theirs).toBe("accepted");
+      await expectPinnedWriteDivergence(
+        storeId,
+        authorizationModelId,
+        tsfgaClient,
+        tuple({
+          relation: "userset_only",
+          subjectType: "team_b5",
+          subjectId: `${uuid("team1")}#member`,
+        }),
+        { openfga: "accepted", tsfga: "refused" },
+      );
     });
 
     test("control: the same edge spelled with subjectRelation", async () => {

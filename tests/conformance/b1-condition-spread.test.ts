@@ -12,6 +12,7 @@ import { cfg, ids } from "./b1-corpus.ts";
 import {
   expectConfigsMatchModel,
   expectConformance,
+  expectPinnedDivergence,
   type FixtureRecord,
   recordFixture,
 } from "./helpers/conformance.ts";
@@ -51,10 +52,12 @@ import {
  * tsfga reads per object, from the object under check downward, so
  * `du:b` is never visited and the answer stays `true`.
  *
- * Both engines see the same rows; only the reads differ. The
- * expectations below are OpenFGA's, measured against the v1.18.2
- * container over repeated runs — stable, not the planner coin-flip
- * of issue 003.
+ * Both engines see the same rows; only the reads differ, so the
+ * three hops are pinned two-sided rather than fixed — see the
+ * comment on the first of them for why tsfga keeps its reading.
+ * Upstream's side was measured against the v1.18.2 container over
+ * five isolated runs and inside the full suite: stable, not the
+ * planner coin-flip of issue 003.
  *
  * See `tmp/openfga-parity/issues/200-condition-error-spreads-from-
  * an-unrelated-object.md`.
@@ -233,8 +236,33 @@ describe("B1 a condition error spreading from an unrelated object", () => {
     );
   });
 
+  /**
+   * The three hops, pinned rather than fixed.
+   *
+   * This is the **granting** direction — tsfga answers `true` where
+   * upstream refuses — which is the uncomfortable kind of pin, so
+   * the reasoning belongs here and not only in the tracker.
+   *
+   * Reproducing upstream's answer would mean giving `check` a read
+   * the `TupleStore` interface does not have — "every object of
+   * type T the subject relates to" — and then failing a check on
+   * the strength of a row no dispatch visits. tsfga's answer would
+   * then depend on rows the model author would not call relevant,
+   * and any writer able to add one conditioned tuple could turn an
+   * unrelated, already-granted check into a refusal. That is
+   * bug-compatibility with a fast path whose two known symptoms
+   * contradict each other: issue 003 is the same resolver
+   * *swallowing* a condition error a dispatch would have raised,
+   * and this is it *raising* one a dispatch would never have seen.
+   * Whatever the resolver should do, it cannot be both, so tsfga
+   * keeps the per-object reading and documents the difference.
+   *
+   * Pinned, not tolerated: measured `refused` on five consecutive
+   * isolated runs and in the full suite, so unlike 003 this one
+   * does not flap.
+   */
   test("GAP-200: a tuple-to-userset hop refuses over an unrelated row", async () => {
-    await expectConformance(
+    await expectPinnedDivergence(
       storeId,
       authorizationModelId,
       tsfgaClient,
@@ -245,12 +273,12 @@ describe("B1 a condition error spreading from an unrelated object", () => {
         subjectType: USER,
         subjectId: u("valid"),
       },
-      "refused",
+      { openfga: "refused", tsfga: true },
     );
   });
 
   test("GAP-200: a userset hop refuses over an unrelated row", async () => {
-    await expectConformance(
+    await expectPinnedDivergence(
       storeId,
       authorizationModelId,
       tsfgaClient,
@@ -261,12 +289,12 @@ describe("B1 a condition error spreading from an unrelated object", () => {
         subjectType: USER,
         subjectId: u("valid"),
       },
-      "refused",
+      { openfga: "refused", tsfga: true },
     );
   });
 
   test("GAP-200: the base of an exclusion refuses the same way", async () => {
-    await expectConformance(
+    await expectPinnedDivergence(
       storeId,
       authorizationModelId,
       tsfgaClient,
@@ -277,7 +305,7 @@ describe("B1 a condition error spreading from an unrelated object", () => {
         subjectType: USER,
         subjectId: u("valid"),
       },
-      "refused",
+      { openfga: "refused", tsfga: true },
     );
   });
 

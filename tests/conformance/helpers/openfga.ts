@@ -84,10 +84,33 @@ export async function fgaWriteModel(
  * come back from a check or a tuple write, and treating it as a
  * refusal there would report a mis-addressed request as a
  * behavioural agreement.
+ *
+ * The four below are the same refusal reached earlier. A malformed
+ * type or relation *name* fails the API's protobuf pattern before
+ * the typesystem runs, so it never reaches
+ * `invalid_authorization_model` — it is still the model refusing
+ * the model, and a helper that re-raised it would report an
+ * assertable refusal as a transport failure.
+ *
+ * Measured against the v1.18.2 container rather than taken from
+ * the finder's list, which named `relation_invalid_pattern` and
+ * `relation_invalid_length`: neither exists in the SDK's
+ * `ErrorCode` enum, and neither is what comes back. A relation
+ * name is reported as **`relations_invalid_pattern`** (plural),
+ * against `^[^:#@\s]{1,50}$`, and a type name as
+ * `type_invalid_pattern`. The pattern carries the length bound, so
+ * an over-long name of either kind is refused as a pattern
+ * mismatch and the two `*_length` codes were not observed; they
+ * are listed because they are the same family and the enum
+ * defines them.
  */
 const MODEL_WRITE_REFUSAL_CODES: ReadonlySet<string> = new Set([
   ErrorCode.InvalidAuthorizationModel,
   ErrorCode.ValidationError,
+  ErrorCode.TypeInvalidPattern,
+  ErrorCode.TypeInvalidLength,
+  ErrorCode.RelationsInvalidPattern,
+  ErrorCode.RelationsTooLong,
 ]);
 
 /**

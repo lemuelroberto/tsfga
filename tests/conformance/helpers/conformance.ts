@@ -374,6 +374,53 @@ export async function expectWriteConformance(
   expect(tsfgaOutcome).toBe(expected);
 }
 
+/** What a tuple write may do. */
+export type WriteOutcome = "accepted" | "refused";
+
+/**
+ * Pin a *write* divergence: assert what **each** engine does with
+ * the same tuple, knowing they do different things.
+ *
+ * The write-path counterpart to `expectPinnedDivergence`, and it
+ * exists for the same reason. `expectWriteConformance` can only
+ * say the two engines agree; a shape where they do not — issue
+ * 282's userset packed into `subjectId` — had to be written out by
+ * hand, which is how a two-sided assertion quietly becomes a
+ * one-sided one when somebody tidies it.
+ *
+ * Refuses to pass on agreement. A pinned write that has stopped
+ * diverging is not a passing test, it is a README paragraph to
+ * delete and an `expectWriteConformance` to write.
+ *
+ * A tsfga refusal counts only when it is a `TsfgaError`, as
+ * everywhere else: a mis-ordered fixture or a dropped connection
+ * reported as a refusal would satisfy the assertion it was meant
+ * to test.
+ */
+export async function expectPinnedWriteDivergence(
+  storeId: string,
+  authorizationModelId: string,
+  tsfgaClient: TsfgaClient,
+  tuple: AddTupleRequest,
+  expected: { openfga: WriteOutcome; tsfga: WriteOutcome },
+): Promise<void> {
+  expect(expected.openfga).not.toBe(expected.tsfga);
+
+  const [tsfgaOutcome, openFgaOutcome] = await Promise.all([
+    tsfgaClient
+      .addTuple(tuple)
+      .then((): WriteOutcome => "accepted")
+      .catch((error: unknown): WriteOutcome => {
+        if (error instanceof TsfgaError) return "refused";
+        throw error;
+      }),
+    fgaWrite(storeId, authorizationModelId, tuple),
+  ]);
+
+  expect(openFgaOutcome).toBe(expected.openfga);
+  expect(tsfgaOutcome).toBe(expected.tsfga);
+}
+
 /**
  * What a fixture told tsfga, captured as it said it.
  *

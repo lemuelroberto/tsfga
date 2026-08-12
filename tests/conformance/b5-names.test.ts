@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { WriteAuthorizationModelRequest } from "@openfga/sdk";
-import { FgaApiValidationError, OpenFgaClient } from "@openfga/sdk";
 import {
   createTsfga,
   type RelationConfig,
@@ -16,33 +15,7 @@ import {
   getDb,
   rollbackTransaction,
 } from "./helpers/db.ts";
-import { fgaCreateStore } from "./helpers/openfga.ts";
-
-/**
- * The refusal codes a *name* defect reports, which
- * `helpers/openfga.ts` does not yet know.
- *
- * `fgaWriteModelOutcome` matches `MODEL_WRITE_REFUSAL_CODES`, and
- * a malformed name is refused by the API's protobuf validation
- * layer before the typesystem ever runs, with its own codes —
- * `type_invalid_pattern`, `relation_invalid_pattern`,
- * `type_invalid_length`, `relation_invalid_length`. They are
- * still the model refusing a model, so this file matches them
- * locally rather than reporting a transport failure.
- *
- * **Helper-change request:** fold these into
- * `MODEL_WRITE_REFUSAL_CODES` and delete this block. It is
- * duplicated here only because helpers are off-limits to a
- * discovery agent.
- */
-const NAME_REFUSAL_CODES: ReadonlySet<string> = new Set([
-  "validation_error",
-  "invalid_authorization_model",
-  "type_invalid_pattern",
-  "type_invalid_length",
-  "relation_invalid_pattern",
-  "relation_invalid_length",
-]);
+import { fgaCreateStore, fgaWriteModelOutcome } from "./helpers/openfga.ts";
 
 /**
  * Type names and relation names, on the model/config write path.
@@ -132,23 +105,12 @@ describe("Identifier names on the model write path", () => {
   async function openfga(
     model: WriteAuthorizationModelRequest,
   ): Promise<"accepted" | "refused"> {
-    const client = new OpenFgaClient({
-      apiUrl: process.env.FGA_API_URL,
-      storeId,
-    });
-    try {
-      await client.writeAuthorizationModel(model);
-      return "accepted";
-    } catch (error) {
-      if (
-        error instanceof FgaApiValidationError &&
-        typeof error.apiErrorCode === "string" &&
-        NAME_REFUSAL_CODES.has(error.apiErrorCode)
-      ) {
-        return "refused";
-      }
-      throw error;
-    }
+    // A name defect is refused by the API's protobuf pattern
+    // before the typesystem runs, with a code of its own; the
+    // shared helper knows those codes, so this file no longer
+    // keeps a copy of them.
+    const outcome = await fgaWriteModelOutcome(storeId, model);
+    return outcome === "accepted" ? "accepted" : "refused";
   }
 
   async function tsfga(
