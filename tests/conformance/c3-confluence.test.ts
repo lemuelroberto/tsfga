@@ -28,6 +28,11 @@ import {
   fgaWriteModel,
   fgaWriteTuples,
 } from "./helpers/openfga.ts";
+import { strictIdStore } from "./helpers/strict-ids.ts";
+import {
+  assertUuidMapCovers,
+  assertUuidMapInjective,
+} from "./helpers/uuid-map.ts";
 
 /**
  * A Confluence-shaped wiki: space -> page tree, with per-page
@@ -54,6 +59,31 @@ import {
  * only the adversarial one.
  */
 
+const uuidMap = new Map<string, string>([
+  ["bob", "00000000-0000-4000-d572-000000000001"],
+  ["platform", "00000000-0000-4000-d572-000000000002"],
+  ["engineering", "00000000-0000-4000-d572-000000000003"],
+  ["carol", "00000000-0000-4000-d572-000000000004"],
+  ["dave", "00000000-0000-4000-d572-000000000005"],
+  ["contractors", "00000000-0000-4000-d572-000000000006"],
+  ["alice", "00000000-0000-4000-d572-000000000007"],
+  ["eng", "00000000-0000-4000-d572-000000000008"],
+  ["public-docs", "00000000-0000-4000-d572-000000000009"],
+  ["home", "00000000-0000-4000-d572-000000000010"],
+  ["guide", "00000000-0000-4000-d572-000000000011"],
+  ["runbook", "00000000-0000-4000-d572-000000000012"],
+  ["appendix", "00000000-0000-4000-d572-000000000013"],
+  ["salary-bands", "00000000-0000-4000-d572-000000000014"],
+  ["changelog", "00000000-0000-4000-d572-000000000015"],
+  ["frank", "00000000-0000-4000-d572-000000000016"],
+]);
+
+function uuid(name: string): string {
+  const id = uuidMap.get(name);
+  if (!id) throw new Error(`No UUID for ${name}`);
+  return id;
+}
+
 describe("Confluence Model Conformance", () => {
   let db: Kysely<DB>;
   let storeId: string;
@@ -75,10 +105,10 @@ describe("Confluence Model Conformance", () => {
       tsfga,
       {
         objectType,
-        objectId,
+        objectId: uuid(objectId),
         relation,
         subjectType: "user_c3f",
-        subjectId: subject,
+        subjectId: uuid(subject),
       },
       expected,
     );
@@ -126,10 +156,13 @@ describe("Confluence Model Conformance", () => {
   }
 
   beforeAll(async () => {
+    assertUuidMapInjective(uuidMap);
+    assertUuidMapCovers("./c3-confluence/tuples.yaml", uuidMap);
+
     db = getDb();
     await beginTransaction(db);
 
-    tsfga = createTsfga(new KyselyTupleStore(db));
+    tsfga = createTsfga(strictIdStore(new KyselyTupleStore(db)));
     fixture = recordFixture(tsfga);
 
     const plain = {
@@ -281,159 +314,159 @@ describe("Confluence Model Conformance", () => {
 
     await add({
       objectType: "group_c3f",
-      objectId: "platform",
+      objectId: uuid("platform"),
       relation: "member",
       subjectType: "user_c3f",
-      subjectId: "bob",
+      subjectId: uuid("bob"),
     });
     await add({
       objectType: "group_c3f",
-      objectId: "engineering",
+      objectId: uuid("engineering"),
       relation: "member",
       subjectType: "group_c3f",
-      subjectId: "platform",
+      subjectId: uuid("platform"),
       subjectRelation: "member",
     });
     await add({
       objectType: "group_c3f",
-      objectId: "engineering",
+      objectId: uuid("engineering"),
       relation: "member",
       subjectType: "user_c3f",
-      subjectId: "carol",
+      subjectId: uuid("carol"),
     });
     await add({
       objectType: "group_c3f",
-      objectId: "contractors",
+      objectId: uuid("contractors"),
       relation: "member",
       subjectType: "user_c3f",
-      subjectId: "dave",
+      subjectId: uuid("dave"),
     });
 
     await add({
       objectType: "space_c3f",
-      objectId: "eng",
+      objectId: uuid("eng"),
       relation: "admin",
       subjectType: "user_c3f",
-      subjectId: "alice",
+      subjectId: uuid("alice"),
     });
     await add({
       objectType: "space_c3f",
-      objectId: "eng",
+      objectId: uuid("eng"),
       relation: "member",
       subjectType: "group_c3f",
-      subjectId: "engineering",
+      subjectId: uuid("engineering"),
       subjectRelation: "member",
     });
     await add({
       objectType: "space_c3f",
-      objectId: "public-docs",
+      objectId: uuid("public-docs"),
       relation: "anonymous",
       subjectType: "user_c3f",
       subjectId: "*",
     });
     await add({
       objectType: "space_c3f",
-      objectId: "public-docs",
+      objectId: uuid("public-docs"),
       relation: "admin",
       subjectType: "user_c3f",
-      subjectId: "alice",
+      subjectId: uuid("alice"),
     });
 
     await add({
       objectType: "page_c3f",
-      objectId: "home",
+      objectId: uuid("home"),
       relation: "space",
       subjectType: "space_c3f",
-      subjectId: "eng",
+      subjectId: uuid("eng"),
     });
     await add({
       objectType: "page_c3f",
-      objectId: "home",
+      objectId: uuid("home"),
       relation: "owner",
       subjectType: "user_c3f",
-      subjectId: "alice",
+      subjectId: uuid("alice"),
     });
     await add({
       objectType: "page_c3f",
-      objectId: "guide",
+      objectId: uuid("guide"),
       relation: "parent",
       subjectType: "page_c3f",
-      subjectId: "home",
+      subjectId: uuid("home"),
     });
     await add({
       objectType: "page_c3f",
-      objectId: "guide",
+      objectId: uuid("guide"),
       relation: "space",
       subjectType: "space_c3f",
-      subjectId: "eng",
+      subjectId: uuid("eng"),
     });
     await add({
       objectType: "page_c3f",
-      objectId: "runbook",
+      objectId: uuid("runbook"),
       relation: "parent",
       subjectType: "page_c3f",
-      subjectId: "guide",
+      subjectId: uuid("guide"),
     });
     await add({
       objectType: "page_c3f",
-      objectId: "runbook",
+      objectId: uuid("runbook"),
       relation: "space",
       subjectType: "space_c3f",
-      subjectId: "eng",
+      subjectId: uuid("eng"),
     });
     await add({
       objectType: "page_c3f",
-      objectId: "runbook",
+      objectId: uuid("runbook"),
       relation: "locked",
       subjectType: "user_c3f",
       subjectId: "*",
     });
     await add({
       objectType: "page_c3f",
-      objectId: "runbook",
+      objectId: uuid("runbook"),
       relation: "restricted_viewer",
       subjectType: "user_c3f",
-      subjectId: "carol",
+      subjectId: uuid("carol"),
     });
     await add({
       objectType: "page_c3f",
-      objectId: "appendix",
+      objectId: uuid("appendix"),
       relation: "parent",
       subjectType: "page_c3f",
-      subjectId: "runbook",
+      subjectId: uuid("runbook"),
     });
     await add({
       objectType: "page_c3f",
-      objectId: "salary-bands",
+      objectId: uuid("salary-bands"),
       relation: "parent",
       subjectType: "page_c3f",
-      subjectId: "home",
+      subjectId: uuid("home"),
     });
     await add({
       objectType: "page_c3f",
-      objectId: "salary-bands",
+      objectId: uuid("salary-bands"),
       relation: "locked",
       subjectType: "group_c3f",
-      subjectId: "contractors",
+      subjectId: uuid("contractors"),
       subjectRelation: "member",
     });
     await add({
       objectType: "space_c3f",
-      objectId: "eng",
+      objectId: uuid("eng"),
       relation: "member",
       subjectType: "user_c3f",
-      subjectId: "dave",
+      subjectId: uuid("dave"),
     });
     await add({
       objectType: "page_c3f",
-      objectId: "changelog",
+      objectId: uuid("changelog"),
       relation: "space",
       subjectType: "space_c3f",
-      subjectId: "public-docs",
+      subjectId: uuid("public-docs"),
     });
     await add({
       objectType: "page_c3f",
-      objectId: "changelog",
+      objectId: uuid("changelog"),
       relation: "comments_disabled",
       subjectType: "user_c3f",
       subjectId: "*",
@@ -448,6 +481,7 @@ describe("Confluence Model Conformance", () => {
       storeId,
       "./c3-confluence/tuples.yaml",
       authorizationModelId,
+      uuidMap,
     );
     fgaClient = new OpenFgaClient({
       apiUrl: process.env.FGA_API_URL,
@@ -579,10 +613,10 @@ describe("Confluence Model Conformance", () => {
       tsfga,
       {
         objectType: "space_c3f",
-        objectId: "eng",
+        objectId: uuid("eng"),
         relation: "member",
         subjectType: "group_c3f",
-        subjectId: "engineering",
+        subjectId: uuid("engineering"),
         subjectRelation: "member",
       },
       true,
@@ -596,10 +630,10 @@ describe("Confluence Model Conformance", () => {
       tsfga,
       {
         objectType: "space_c3f",
-        objectId: "eng",
+        objectId: uuid("eng"),
         relation: "member",
         subjectType: "group_c3f",
-        subjectId: "platform",
+        subjectId: uuid("platform"),
         subjectRelation: "member",
       },
       true,
@@ -613,10 +647,10 @@ describe("Confluence Model Conformance", () => {
       tsfga,
       {
         objectType: "space_c3f",
-        objectId: "eng",
+        objectId: uuid("eng"),
         relation: "member",
         subjectType: "group_c3f",
-        subjectId: "contractors",
+        subjectId: uuid("contractors"),
         subjectRelation: "member",
       },
       false,
@@ -634,9 +668,9 @@ describe("Confluence Model Conformance", () => {
         objectType: "page_c3f",
         relation: "can_view",
         subjectType: "user_c3f",
-        subjectId: "bob",
+        subjectId: uuid("bob"),
       },
-      ["home", "guide", "salary-bands", "changelog"],
+      [uuid("home"), uuid("guide"), uuid("salary-bands"), uuid("changelog")],
     );
   });
 
@@ -649,9 +683,16 @@ describe("Confluence Model Conformance", () => {
         objectType: "page_c3f",
         relation: "can_view",
         subjectType: "user_c3f",
-        subjectId: "carol",
+        subjectId: uuid("carol"),
       },
-      ["home", "guide", "runbook", "appendix", "salary-bands", "changelog"],
+      [
+        uuid("home"),
+        uuid("guide"),
+        uuid("runbook"),
+        uuid("appendix"),
+        uuid("salary-bands"),
+        uuid("changelog"),
+      ],
     );
   });
 
@@ -664,9 +705,9 @@ describe("Confluence Model Conformance", () => {
         objectType: "page_c3f",
         relation: "can_view",
         subjectType: "user_c3f",
-        subjectId: "frank",
+        subjectId: uuid("frank"),
       },
-      ["changelog"],
+      [uuid("changelog")],
     );
   });
 
@@ -679,9 +720,9 @@ describe("Confluence Model Conformance", () => {
         objectType: "space_c3f",
         relation: "can_admin",
         subjectType: "user_c3f",
-        subjectId: "alice",
+        subjectId: uuid("alice"),
       },
-      ["eng", "public-docs"],
+      [uuid("eng"), uuid("public-docs")],
     );
   });
 
@@ -694,10 +735,10 @@ describe("Confluence Model Conformance", () => {
       tsfga,
       {
         objectType: "page_c3f",
-        objectId: "guide",
+        objectId: uuid("guide"),
         relation: "locked",
         subjectType: "group_c3f",
-        subjectId: "contractors",
+        subjectId: uuid("contractors"),
         subjectRelation: "member",
       },
       "accepted",
@@ -711,10 +752,10 @@ describe("Confluence Model Conformance", () => {
       tsfga,
       {
         objectType: "page_c3f",
-        objectId: "appendix",
+        objectId: uuid("appendix"),
         relation: "locked",
         subjectType: "group_c3f",
-        subjectId: "contractors",
+        subjectId: uuid("contractors"),
       },
       "refused",
     );
@@ -727,10 +768,10 @@ describe("Confluence Model Conformance", () => {
       tsfga,
       {
         objectType: "page_c3f",
-        objectId: "guide",
+        objectId: uuid("guide"),
         relation: "comments_disabled",
         subjectType: "user_c3f",
-        subjectId: "alice",
+        subjectId: uuid("alice"),
       },
       "refused",
     );
@@ -743,10 +784,10 @@ describe("Confluence Model Conformance", () => {
       tsfga,
       {
         objectType: "page_c3f",
-        objectId: "appendix",
+        objectId: uuid("appendix"),
         relation: "parent",
         subjectType: "space_c3f",
-        subjectId: "eng",
+        subjectId: uuid("eng"),
       },
       "refused",
     );
@@ -759,10 +800,10 @@ describe("Confluence Model Conformance", () => {
       tsfga,
       {
         objectType: "page_c3f",
-        objectId: "guide",
+        objectId: uuid("guide"),
         relation: "can_view",
         subjectType: "user_c3f",
-        subjectId: "frank",
+        subjectId: uuid("frank"),
       },
       "refused",
     );
@@ -779,10 +820,10 @@ describe("Confluence Model Conformance", () => {
     await can("page_c3f", "home", "can_view", "bob", true);
     await revoke({
       objectType: "group_c3f",
-      objectId: "engineering",
+      objectId: uuid("engineering"),
       relation: "member",
       subjectType: "group_c3f",
-      subjectId: "platform",
+      subjectId: uuid("platform"),
       subjectRelation: "member",
     });
     await can("group_c3f", "engineering", "member", "bob", false);
@@ -794,7 +835,7 @@ describe("Confluence Model Conformance", () => {
   test("39: revoking the lock restores the whole subtree", async () => {
     await revoke({
       objectType: "page_c3f",
-      objectId: "runbook",
+      objectId: uuid("runbook"),
       relation: "locked",
       subjectType: "user_c3f",
       subjectId: "*",
@@ -806,20 +847,20 @@ describe("Confluence Model Conformance", () => {
   test("40: revoking the owner tuple ends the owner's whole tree", async () => {
     await revoke({
       objectType: "page_c3f",
-      objectId: "home",
+      objectId: uuid("home"),
       relation: "owner",
       subjectType: "user_c3f",
-      subjectId: "alice",
+      subjectId: uuid("alice"),
     });
     // alice remains a space admin, so the space arm still reaches
     // home — the owner arm is what went away.
     await can("page_c3f", "home", "can_view", "alice", true);
     await revoke({
       objectType: "space_c3f",
-      objectId: "eng",
+      objectId: uuid("eng"),
       relation: "admin",
       subjectType: "user_c3f",
-      subjectId: "alice",
+      subjectId: uuid("alice"),
     });
     await can("page_c3f", "home", "can_view", "alice", false);
     await can("page_c3f", "appendix", "can_view", "alice", false);

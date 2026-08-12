@@ -1,8 +1,9 @@
 import type {
-  AddTupleRequest,
   CheckTuples,
   CheckTuplesQuery,
   ConditionDefinition,
+  GatedRelationConfig,
+  GatedTuple,
   RelationConfig,
   RemoveTupleRequest,
   Tuple,
@@ -106,7 +107,7 @@ class StrictIdStore implements TupleStore {
     return this.inner.hasTypeDefinition(type);
   }
 
-  insertTuple(tuple: AddTupleRequest): Promise<boolean> {
+  insertTuple(tuple: GatedTuple): Promise<boolean> {
     requireUuid("object", tuple.objectId);
     requireSubject(tuple.subjectId);
     return this.inner.insertTuple(tuple);
@@ -122,7 +123,7 @@ class StrictIdStore implements TupleStore {
     return this.inner.listCandidateObjectIds(objectType);
   }
 
-  upsertRelationConfig(config: RelationConfig): Promise<void> {
+  upsertRelationConfig(config: GatedRelationConfig): Promise<void> {
     return this.inner.upsertRelationConfig(config);
   }
 

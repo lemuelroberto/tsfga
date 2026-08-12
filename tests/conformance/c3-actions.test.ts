@@ -28,6 +28,11 @@ import {
   fgaWriteModel,
   fgaWriteTuples,
 } from "./helpers/openfga.ts";
+import { strictIdStore } from "./helpers/strict-ids.ts";
+import {
+  assertUuidMapCovers,
+  assertUuidMapInjective,
+} from "./helpers/uuid-map.ts";
 
 /**
  * GitHub Actions-shaped deployment gating: org -> repo ->
@@ -68,6 +73,29 @@ import {
 
 const CONDITIONS: ConditionDefinition[] = [];
 
+const uuidMap = new Map<string, string>([
+  ["alice", "00000000-0000-4000-d570-000000000001"],
+  ["bob", "00000000-0000-4000-d570-000000000002"],
+  ["carol", "00000000-0000-4000-d570-000000000003"],
+  ["zoe", "00000000-0000-4000-d570-000000000004"],
+  ["platform", "00000000-0000-4000-d570-000000000010"],
+  ["eng", "00000000-0000-4000-d570-000000000011"],
+  ["acme", "00000000-0000-4000-d570-000000000020"],
+  ["api", "00000000-0000-4000-d570-000000000030"],
+  ["docs", "00000000-0000-4000-d570-000000000031"],
+  ["prod", "00000000-0000-4000-d570-000000000040"],
+  ["staging", "00000000-0000-4000-d570-000000000041"],
+  ["canary", "00000000-0000-4000-d570-000000000042"],
+  ["d1", "00000000-0000-4000-d570-000000000050"],
+  ["d2", "00000000-0000-4000-d570-000000000051"],
+]);
+
+function uuid(name: string): string {
+  const id = uuidMap.get(name);
+  if (!id) throw new Error(`No UUID for ${name}`);
+  return id;
+}
+
 describe("Actions Model Conformance", () => {
   let db: Kysely<DB>;
   let storeId: string;
@@ -92,10 +120,10 @@ describe("Actions Model Conformance", () => {
       tsfga,
       {
         objectType,
-        objectId,
+        objectId: uuid(objectId),
         relation,
         subjectType: "user_c3a",
-        subjectId: subject,
+        subjectId: uuid(subject),
         ...(extra?.context ? { context: extra.context } : {}),
         ...(extra?.contextualTuples
           ? { contextualTuples: extra.contextualTuples }
@@ -106,10 +134,13 @@ describe("Actions Model Conformance", () => {
   }
 
   beforeAll(async () => {
+    assertUuidMapInjective(uuidMap);
+    assertUuidMapCovers("./c3-actions/tuples.yaml", uuidMap);
+
     db = getDb();
     await beginTransaction(db);
 
-    tsfga = createTsfga(new KyselyTupleStore(db));
+    tsfga = createTsfga(strictIdStore(new KyselyTupleStore(db)));
     fixture = recordFixture(tsfga);
 
     for (const condition of CONDITIONS) {
@@ -226,64 +257,64 @@ describe("Actions Model Conformance", () => {
     for (const user of ["alice", "bob"]) {
       await tsfga.addTuple({
         objectType: "team_c3a",
-        objectId: "platform",
+        objectId: uuid("platform"),
         relation: "member",
         subjectType: "user_c3a",
-        subjectId: user,
+        subjectId: uuid(user),
       });
     }
     await tsfga.addTuple({
       objectType: "team_c3a",
-      objectId: "eng",
+      objectId: uuid("eng"),
       relation: "member",
       subjectType: "team_c3a",
-      subjectId: "platform",
+      subjectId: uuid("platform"),
       subjectRelation: "member",
     });
     await tsfga.addTuple({
       objectType: "team_c3a",
-      objectId: "eng",
+      objectId: uuid("eng"),
       relation: "member",
       subjectType: "user_c3a",
-      subjectId: "carol",
+      subjectId: uuid("carol"),
     });
 
     await tsfga.addTuple({
       objectType: "org_c3a",
-      objectId: "acme",
+      objectId: uuid("acme"),
       relation: "admin",
       subjectType: "user_c3a",
-      subjectId: "alice",
+      subjectId: uuid("alice"),
     });
     await tsfga.addTuple({
       objectType: "org_c3a",
-      objectId: "acme",
+      objectId: uuid("acme"),
       relation: "member",
       subjectType: "team_c3a",
-      subjectId: "eng",
+      subjectId: uuid("eng"),
       subjectRelation: "member",
     });
 
     for (const repo of ["api", "docs"]) {
       await tsfga.addTuple({
         objectType: "repo_c3a",
-        objectId: repo,
+        objectId: uuid(repo),
         relation: "org",
         subjectType: "org_c3a",
-        subjectId: "acme",
+        subjectId: uuid("acme"),
       });
     }
     await tsfga.addTuple({
       objectType: "repo_c3a",
-      objectId: "api",
+      objectId: uuid("api"),
       relation: "writer",
       subjectType: "team_c3a",
-      subjectId: "eng",
+      subjectId: uuid("eng"),
       subjectRelation: "member",
     });
     await tsfga.addTuple({
       objectType: "repo_c3a",
-      objectId: "docs",
+      objectId: uuid("docs"),
       relation: "public",
       subjectType: "user_c3a",
       subjectId: "*",
@@ -292,33 +323,33 @@ describe("Actions Model Conformance", () => {
     for (const environment of ["prod", "staging", "canary"]) {
       await tsfga.addTuple({
         objectType: "environment_c3a",
-        objectId: environment,
+        objectId: uuid(environment),
         relation: "repo",
         subjectType: "repo_c3a",
-        subjectId: "api",
+        subjectId: uuid("api"),
       });
     }
     await tsfga.addTuple({
       objectType: "environment_c3a",
-      objectId: "prod",
+      objectId: uuid("prod"),
       relation: "required_reviewer",
       subjectType: "team_c3a",
-      subjectId: "platform",
+      subjectId: uuid("platform"),
       subjectRelation: "member",
     });
     await tsfga.addTuple({
       objectType: "environment_c3a",
-      objectId: "staging",
+      objectId: uuid("staging"),
       relation: "required_reviewer",
       subjectType: "user_c3a",
-      subjectId: "carol",
+      subjectId: uuid("carol"),
     });
     await tsfga.addTuple({
       objectType: "environment_c3a",
-      objectId: "canary",
+      objectId: uuid("canary"),
       relation: "required_reviewer",
       subjectType: "team_c3a",
-      subjectId: "platform",
+      subjectId: uuid("platform"),
       subjectRelation: "member",
     });
     const deployments: Array<[string, string, string]> = [
@@ -328,17 +359,17 @@ describe("Actions Model Conformance", () => {
     for (const [deployment, environment, requester] of deployments) {
       await tsfga.addTuple({
         objectType: "deployment_c3a",
-        objectId: deployment,
+        objectId: uuid(deployment),
         relation: "environment",
         subjectType: "environment_c3a",
-        subjectId: environment,
+        subjectId: uuid(environment),
       });
       await tsfga.addTuple({
         objectType: "deployment_c3a",
-        objectId: deployment,
+        objectId: uuid(deployment),
         relation: "requester",
         subjectType: "user_c3a",
-        subjectId: requester,
+        subjectId: uuid(requester),
       });
     }
 
@@ -351,6 +382,7 @@ describe("Actions Model Conformance", () => {
       storeId,
       "./c3-actions/tuples.yaml",
       authorizationModelId,
+      uuidMap,
     );
   });
 
@@ -439,10 +471,10 @@ describe("Actions Model Conformance", () => {
       tsfga,
       {
         objectType: "environment_c3a",
-        objectId: "prod",
+        objectId: uuid("prod"),
         relation: "required_reviewer",
         subjectType: "team_c3a",
-        subjectId: "platform",
+        subjectId: uuid("platform"),
         subjectRelation: "member",
       },
       true,
@@ -456,10 +488,10 @@ describe("Actions Model Conformance", () => {
       tsfga,
       {
         objectType: "environment_c3a",
-        objectId: "prod",
+        objectId: uuid("prod"),
         relation: "required_reviewer",
         subjectType: "team_c3a",
-        subjectId: "eng",
+        subjectId: uuid("eng"),
         subjectRelation: "member",
       },
       false,
@@ -473,10 +505,10 @@ describe("Actions Model Conformance", () => {
       tsfga,
       {
         objectType: "repo_c3a",
-        objectId: "api",
+        objectId: uuid("api"),
         relation: "can_push",
         subjectType: "team_c3a",
-        subjectId: "eng",
+        subjectId: uuid("eng"),
         subjectRelation: "member",
       },
       true,
@@ -494,9 +526,9 @@ describe("Actions Model Conformance", () => {
         objectType: "repo_c3a",
         relation: "can_read",
         subjectType: "user_c3a",
-        subjectId: "zoe",
+        subjectId: uuid("zoe"),
       },
-      ["docs"],
+      [uuid("docs")],
     );
   });
 
@@ -509,9 +541,9 @@ describe("Actions Model Conformance", () => {
         objectType: "repo_c3a",
         relation: "can_read",
         subjectType: "user_c3a",
-        subjectId: "carol",
+        subjectId: uuid("carol"),
       },
-      ["api", "docs"],
+      [uuid("api"), uuid("docs")],
     );
   });
 
@@ -524,9 +556,9 @@ describe("Actions Model Conformance", () => {
         objectType: "environment_c3a",
         relation: "can_deploy",
         subjectType: "user_c3a",
-        subjectId: "bob",
+        subjectId: uuid("bob"),
       },
-      ["prod", "staging", "canary"],
+      [uuid("prod"), uuid("staging"), uuid("canary")],
     );
   });
 
@@ -539,9 +571,9 @@ describe("Actions Model Conformance", () => {
         objectType: "deployment_c3a",
         relation: "can_approve",
         subjectType: "user_c3a",
-        subjectId: "alice",
+        subjectId: uuid("alice"),
       },
-      ["d1"],
+      [uuid("d1")],
     );
   });
 
@@ -554,7 +586,7 @@ describe("Actions Model Conformance", () => {
         objectType: "deployment_c3a",
         relation: "can_approve",
         subjectType: "user_c3a",
-        subjectId: "bob",
+        subjectId: uuid("bob"),
       },
       [],
     );
@@ -569,10 +601,10 @@ describe("Actions Model Conformance", () => {
       tsfga,
       {
         objectType: "repo_c3a",
-        objectId: "api",
+        objectId: uuid("api"),
         relation: "public",
         subjectType: "user_c3a",
-        subjectId: "zoe",
+        subjectId: uuid("zoe"),
       },
       "refused",
     );
@@ -585,10 +617,10 @@ describe("Actions Model Conformance", () => {
       tsfga,
       {
         objectType: "environment_c3a",
-        objectId: "staging",
+        objectId: uuid("staging"),
         relation: "repo",
         subjectType: "environment_c3a",
-        subjectId: "prod",
+        subjectId: uuid("prod"),
       },
       "refused",
     );
@@ -601,10 +633,10 @@ describe("Actions Model Conformance", () => {
       tsfga,
       {
         objectType: "environment_c3a",
-        objectId: "staging",
+        objectId: uuid("staging"),
         relation: "required_reviewer",
         subjectType: "user_c3a",
-        subjectId: "alice",
+        subjectId: uuid("alice"),
       },
       "accepted",
     );

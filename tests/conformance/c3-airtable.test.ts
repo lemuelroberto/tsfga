@@ -22,6 +22,11 @@ import {
   fgaWriteModel,
   fgaWriteTuples,
 } from "./helpers/openfga.ts";
+import { strictIdStore } from "./helpers/strict-ids.ts";
+import {
+  assertUuidMapCovers,
+  assertUuidMapInjective,
+} from "./helpers/uuid-map.ts";
 
 /**
  * An Airtable/Coda-shaped tree: workspace -> base -> table -> view
@@ -50,6 +55,30 @@ import {
  * table it lives in.
  */
 
+const uuidMap = new Map<string, string>([
+  ["bob", "00000000-0000-4000-d571-000000000001"],
+  ["eng", "00000000-0000-4000-d571-000000000002"],
+  ["carol", "00000000-0000-4000-d571-000000000003"],
+  ["alice", "00000000-0000-4000-d571-000000000004"],
+  ["acme", "00000000-0000-4000-d571-000000000005"],
+  ["crm", "00000000-0000-4000-d571-000000000006"],
+  ["dan", "00000000-0000-4000-d571-000000000007"],
+  ["leads", "00000000-0000-4000-d571-000000000008"],
+  ["archive", "00000000-0000-4000-d571-000000000009"],
+  ["board", "00000000-0000-4000-d571-000000000010"],
+  ["mine", "00000000-0000-4000-d571-000000000011"],
+  ["r1", "00000000-0000-4000-d571-000000000012"],
+  ["r2", "00000000-0000-4000-d571-000000000013"],
+  ["r3", "00000000-0000-4000-d571-000000000014"],
+  ["zoe", "00000000-0000-4000-d571-000000000015"],
+]);
+
+function uuid(name: string): string {
+  const id = uuidMap.get(name);
+  if (!id) throw new Error(`No UUID for ${name}`);
+  return id;
+}
+
 describe("Airtable Model Conformance", () => {
   let db: Kysely<DB>;
   let storeId: string;
@@ -70,20 +99,23 @@ describe("Airtable Model Conformance", () => {
       tsfga,
       {
         objectType,
-        objectId,
+        objectId: uuid(objectId),
         relation,
         subjectType: "user_c3t",
-        subjectId: subject,
+        subjectId: uuid(subject),
       },
       expected,
     );
   }
 
   beforeAll(async () => {
+    assertUuidMapInjective(uuidMap);
+    assertUuidMapCovers("./c3-airtable/tuples.yaml", uuidMap);
+
     db = getDb();
     await beginTransaction(db);
 
-    tsfga = createTsfga(new KyselyTupleStore(db));
+    tsfga = createTsfga(strictIdStore(new KyselyTupleStore(db)));
     fixture = recordFixture(tsfga);
 
     const plain = {
@@ -302,55 +334,55 @@ describe("Airtable Model Conformance", () => {
     for (const user of ["bob", "carol"]) {
       await tsfga.addTuple({
         objectType: "group_c3t",
-        objectId: "eng",
+        objectId: uuid("eng"),
         relation: "member",
         subjectType: "user_c3t",
-        subjectId: user,
+        subjectId: uuid(user),
       });
     }
     await tsfga.addTuple({
       objectType: "workspace_c3t",
-      objectId: "acme",
+      objectId: uuid("acme"),
       relation: "owner",
       subjectType: "user_c3t",
-      subjectId: "alice",
+      subjectId: uuid("alice"),
     });
     await tsfga.addTuple({
       objectType: "workspace_c3t",
-      objectId: "acme",
+      objectId: uuid("acme"),
       relation: "collaborator",
       subjectType: "group_c3t",
-      subjectId: "eng",
+      subjectId: uuid("eng"),
       subjectRelation: "member",
     });
 
     await tsfga.addTuple({
       objectType: "base_c3t",
-      objectId: "crm",
+      objectId: uuid("crm"),
       relation: "workspace",
       subjectType: "workspace_c3t",
-      subjectId: "acme",
+      subjectId: uuid("acme"),
     });
     await tsfga.addTuple({
       objectType: "base_c3t",
-      objectId: "crm",
+      objectId: uuid("crm"),
       relation: "editor",
       subjectType: "user_c3t",
-      subjectId: "dan",
+      subjectId: uuid("dan"),
     });
 
     for (const table of ["leads", "archive"]) {
       await tsfga.addTuple({
         objectType: "table_c3t",
-        objectId: table,
+        objectId: uuid(table),
         relation: "base",
         subjectType: "base_c3t",
-        subjectId: "crm",
+        subjectId: uuid("crm"),
       });
     }
     await tsfga.addTuple({
       objectType: "table_c3t",
-      objectId: "archive",
+      objectId: uuid("archive"),
       relation: "hidden",
       subjectType: "user_c3t",
       subjectId: "*",
@@ -359,25 +391,25 @@ describe("Airtable Model Conformance", () => {
     for (const view of ["board", "mine"]) {
       await tsfga.addTuple({
         objectType: "view_c3t",
-        objectId: view,
+        objectId: uuid(view),
         relation: "table",
         subjectType: "table_c3t",
-        subjectId: "leads",
+        subjectId: uuid("leads"),
       });
     }
     await tsfga.addTuple({
       objectType: "view_c3t",
-      objectId: "mine",
+      objectId: uuid("mine"),
       relation: "locked",
       subjectType: "user_c3t",
       subjectId: "*",
     });
     await tsfga.addTuple({
       objectType: "view_c3t",
-      objectId: "mine",
+      objectId: uuid("mine"),
       relation: "personal_owner",
       subjectType: "user_c3t",
-      subjectId: "carol",
+      subjectId: uuid("carol"),
     });
 
     const records: Array<[string, string]> = [
@@ -388,16 +420,16 @@ describe("Airtable Model Conformance", () => {
     for (const [record, table] of records) {
       await tsfga.addTuple({
         objectType: "record_c3t",
-        objectId: record,
+        objectId: uuid(record),
         relation: "table",
         subjectType: "table_c3t",
-        subjectId: table,
+        subjectId: uuid(table),
       });
     }
     for (const record of ["r1", "r3"]) {
       await tsfga.addTuple({
         objectType: "record_c3t",
-        objectId: record,
+        objectId: uuid(record),
         relation: "open",
         subjectType: "user_c3t",
         subjectId: "*",
@@ -405,10 +437,10 @@ describe("Airtable Model Conformance", () => {
     }
     await tsfga.addTuple({
       objectType: "record_c3t",
-      objectId: "r2",
+      objectId: uuid("r2"),
       relation: "restricted_to",
       subjectType: "group_c3t",
-      subjectId: "eng",
+      subjectId: uuid("eng"),
       subjectRelation: "member",
     });
 
@@ -421,6 +453,7 @@ describe("Airtable Model Conformance", () => {
       storeId,
       "./c3-airtable/tuples.yaml",
       authorizationModelId,
+      uuidMap,
     );
   });
 
@@ -567,10 +600,10 @@ describe("Airtable Model Conformance", () => {
       tsfga,
       {
         objectType: "workspace_c3t",
-        objectId: "acme",
+        objectId: uuid("acme"),
         relation: "can_access",
         subjectType: "group_c3t",
-        subjectId: "eng",
+        subjectId: uuid("eng"),
         subjectRelation: "member",
       },
       true,
@@ -584,10 +617,10 @@ describe("Airtable Model Conformance", () => {
       tsfga,
       {
         objectType: "table_c3t",
-        objectId: "leads",
+        objectId: uuid("leads"),
         relation: "can_view",
         subjectType: "group_c3t",
-        subjectId: "eng",
+        subjectId: uuid("eng"),
         subjectRelation: "member",
       },
       true,
@@ -605,10 +638,10 @@ describe("Airtable Model Conformance", () => {
       tsfga,
       {
         objectType: "table_c3t",
-        objectId: "archive",
+        objectId: uuid("archive"),
         relation: "can_view",
         subjectType: "group_c3t",
-        subjectId: "eng",
+        subjectId: uuid("eng"),
         subjectRelation: "member",
       },
       true,
@@ -626,9 +659,9 @@ describe("Airtable Model Conformance", () => {
         objectType: "record_c3t",
         relation: "can_view",
         subjectType: "user_c3t",
-        subjectId: "bob",
+        subjectId: uuid("bob"),
       },
-      ["r1", "r2"],
+      [uuid("r1"), uuid("r2")],
     );
   });
 
@@ -641,9 +674,9 @@ describe("Airtable Model Conformance", () => {
         objectType: "record_c3t",
         relation: "can_view",
         subjectType: "user_c3t",
-        subjectId: "dan",
+        subjectId: uuid("dan"),
       },
-      ["r1"],
+      [uuid("r1")],
     );
   });
 
@@ -656,9 +689,9 @@ describe("Airtable Model Conformance", () => {
         objectType: "record_c3t",
         relation: "can_edit",
         subjectType: "user_c3t",
-        subjectId: "alice",
+        subjectId: uuid("alice"),
       },
-      ["r1", "r3"],
+      [uuid("r1"), uuid("r3")],
     );
   });
 
@@ -671,9 +704,9 @@ describe("Airtable Model Conformance", () => {
         objectType: "view_c3t",
         relation: "can_view",
         subjectType: "user_c3t",
-        subjectId: "carol",
+        subjectId: uuid("carol"),
       },
-      ["board", "mine"],
+      [uuid("board"), uuid("mine")],
     );
   });
 
@@ -686,9 +719,9 @@ describe("Airtable Model Conformance", () => {
         objectType: "view_c3t",
         relation: "can_view",
         subjectType: "user_c3t",
-        subjectId: "bob",
+        subjectId: uuid("bob"),
       },
-      ["board"],
+      [uuid("board")],
     );
   });
 
@@ -701,9 +734,9 @@ describe("Airtable Model Conformance", () => {
         objectType: "table_c3t",
         relation: "can_edit",
         subjectType: "user_c3t",
-        subjectId: "dan",
+        subjectId: uuid("dan"),
       },
-      ["leads", "archive"],
+      [uuid("leads"), uuid("archive")],
     );
   });
 
@@ -716,7 +749,7 @@ describe("Airtable Model Conformance", () => {
         objectType: "record_c3t",
         relation: "can_view",
         subjectType: "user_c3t",
-        subjectId: "zoe",
+        subjectId: uuid("zoe"),
       },
       [],
     );
@@ -731,10 +764,10 @@ describe("Airtable Model Conformance", () => {
       tsfga,
       {
         objectType: "record_c3t",
-        objectId: "r2",
+        objectId: uuid("r2"),
         relation: "open",
         subjectType: "user_c3t",
-        subjectId: "dan",
+        subjectId: uuid("dan"),
       },
       "refused",
     );
@@ -747,10 +780,10 @@ describe("Airtable Model Conformance", () => {
       tsfga,
       {
         objectType: "view_c3t",
-        objectId: "board",
+        objectId: uuid("board"),
         relation: "personal_owner",
         subjectType: "group_c3t",
-        subjectId: "eng",
+        subjectId: uuid("eng"),
         subjectRelation: "member",
       },
       "refused",
@@ -764,10 +797,10 @@ describe("Airtable Model Conformance", () => {
       tsfga,
       {
         objectType: "table_c3t",
-        objectId: "leads",
+        objectId: uuid("leads"),
         relation: "base",
         subjectType: "view_c3t",
-        subjectId: "board",
+        subjectId: uuid("board"),
       },
       "refused",
     );
@@ -780,10 +813,10 @@ describe("Airtable Model Conformance", () => {
       tsfga,
       {
         objectType: "record_c3t",
-        objectId: "r1",
+        objectId: uuid("r1"),
         relation: "can_view",
         subjectType: "user_c3t",
-        subjectId: "zoe",
+        subjectId: uuid("zoe"),
       },
       "refused",
     );
@@ -796,10 +829,10 @@ describe("Airtable Model Conformance", () => {
       tsfga,
       {
         objectType: "record_c3t",
-        objectId: "r2",
+        objectId: uuid("r2"),
         relation: "restricted_to",
         subjectType: "user_c3t",
-        subjectId: "dan",
+        subjectId: uuid("dan"),
       },
       "accepted",
     );

@@ -27,6 +27,11 @@ import {
   fgaWriteModel,
   fgaWriteTuples,
 } from "./helpers/openfga.ts";
+import { strictIdStore } from "./helpers/strict-ids.ts";
+import {
+  assertUuidMapCovers,
+  assertUuidMapInjective,
+} from "./helpers/uuid-map.ts";
 
 /**
  * A bank ledger with maker-checker and segregation of duties,
@@ -51,6 +56,25 @@ import {
  * which she is only a member of by being its `head`.
  */
 
+const uuidMap = new Map<string, string>([
+  ["alice", "00000000-0000-4000-d574-000000000001"],
+  ["finance", "00000000-0000-4000-d574-000000000002"],
+  ["bob", "00000000-0000-4000-d574-000000000003"],
+  ["carol", "00000000-0000-4000-d574-000000000004"],
+  ["dan", "00000000-0000-4000-d574-000000000005"],
+  ["ops", "00000000-0000-4000-d574-000000000006"],
+  ["t1", "00000000-0000-4000-d574-000000000007"],
+  ["t2", "00000000-0000-4000-d574-000000000008"],
+  ["t3", "00000000-0000-4000-d574-000000000009"],
+  ["erin", "00000000-0000-4000-d574-000000000010"],
+]);
+
+function uuid(name: string): string {
+  const id = uuidMap.get(name);
+  if (!id) throw new Error(`No UUID for ${name}`);
+  return id;
+}
+
 describe("Ledger Model Conformance", () => {
   let db: Kysely<DB>;
   let storeId: string;
@@ -72,10 +96,10 @@ describe("Ledger Model Conformance", () => {
       tsfga,
       {
         objectType,
-        objectId,
+        objectId: uuid(objectId),
         relation,
         subjectType: "user_c3b",
-        subjectId: subject,
+        subjectId: uuid(subject),
       },
       expected,
     );
@@ -113,10 +137,13 @@ describe("Ledger Model Conformance", () => {
   }
 
   beforeAll(async () => {
+    assertUuidMapInjective(uuidMap);
+    assertUuidMapCovers("./c3-ledger/tuples.yaml", uuidMap);
+
     db = getDb();
     await beginTransaction(db);
 
-    tsfga = createTsfga(new KyselyTupleStore(db));
+    tsfga = createTsfga(strictIdStore(new KyselyTupleStore(db)));
     fixture = recordFixture(tsfga);
 
     const plain = {
@@ -248,50 +275,50 @@ describe("Ledger Model Conformance", () => {
     // === Tuples (mirroring ./c3-ledger/tuples.yaml) ===
     await tsfga.addTuple({
       objectType: "department_c3b",
-      objectId: "finance",
+      objectId: uuid("finance"),
       relation: "head",
       subjectType: "user_c3b",
-      subjectId: "alice",
+      subjectId: uuid("alice"),
     });
     for (const user of ["bob", "carol", "dan"]) {
       await tsfga.addTuple({
         objectType: "department_c3b",
-        objectId: "finance",
+        objectId: uuid("finance"),
         relation: "member",
         subjectType: "user_c3b",
-        subjectId: user,
+        subjectId: uuid(user),
       });
     }
 
     await tsfga.addTuple({
       objectType: "account_c3b",
-      objectId: "ops",
+      objectId: uuid("ops"),
       relation: "department",
       subjectType: "department_c3b",
-      subjectId: "finance",
+      subjectId: uuid("finance"),
     });
     await tsfga.addTuple({
       objectType: "account_c3b",
-      objectId: "ops",
+      objectId: uuid("ops"),
       relation: "owner",
       subjectType: "user_c3b",
-      subjectId: "alice",
+      subjectId: uuid("alice"),
     });
     await tsfga.addTuple({
       objectType: "account_c3b",
-      objectId: "ops",
+      objectId: uuid("ops"),
       relation: "viewer",
       subjectType: "user_c3b",
-      subjectId: "bob",
+      subjectId: uuid("bob"),
     });
 
     for (const transfer of ["t1", "t2", "t3"]) {
       await tsfga.addTuple({
         objectType: "transfer_c3b",
-        objectId: transfer,
+        objectId: uuid(transfer),
         relation: "account",
         subjectType: "account_c3b",
-        subjectId: "ops",
+        subjectId: uuid("ops"),
       });
     }
 
@@ -303,39 +330,39 @@ describe("Ledger Model Conformance", () => {
     for (const [transfer, user] of makers) {
       await tsfga.addTuple({
         objectType: "transfer_c3b",
-        objectId: transfer,
+        objectId: uuid(transfer),
         relation: "maker",
         subjectType: "user_c3b",
-        subjectId: user,
+        subjectId: uuid(user),
       });
     }
     for (const transfer of ["t1", "t3"]) {
       await tsfga.addTuple({
         objectType: "transfer_c3b",
-        objectId: transfer,
+        objectId: uuid(transfer),
         relation: "designated_checker",
         subjectType: "department_c3b",
-        subjectId: "finance",
+        subjectId: uuid("finance"),
         subjectRelation: "member",
       });
     }
     await tsfga.addTuple({
       objectType: "transfer_c3b",
-      objectId: "t1",
+      objectId: uuid("t1"),
       relation: "auditor",
       subjectType: "user_c3b",
-      subjectId: "dan",
+      subjectId: uuid("dan"),
     });
     await tsfga.addTuple({
       objectType: "transfer_c3b",
-      objectId: "t2",
+      objectId: uuid("t2"),
       relation: "designated_checker",
       subjectType: "user_c3b",
-      subjectId: "bob",
+      subjectId: uuid("bob"),
     });
     await tsfga.addTuple({
       objectType: "transfer_c3b",
-      objectId: "t2",
+      objectId: uuid("t2"),
       relation: "compliance_hold",
       subjectType: "user_c3b",
       subjectId: "*",
@@ -350,6 +377,7 @@ describe("Ledger Model Conformance", () => {
       storeId,
       "./c3-ledger/tuples.yaml",
       authorizationModelId,
+      uuidMap,
     );
     fgaClient = new OpenFgaClient({
       apiUrl: process.env.FGA_API_URL,
@@ -492,10 +520,10 @@ describe("Ledger Model Conformance", () => {
       tsfga,
       {
         objectType: "transfer_c3b",
-        objectId: "t1",
+        objectId: uuid("t1"),
         relation: "eligible_checker",
         subjectType: "department_c3b",
-        subjectId: "finance",
+        subjectId: uuid("finance"),
         subjectRelation: "member",
       },
       true,
@@ -509,10 +537,10 @@ describe("Ledger Model Conformance", () => {
       tsfga,
       {
         objectType: "transfer_c3b",
-        objectId: "t2",
+        objectId: uuid("t2"),
         relation: "can_approve",
         subjectType: "department_c3b",
-        subjectId: "finance",
+        subjectId: uuid("finance"),
         subjectRelation: "member",
       },
       false,
@@ -530,9 +558,9 @@ describe("Ledger Model Conformance", () => {
         objectType: "transfer_c3b",
         relation: "can_approve",
         subjectType: "user_c3b",
-        subjectId: "alice",
+        subjectId: uuid("alice"),
       },
-      ["t1", "t3"],
+      [uuid("t1"), uuid("t3")],
     );
   });
 
@@ -545,9 +573,9 @@ describe("Ledger Model Conformance", () => {
         objectType: "transfer_c3b",
         relation: "can_approve",
         subjectType: "user_c3b",
-        subjectId: "bob",
+        subjectId: uuid("bob"),
       },
-      ["t3"],
+      [uuid("t3")],
     );
   });
 
@@ -560,7 +588,7 @@ describe("Ledger Model Conformance", () => {
         objectType: "transfer_c3b",
         relation: "can_post",
         subjectType: "user_c3b",
-        subjectId: "dan",
+        subjectId: uuid("dan"),
       },
       [],
     );
@@ -575,9 +603,9 @@ describe("Ledger Model Conformance", () => {
         objectType: "transfer_c3b",
         relation: "dual_control",
         subjectType: "user_c3b",
-        subjectId: "alice",
+        subjectId: uuid("alice"),
       },
-      ["t1", "t3"],
+      [uuid("t1"), uuid("t3")],
     );
   });
 
@@ -590,10 +618,10 @@ describe("Ledger Model Conformance", () => {
       tsfga,
       {
         objectType: "transfer_c3b",
-        objectId: "t3",
+        objectId: uuid("t3"),
         relation: "compliance_hold",
         subjectType: "user_c3b",
-        subjectId: "alice",
+        subjectId: uuid("alice"),
       },
       "refused",
     );
@@ -606,10 +634,10 @@ describe("Ledger Model Conformance", () => {
       tsfga,
       {
         objectType: "transfer_c3b",
-        objectId: "t3",
+        objectId: uuid("t3"),
         relation: "maker",
         subjectType: "department_c3b",
-        subjectId: "finance",
+        subjectId: uuid("finance"),
         subjectRelation: "member",
       },
       "refused",
@@ -623,10 +651,10 @@ describe("Ledger Model Conformance", () => {
       tsfga,
       {
         objectType: "transfer_c3b",
-        objectId: "t3",
+        objectId: uuid("t3"),
         relation: "eligible_checker",
         subjectType: "user_c3b",
-        subjectId: "erin",
+        subjectId: uuid("erin"),
       },
       "refused",
     );
@@ -639,10 +667,10 @@ describe("Ledger Model Conformance", () => {
       tsfga,
       {
         objectType: "transfer_c3b",
-        objectId: "t3",
+        objectId: uuid("t3"),
         relation: "auditor",
         subjectType: "user_c3b",
-        subjectId: "bob",
+        subjectId: uuid("bob"),
       },
       "accepted",
     );
@@ -659,10 +687,10 @@ describe("Ledger Model Conformance", () => {
   test("38: revoking the audit restores posting", async () => {
     await revoke({
       objectType: "transfer_c3b",
-      objectId: "t1",
+      objectId: uuid("t1"),
       relation: "auditor",
       subjectType: "user_c3b",
-      subjectId: "dan",
+      subjectId: uuid("dan"),
     });
     await can("transfer_c3b", "t1", "can_post", "dan", true);
   });
@@ -670,7 +698,7 @@ describe("Ledger Model Conformance", () => {
   test("39: revoking the hold restores approval", async () => {
     await revoke({
       objectType: "transfer_c3b",
-      objectId: "t2",
+      objectId: uuid("t2"),
       relation: "compliance_hold",
       subjectType: "user_c3b",
       subjectId: "*",
@@ -683,10 +711,10 @@ describe("Ledger Model Conformance", () => {
     await can("transfer_c3b", "t1", "can_approve", "bob", false);
     await revoke({
       objectType: "transfer_c3b",
-      objectId: "t1",
+      objectId: uuid("t1"),
       relation: "maker",
       subjectType: "user_c3b",
-      subjectId: "bob",
+      subjectId: uuid("bob"),
     });
     await can("transfer_c3b", "t1", "eligible_checker", "bob", true);
     await can("transfer_c3b", "t1", "can_approve", "bob", true);
@@ -696,10 +724,10 @@ describe("Ledger Model Conformance", () => {
   test("41: revoking the checker userset empties the relation", async () => {
     await revoke({
       objectType: "transfer_c3b",
-      objectId: "t1",
+      objectId: uuid("t1"),
       relation: "designated_checker",
       subjectType: "department_c3b",
-      subjectId: "finance",
+      subjectId: uuid("finance"),
       subjectRelation: "member",
     });
     await can("transfer_c3b", "t1", "can_approve", "alice", false);

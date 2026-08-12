@@ -24,6 +24,11 @@ import {
   fgaWriteModel,
   fgaWriteTuples,
 } from "./helpers/openfga.ts";
+import { strictIdStore } from "./helpers/strict-ids.ts";
+import {
+  assertUuidMapCovers,
+  assertUuidMapInjective,
+} from "./helpers/uuid-map.ts";
 
 /**
  * A Snowflake-shaped warehouse: account -> database -> schema ->
@@ -60,6 +65,63 @@ function role(index: number): string {
   return `r${String(index).padStart(2, "0")}`;
 }
 
+const uuidMap = new Map<string, string>([
+  ["r02", "00000000-0000-4000-d575-000000000001"],
+  ["r01", "00000000-0000-4000-d575-000000000002"],
+  ["r03", "00000000-0000-4000-d575-000000000003"],
+  ["r04", "00000000-0000-4000-d575-000000000004"],
+  ["r05", "00000000-0000-4000-d575-000000000005"],
+  ["r06", "00000000-0000-4000-d575-000000000006"],
+  ["r07", "00000000-0000-4000-d575-000000000007"],
+  ["r08", "00000000-0000-4000-d575-000000000008"],
+  ["r09", "00000000-0000-4000-d575-000000000009"],
+  ["r10", "00000000-0000-4000-d575-000000000010"],
+  ["r11", "00000000-0000-4000-d575-000000000011"],
+  ["r12", "00000000-0000-4000-d575-000000000012"],
+  ["r13", "00000000-0000-4000-d575-000000000013"],
+  ["r14", "00000000-0000-4000-d575-000000000014"],
+  ["r15", "00000000-0000-4000-d575-000000000015"],
+  ["r16", "00000000-0000-4000-d575-000000000016"],
+  ["r17", "00000000-0000-4000-d575-000000000017"],
+  ["r18", "00000000-0000-4000-d575-000000000018"],
+  ["r19", "00000000-0000-4000-d575-000000000019"],
+  ["r20", "00000000-0000-4000-d575-000000000020"],
+  ["r21", "00000000-0000-4000-d575-000000000021"],
+  ["r22", "00000000-0000-4000-d575-000000000022"],
+  ["r23", "00000000-0000-4000-d575-000000000023"],
+  ["r24", "00000000-0000-4000-d575-000000000024"],
+  ["r25", "00000000-0000-4000-d575-000000000025"],
+  ["r26", "00000000-0000-4000-d575-000000000026"],
+  ["r27", "00000000-0000-4000-d575-000000000027"],
+  ["r28", "00000000-0000-4000-d575-000000000028"],
+  ["r29", "00000000-0000-4000-d575-000000000029"],
+  ["r30", "00000000-0000-4000-d575-000000000030"],
+  ["alice", "00000000-0000-4000-d575-000000000031"],
+  ["bob", "00000000-0000-4000-d575-000000000032"],
+  ["analyst", "00000000-0000-4000-d575-000000000033"],
+  ["carol", "00000000-0000-4000-d575-000000000034"],
+  ["engineer", "00000000-0000-4000-d575-000000000035"],
+  ["dan", "00000000-0000-4000-d575-000000000036"],
+  ["sysadmin", "00000000-0000-4000-d575-000000000037"],
+  ["acme", "00000000-0000-4000-d575-000000000038"],
+  ["prod", "00000000-0000-4000-d575-000000000039"],
+  ["dev", "00000000-0000-4000-d575-000000000040"],
+  ["sales", "00000000-0000-4000-d575-000000000041"],
+  ["hr", "00000000-0000-4000-d575-000000000042"],
+  ["scratch", "00000000-0000-4000-d575-000000000043"],
+  ["orders", "00000000-0000-4000-d575-000000000044"],
+  ["customers", "00000000-0000-4000-d575-000000000045"],
+  ["salaries", "00000000-0000-4000-d575-000000000046"],
+  ["notes", "00000000-0000-4000-d575-000000000047"],
+  ["erin", "00000000-0000-4000-d575-000000000048"],
+]);
+
+function uuid(name: string): string {
+  const id = uuidMap.get(name);
+  if (!id) throw new Error(`No UUID for ${name}`);
+  return id;
+}
+
 describe("Snowflake Model Conformance", () => {
   let db: Kysely<DB>;
   let storeId: string;
@@ -80,20 +142,23 @@ describe("Snowflake Model Conformance", () => {
       tsfga,
       {
         objectType,
-        objectId,
+        objectId: uuid(objectId),
         relation,
         subjectType: "user_c3s",
-        subjectId: subject,
+        subjectId: uuid(subject),
       },
       expected,
     );
   }
 
   beforeAll(async () => {
+    assertUuidMapInjective(uuidMap);
+    assertUuidMapCovers("./c3-snowflake/tuples.yaml", uuidMap);
+
     db = getDb();
     await beginTransaction(db);
 
-    tsfga = createTsfga(new KyselyTupleStore(db));
+    tsfga = createTsfga(strictIdStore(new KyselyTupleStore(db)));
     fixture = recordFixture(tsfga);
 
     const plain = {
@@ -274,10 +339,10 @@ describe("Snowflake Model Conformance", () => {
     for (let i = 1; i < CHAIN; i++) {
       await tsfga.addTuple({
         objectType: "role_c3s",
-        objectId: role(i),
+        objectId: uuid(role(i)),
         relation: "parent",
         subjectType: "role_c3s",
-        subjectId: role(i + 1),
+        subjectId: uuid(role(i + 1)),
       });
     }
     const members: Array<[string, string]> = [
@@ -289,10 +354,10 @@ describe("Snowflake Model Conformance", () => {
     for (const [roleId, user] of members) {
       await tsfga.addTuple({
         objectType: "role_c3s",
-        objectId: roleId,
+        objectId: uuid(roleId),
         relation: "direct_member",
         subjectType: "user_c3s",
-        subjectId: user,
+        subjectId: uuid(user),
       });
     }
 
@@ -305,10 +370,10 @@ describe("Snowflake Model Conformance", () => {
     ) =>
       tsfga.addTuple({
         objectType,
-        objectId,
+        objectId: uuid(objectId),
         relation,
         subjectType: "role_c3s",
-        subjectId: roleId,
+        subjectId: uuid(roleId),
         subjectRelation: "member",
       });
 
@@ -317,10 +382,10 @@ describe("Snowflake Model Conformance", () => {
     for (const database of ["prod", "dev"]) {
       await tsfga.addTuple({
         objectType: "database_c3s",
-        objectId: database,
+        objectId: uuid(database),
         relation: "account",
         subjectType: "account_c3s",
-        subjectId: "acme",
+        subjectId: uuid("acme"),
       });
     }
     await grant("database_c3s", "prod", "usage_grant", "analyst");
@@ -334,10 +399,10 @@ describe("Snowflake Model Conformance", () => {
     for (const [schema, database] of schemas) {
       await tsfga.addTuple({
         objectType: "schema_c3s",
-        objectId: schema,
+        objectId: uuid(schema),
         relation: "database",
         subjectType: "database_c3s",
-        subjectId: database,
+        subjectId: uuid(database),
       });
     }
     await grant("schema_c3s", "sales", "usage_grant", "analyst");
@@ -353,19 +418,19 @@ describe("Snowflake Model Conformance", () => {
     for (const [table, schema] of tables) {
       await tsfga.addTuple({
         objectType: "table_c3s",
-        objectId: table,
+        objectId: uuid(table),
         relation: "schema",
         subjectType: "schema_c3s",
-        subjectId: schema,
+        subjectId: uuid(schema),
       });
     }
     await grant("table_c3s", "orders", "select_grant", "analyst");
     await tsfga.addTuple({
       objectType: "table_c3s",
-      objectId: "customers",
+      objectId: uuid("customers"),
       relation: "select_grant",
       subjectType: "user_c3s",
-      subjectId: "bob",
+      subjectId: uuid("bob"),
     });
     await grant("table_c3s", "customers", "masked", "analyst");
     await grant("table_c3s", "salaries", "select_grant", "analyst");
@@ -380,6 +445,7 @@ describe("Snowflake Model Conformance", () => {
       storeId,
       "./c3-snowflake/tuples.yaml",
       authorizationModelId,
+      uuidMap,
     );
   });
 
@@ -531,10 +597,10 @@ describe("Snowflake Model Conformance", () => {
       tsfga,
       {
         objectType: "role_c3s",
-        objectId: role(1),
+        objectId: uuid(role(1)),
         relation: "member",
         subjectType: "user_c3s",
-        subjectId: "erin",
+        subjectId: uuid("erin"),
       },
       { openfga: false, tsfga: "refused" },
     );
@@ -551,9 +617,9 @@ describe("Snowflake Model Conformance", () => {
         objectType: "table_c3s",
         relation: "can_select",
         subjectType: "user_c3s",
-        subjectId: "bob",
+        subjectId: uuid("bob"),
       },
-      ["orders", "customers"],
+      [uuid("orders"), uuid("customers")],
     );
   });
 
@@ -566,9 +632,9 @@ describe("Snowflake Model Conformance", () => {
         objectType: "table_c3s",
         relation: "can_select",
         subjectType: "user_c3s",
-        subjectId: "carol",
+        subjectId: uuid("carol"),
       },
-      ["orders", "customers", "salaries"],
+      [uuid("orders"), uuid("customers"), uuid("salaries")],
     );
   });
 
@@ -581,9 +647,9 @@ describe("Snowflake Model Conformance", () => {
         objectType: "table_c3s",
         relation: "can_select",
         subjectType: "user_c3s",
-        subjectId: "dan",
+        subjectId: uuid("dan"),
       },
-      ["orders", "customers", "salaries", "notes"],
+      [uuid("orders"), uuid("customers"), uuid("salaries"), uuid("notes")],
     );
   });
 
@@ -596,9 +662,9 @@ describe("Snowflake Model Conformance", () => {
         objectType: "database_c3s",
         relation: "can_use",
         subjectType: "user_c3s",
-        subjectId: "bob",
+        subjectId: uuid("bob"),
       },
-      ["prod"],
+      [uuid("prod")],
     );
   });
 
@@ -611,9 +677,9 @@ describe("Snowflake Model Conformance", () => {
         objectType: "table_c3s",
         relation: "can_select_pii",
         subjectType: "user_c3s",
-        subjectId: "bob",
+        subjectId: uuid("bob"),
       },
-      ["orders"],
+      [uuid("orders")],
     );
   });
 
@@ -626,10 +692,10 @@ describe("Snowflake Model Conformance", () => {
       tsfga,
       {
         objectType: "table_c3s",
-        objectId: "orders",
+        objectId: uuid("orders"),
         relation: "can_select",
         subjectType: "role_c3s",
-        subjectId: "analyst",
+        subjectId: uuid("analyst"),
         subjectRelation: "member",
       },
       true,
@@ -643,10 +709,10 @@ describe("Snowflake Model Conformance", () => {
       tsfga,
       {
         objectType: "table_c3s",
-        objectId: "notes",
+        objectId: uuid("notes"),
         relation: "can_select",
         subjectType: "role_c3s",
-        subjectId: "engineer",
+        subjectId: uuid("engineer"),
         subjectRelation: "member",
       },
       false,
@@ -662,10 +728,10 @@ describe("Snowflake Model Conformance", () => {
       tsfga,
       {
         objectType: "table_c3s",
-        objectId: "orders",
+        objectId: uuid("orders"),
         relation: "select_grant",
         subjectType: "user_c3s",
-        subjectId: "erin",
+        subjectId: uuid("erin"),
       },
       "accepted",
     );
@@ -678,10 +744,10 @@ describe("Snowflake Model Conformance", () => {
       tsfga,
       {
         objectType: "database_c3s",
-        objectId: "dev",
+        objectId: uuid("dev"),
         relation: "usage_grant",
         subjectType: "user_c3s",
-        subjectId: "erin",
+        subjectId: uuid("erin"),
       },
       "refused",
     );
@@ -694,10 +760,10 @@ describe("Snowflake Model Conformance", () => {
       tsfga,
       {
         objectType: "database_c3s",
-        objectId: "dev",
+        objectId: uuid("dev"),
         relation: "usage_grant",
         subjectType: "role_c3s",
-        subjectId: "analyst",
+        subjectId: uuid("analyst"),
       },
       "refused",
     );
@@ -710,10 +776,10 @@ describe("Snowflake Model Conformance", () => {
       tsfga,
       {
         objectType: "schema_c3s",
-        objectId: "sales",
+        objectId: uuid("sales"),
         relation: "database",
         subjectType: "table_c3s",
-        subjectId: "orders",
+        subjectId: uuid("orders"),
       },
       "refused",
     );
@@ -726,10 +792,10 @@ describe("Snowflake Model Conformance", () => {
       tsfga,
       {
         objectType: "table_c3s",
-        objectId: "orders",
+        objectId: uuid("orders"),
         relation: "can_select",
         subjectType: "user_c3s",
-        subjectId: "erin",
+        subjectId: uuid("erin"),
       },
       "refused",
     );

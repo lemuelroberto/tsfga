@@ -28,6 +28,11 @@ import {
   fgaWriteModel,
   fgaWriteTuples,
 } from "./helpers/openfga.ts";
+import { strictIdStore } from "./helpers/strict-ids.ts";
+import {
+  assertUuidMapCovers,
+  assertUuidMapInjective,
+} from "./helpers/uuid-map.ts";
 
 /**
  * An electronic health record with consent, clearance and
@@ -79,13 +84,33 @@ const AFTER_EXPIRY = "2026-03-01T13:00:00Z";
 function breakGlass(subject: string): AddTupleRequest {
   return {
     objectType: "record_c3h",
-    objectId: "r1",
+    objectId: uuid("r1"),
     relation: "break_glass",
     subjectType: "user_c3h",
-    subjectId: subject,
+    subjectId: uuid(subject),
     conditionName: "break_glass_window_c3h",
     conditionContext: { expires_at: EXPIRES_AT },
   };
+}
+
+const uuidMap = new Map<string, string>([
+  ["dra", "00000000-0000-4000-d573-000000000001"],
+  ["cardiology", "00000000-0000-4000-d573-000000000002"],
+  ["drb", "00000000-0000-4000-d573-000000000003"],
+  ["drc", "00000000-0000-4000-d573-000000000004"],
+  ["research", "00000000-0000-4000-d573-000000000005"],
+  ["p1", "00000000-0000-4000-d573-000000000006"],
+  ["dre", "00000000-0000-4000-d573-000000000007"],
+  ["p2", "00000000-0000-4000-d573-000000000008"],
+  ["r1", "00000000-0000-4000-d573-000000000009"],
+  ["r2", "00000000-0000-4000-d573-000000000010"],
+  ["drz", "00000000-0000-4000-d573-000000000011"],
+]);
+
+function uuid(name: string): string {
+  const id = uuidMap.get(name);
+  if (!id) throw new Error(`No UUID for ${name}`);
+  return id;
 }
 
 describe("EHR Model Conformance", () => {
@@ -112,10 +137,10 @@ describe("EHR Model Conformance", () => {
       tsfga,
       {
         objectType,
-        objectId,
+        objectId: uuid(objectId),
         relation,
         subjectType: "user_c3h",
-        subjectId: subject,
+        subjectId: uuid(subject),
         ...(extra?.context ? { context: extra.context } : {}),
         ...(extra?.contextualTuples
           ? { contextualTuples: extra.contextualTuples }
@@ -126,10 +151,13 @@ describe("EHR Model Conformance", () => {
   }
 
   beforeAll(async () => {
+    assertUuidMapInjective(uuidMap);
+    assertUuidMapCovers("./c3-ehr/tuples.yaml", uuidMap);
+
     db = getDb();
     await beginTransaction(db);
 
-    tsfga = createTsfga(new KyselyTupleStore(db));
+    tsfga = createTsfga(strictIdStore(new KyselyTupleStore(db)));
     fixture = recordFixture(tsfga);
 
     for (const condition of CONDITIONS) {
@@ -278,109 +306,114 @@ describe("EHR Model Conformance", () => {
     for (const [department, user] of departments) {
       await tsfga.addTuple({
         objectType: "department_c3h",
-        objectId: department,
+        objectId: uuid(department),
         relation: "member",
         subjectType: "user_c3h",
-        subjectId: user,
+        subjectId: uuid(user),
       });
     }
 
     await tsfga.addTuple({
       objectType: "patient_c3h",
-      objectId: "p1",
+      objectId: uuid("p1"),
       relation: "primary_physician",
       subjectType: "user_c3h",
-      subjectId: "dra",
+      subjectId: uuid("dra"),
     });
     for (const patient of ["p1", "p2"]) {
       await tsfga.addTuple({
         objectType: "patient_c3h",
-        objectId: patient,
+        objectId: uuid(patient),
         relation: "care_team",
         subjectType: "department_c3h",
-        subjectId: "cardiology",
+        subjectId: uuid("cardiology"),
         subjectRelation: "member",
       });
     }
     await tsfga.addTuple({
       objectType: "patient_c3h",
-      objectId: "p1",
+      objectId: uuid("p1"),
       relation: "care_team",
       subjectType: "user_c3h",
-      subjectId: "drc",
+      subjectId: uuid("drc"),
     });
     await tsfga.addTuple({
       objectType: "patient_c3h",
-      objectId: "p1",
+      objectId: uuid("p1"),
       relation: "opted_out",
       subjectType: "department_c3h",
-      subjectId: "research",
+      subjectId: uuid("research"),
       subjectRelation: "member",
     });
     await tsfga.addTuple({
       objectType: "patient_c3h",
-      objectId: "p1",
+      objectId: uuid("p1"),
       relation: "emergency_responder",
       subjectType: "user_c3h",
-      subjectId: "dre",
+      subjectId: uuid("dre"),
       conditionName: "active_emergency_c3h",
     });
     await tsfga.addTuple({
       objectType: "patient_c3h",
-      objectId: "p2",
+      objectId: uuid("p2"),
       relation: "primary_physician",
       subjectType: "user_c3h",
-      subjectId: "drb",
+      subjectId: uuid("drb"),
     });
 
     await tsfga.addTuple({
       objectType: "record_c3h",
-      objectId: "r1",
+      objectId: uuid("r1"),
       relation: "patient",
       subjectType: "patient_c3h",
-      subjectId: "p1",
+      subjectId: uuid("p1"),
     });
     await tsfga.addTuple({
       objectType: "record_c3h",
-      objectId: "r1",
+      objectId: uuid("r1"),
       relation: "author",
       subjectType: "user_c3h",
-      subjectId: "dra",
+      subjectId: uuid("dra"),
     });
     await tsfga.addTuple({
       objectType: "record_c3h",
-      objectId: "r1",
+      objectId: uuid("r1"),
       relation: "sensitivity_locked",
       subjectType: "user_c3h",
       subjectId: "*",
     });
     await tsfga.addTuple({
       objectType: "record_c3h",
-      objectId: "r1",
+      objectId: uuid("r1"),
       relation: "clearance_reader",
       subjectType: "user_c3h",
-      subjectId: "drc",
+      subjectId: uuid("drc"),
       conditionName: "min_clearance_c3h",
       conditionContext: { required: 5 },
     });
     await tsfga.addTuple({
       objectType: "record_c3h",
-      objectId: "r2",
+      objectId: uuid("r2"),
       relation: "patient",
       subjectType: "patient_c3h",
-      subjectId: "p2",
+      subjectId: uuid("p2"),
     });
     await tsfga.addTuple({
       objectType: "record_c3h",
-      objectId: "r2",
+      objectId: uuid("r2"),
       relation: "author",
       subjectType: "user_c3h",
-      subjectId: "drb",
+      subjectId: uuid("drb"),
     });
 
     storeId = await fgaCreateStore("c3-ehr");
     authorizationModelId = await fgaWriteModel(storeId, "./c3-ehr/model.dsl");
-    await fgaWriteTuples(storeId, "./c3-ehr/tuples.yaml", authorizationModelId);
+    await fgaWriteTuples(
+      storeId,
+      "./c3-ehr/tuples.yaml",
+      authorizationModelId,
+      uuidMap,
+    );
   });
 
   afterAll(async () => {
@@ -565,10 +598,10 @@ describe("EHR Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "record_c3h",
-          objectId: "r1",
+          objectId: uuid("r1"),
           relation: "break_glass",
           subjectType: "department_c3h",
-          subjectId: "cardiology",
+          subjectId: uuid("cardiology"),
           subjectRelation: "member",
           conditionName: "break_glass_window_c3h",
           conditionContext: { expires_at: EXPIRES_AT },
@@ -582,10 +615,10 @@ describe("EHR Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "patient_c3h",
-          objectId: "p2",
+          objectId: uuid("p2"),
           relation: "care_team",
           subjectType: "user_c3h",
-          subjectId: "drz",
+          subjectId: uuid("drz"),
         },
       ],
     });
@@ -596,17 +629,17 @@ describe("EHR Model Conformance", () => {
       contextualTuples: [
         {
           objectType: "patient_c3h",
-          objectId: "p2",
+          objectId: uuid("p2"),
           relation: "care_team",
           subjectType: "user_c3h",
-          subjectId: "drz",
+          subjectId: uuid("drz"),
         },
         {
           objectType: "patient_c3h",
-          objectId: "p2",
+          objectId: uuid("p2"),
           relation: "opted_out",
           subjectType: "user_c3h",
-          subjectId: "drz",
+          subjectId: uuid("drz"),
         },
       ],
     });
@@ -638,9 +671,9 @@ describe("EHR Model Conformance", () => {
         objectType: "record_c3h",
         relation: "can_view",
         subjectType: "user_c3h",
-        subjectId: "dra",
+        subjectId: uuid("dra"),
       },
-      ["r1", "r2"],
+      [uuid("r1"), uuid("r2")],
     );
   });
 
@@ -653,9 +686,9 @@ describe("EHR Model Conformance", () => {
         objectType: "record_c3h",
         relation: "can_view_sensitive",
         subjectType: "user_c3h",
-        subjectId: "dra",
+        subjectId: uuid("dra"),
       },
-      ["r2"],
+      [uuid("r2")],
     );
   });
 
@@ -668,7 +701,7 @@ describe("EHR Model Conformance", () => {
         objectType: "record_c3h",
         relation: "can_view",
         subjectType: "user_c3h",
-        subjectId: "drc",
+        subjectId: uuid("drc"),
       },
       [],
     );
@@ -683,10 +716,10 @@ describe("EHR Model Conformance", () => {
         objectType: "patient_c3h",
         relation: "can_view",
         subjectType: "user_c3h",
-        subjectId: "dre",
+        subjectId: uuid("dre"),
         context: EMERGENCY,
       },
-      ["p1"],
+      [uuid("p1")],
     );
   });
 
@@ -699,11 +732,11 @@ describe("EHR Model Conformance", () => {
         objectType: "record_c3h",
         relation: "can_view_restricted",
         subjectType: "user_c3h",
-        subjectId: "drb",
+        subjectId: uuid("drb"),
         context: { now: BEFORE_EXPIRY },
         contextualTuples: [breakGlass("drb")],
       },
-      ["r1", "r2"],
+      [uuid("r1"), uuid("r2")],
     );
   });
 
@@ -716,10 +749,10 @@ describe("EHR Model Conformance", () => {
       tsfga,
       {
         objectType: "record_c3h",
-        objectId: "r2",
+        objectId: uuid("r2"),
         relation: "break_glass",
         subjectType: "user_c3h",
-        subjectId: "drz",
+        subjectId: uuid("drz"),
       },
       "refused",
     );
@@ -732,10 +765,10 @@ describe("EHR Model Conformance", () => {
       tsfga,
       {
         objectType: "record_c3h",
-        objectId: "r2",
+        objectId: uuid("r2"),
         relation: "break_glass",
         subjectType: "user_c3h",
-        subjectId: "drz",
+        subjectId: uuid("drz"),
         conditionName: "break_glass_window_c3h",
         conditionContext: { expires_at: EXPIRES_AT },
       },
@@ -750,10 +783,10 @@ describe("EHR Model Conformance", () => {
       tsfga,
       {
         objectType: "record_c3h",
-        objectId: "r2",
+        objectId: uuid("r2"),
         relation: "sensitivity_locked",
         subjectType: "user_c3h",
-        subjectId: "drz",
+        subjectId: uuid("drz"),
       },
       "refused",
     );
@@ -766,10 +799,10 @@ describe("EHR Model Conformance", () => {
       tsfga,
       {
         objectType: "record_c3h",
-        objectId: "r2",
+        objectId: uuid("r2"),
         relation: "clearance_reader",
         subjectType: "user_c3h",
-        subjectId: "drz",
+        subjectId: uuid("drz"),
         conditionName: "break_glass_window_c3h",
       },
       "refused",
@@ -783,10 +816,10 @@ describe("EHR Model Conformance", () => {
       tsfga,
       {
         objectType: "patient_c3h",
-        objectId: "p2",
+        objectId: uuid("p2"),
         relation: "opted_out",
         subjectType: "department_c3h",
-        subjectId: "research",
+        subjectId: uuid("research"),
         subjectRelation: "member",
       },
       "accepted",

@@ -30,6 +30,11 @@ import {
   fgaWriteModel,
   fgaWriteTuples,
 } from "./helpers/openfga.ts";
+import { strictIdStore } from "./helpers/strict-ids.ts";
+import {
+  assertUuidMapCovers,
+  assertUuidMapInjective,
+} from "./helpers/uuid-map.ts";
 
 /**
  * A Terraform-Cloud/Vault-shaped model where the conditions carry
@@ -94,6 +99,29 @@ const CONDITIONS: ConditionDefinition[] = [
 const IN_HOURS = "2026-01-01T10:00:00Z";
 const OUT_OF_HOURS = "2026-01-01T20:00:00Z";
 
+const uuidMap = new Map<string, string>([
+  ["alice", "00000000-0000-4000-d576-000000000001"],
+  ["acme", "00000000-0000-4000-d576-000000000002"],
+  ["bob", "00000000-0000-4000-d576-000000000003"],
+  ["carol", "00000000-0000-4000-d576-000000000004"],
+  ["platform", "00000000-0000-4000-d576-000000000005"],
+  ["dev", "00000000-0000-4000-d576-000000000006"],
+  ["dan", "00000000-0000-4000-d576-000000000007"],
+  ["erin", "00000000-0000-4000-d576-000000000008"],
+  ["prod", "00000000-0000-4000-d576-000000000009"],
+  ["staging", "00000000-0000-4000-d576-000000000010"],
+  ["run1", "00000000-0000-4000-d576-000000000011"],
+  ["run2", "00000000-0000-4000-d576-000000000012"],
+  ["db-creds", "00000000-0000-4000-d576-000000000013"],
+  ["frank", "00000000-0000-4000-d576-000000000014"],
+]);
+
+function uuid(name: string): string {
+  const id = uuidMap.get(name);
+  if (!id) throw new Error(`No UUID for ${name}`);
+  return id;
+}
+
 describe("Vault Model Conformance", () => {
   let db: Kysely<DB>;
   let storeId: string;
@@ -115,10 +143,10 @@ describe("Vault Model Conformance", () => {
       tsfga,
       {
         objectType,
-        objectId,
+        objectId: uuid(objectId),
         relation,
         subjectType: "user_c3v",
-        subjectId: subject,
+        subjectId: uuid(subject),
         ...(context ? { context } : {}),
       },
       expected,
@@ -126,10 +154,13 @@ describe("Vault Model Conformance", () => {
   }
 
   beforeAll(async () => {
+    assertUuidMapInjective(uuidMap);
+    assertUuidMapCovers("./c3-vault/tuples.yaml", uuidMap);
+
     db = getDb();
     await beginTransaction(db);
 
-    tsfga = createTsfga(new KyselyTupleStore(db));
+    tsfga = createTsfga(strictIdStore(new KyselyTupleStore(db)));
     fixture = recordFixture(tsfga);
 
     for (const condition of CONDITIONS) {
@@ -315,116 +346,116 @@ describe("Vault Model Conformance", () => {
     // === Tuples (mirroring ./c3-vault/tuples.yaml) ===
     await tsfga.addTuple({
       objectType: "org_c3v",
-      objectId: "acme",
+      objectId: uuid("acme"),
       relation: "owner",
       subjectType: "user_c3v",
-      subjectId: "alice",
+      subjectId: uuid("alice"),
     });
     for (const user of ["bob", "carol"]) {
       await tsfga.addTuple({
         objectType: "org_c3v",
-        objectId: "acme",
+        objectId: uuid("acme"),
         relation: "member",
         subjectType: "user_c3v",
-        subjectId: user,
+        subjectId: uuid(user),
       });
     }
 
     await tsfga.addTuple({
       objectType: "team_c3v",
-      objectId: "platform",
+      objectId: uuid("platform"),
       relation: "org",
       subjectType: "org_c3v",
-      subjectId: "acme",
+      subjectId: uuid("acme"),
     });
     for (const user of ["bob", "carol"]) {
       await tsfga.addTuple({
         objectType: "team_c3v",
-        objectId: "platform",
+        objectId: uuid("platform"),
         relation: "member",
         subjectType: "user_c3v",
-        subjectId: user,
+        subjectId: uuid(user),
       });
     }
     await tsfga.addTuple({
       objectType: "team_c3v",
-      objectId: "platform",
+      objectId: uuid("platform"),
       relation: "maintainer",
       subjectType: "user_c3v",
-      subjectId: "bob",
+      subjectId: uuid("bob"),
     });
 
     for (const workspace of ["dev", "prod", "staging"]) {
       await tsfga.addTuple({
         objectType: "workspace_c3v",
-        objectId: workspace,
+        objectId: uuid(workspace),
         relation: "org",
         subjectType: "org_c3v",
-        subjectId: "acme",
+        subjectId: uuid("acme"),
       });
     }
     await tsfga.addTuple({
       objectType: "workspace_c3v",
-      objectId: "dev",
+      objectId: uuid("dev"),
       relation: "reader",
       subjectType: "team_c3v",
-      subjectId: "platform",
+      subjectId: uuid("platform"),
       subjectRelation: "member",
     });
     await tsfga.addTuple({
       objectType: "workspace_c3v",
-      objectId: "dev",
+      objectId: uuid("dev"),
       relation: "reader",
       subjectType: "user_c3v",
-      subjectId: "dan",
+      subjectId: uuid("dan"),
       conditionName: "ip_allowed_c3v",
     });
     await tsfga.addTuple({
       objectType: "workspace_c3v",
-      objectId: "dev",
+      objectId: uuid("dev"),
       relation: "reader",
       subjectType: "user_c3v",
-      subjectId: "erin",
+      subjectId: uuid("erin"),
       conditionName: "ip_allowed_c3v",
       conditionContext: { ip: "10.0.4.7" },
     });
 
     await tsfga.addTuple({
       objectType: "workspace_c3v",
-      objectId: "prod",
+      objectId: uuid("prod"),
       relation: "writer",
       subjectType: "team_c3v",
-      subjectId: "platform",
+      subjectId: uuid("platform"),
       subjectRelation: "member",
       conditionName: "business_hours_c3v",
     });
     await tsfga.addTuple({
       objectType: "workspace_c3v",
-      objectId: "prod",
+      objectId: uuid("prod"),
       relation: "admin",
       subjectType: "team_c3v",
-      subjectId: "platform",
+      subjectId: uuid("platform"),
       subjectRelation: "maintainer",
     });
     await tsfga.addTuple({
       objectType: "workspace_c3v",
-      objectId: "prod",
+      objectId: uuid("prod"),
       relation: "deployer",
       subjectType: "user_c3v",
-      subjectId: "carol",
+      subjectId: uuid("carol"),
       conditionName: "env_tagged_c3v",
     });
 
     await tsfga.addTuple({
       objectType: "workspace_c3v",
-      objectId: "staging",
+      objectId: uuid("staging"),
       relation: "writer",
       subjectType: "user_c3v",
-      subjectId: "carol",
+      subjectId: uuid("carol"),
     });
     await tsfga.addTuple({
       objectType: "workspace_c3v",
-      objectId: "staging",
+      objectId: uuid("staging"),
       relation: "locked",
       subjectType: "user_c3v",
       subjectId: "*",
@@ -432,57 +463,57 @@ describe("Vault Model Conformance", () => {
 
     await tsfga.addTuple({
       objectType: "run_c3v",
-      objectId: "run1",
+      objectId: uuid("run1"),
       relation: "workspace",
       subjectType: "workspace_c3v",
-      subjectId: "prod",
+      subjectId: uuid("prod"),
     });
     await tsfga.addTuple({
       objectType: "run_c3v",
-      objectId: "run1",
+      objectId: uuid("run1"),
       relation: "requester",
       subjectType: "user_c3v",
-      subjectId: "carol",
+      subjectId: uuid("carol"),
     });
     await tsfga.addTuple({
       objectType: "run_c3v",
-      objectId: "run1",
+      objectId: uuid("run1"),
       relation: "approver",
       subjectType: "user_c3v",
-      subjectId: "bob",
+      subjectId: uuid("bob"),
       conditionName: "under_budget_c3v",
       conditionContext: { budget: 100 },
     });
     await tsfga.addTuple({
       objectType: "run_c3v",
-      objectId: "run2",
+      objectId: uuid("run2"),
       relation: "workspace",
       subjectType: "workspace_c3v",
-      subjectId: "staging",
+      subjectId: uuid("staging"),
     });
     await tsfga.addTuple({
       objectType: "run_c3v",
-      objectId: "run2",
+      objectId: uuid("run2"),
       relation: "approver",
       subjectType: "user_c3v",
-      subjectId: "carol",
+      subjectId: uuid("carol"),
       conditionName: "under_budget_c3v",
       conditionContext: { budget: 100 },
     });
 
     await tsfga.addTuple({
       objectType: "secret_c3v",
-      objectId: "db-creds",
+      objectId: uuid("db-creds"),
       relation: "workspace",
       subjectType: "workspace_c3v",
-      subjectId: "prod",
+      subjectId: uuid("prod"),
     });
     await tsfga.addTuple({
       objectType: "secret_c3v",
-      objectId: "db-creds",
+      objectId: uuid("db-creds"),
       relation: "path_reader",
       subjectType: "user_c3v",
-      subjectId: "carol",
+      subjectId: uuid("carol"),
       conditionName: "path_allowed_c3v",
       conditionContext: { allowed: ["secret/db", "secret/cache"] },
     });
@@ -493,6 +524,7 @@ describe("Vault Model Conformance", () => {
       storeId,
       "./c3-vault/tuples.yaml",
       authorizationModelId,
+      uuidMap,
     );
   });
 
@@ -719,10 +751,10 @@ describe("Vault Model Conformance", () => {
         objectType: "workspace_c3v",
         relation: "can_read",
         subjectType: "user_c3v",
-        subjectId: "bob",
+        subjectId: uuid("bob"),
         context: { now: IN_HOURS },
       },
-      ["dev", "prod"],
+      [uuid("dev"), uuid("prod")],
     );
   });
 
@@ -735,10 +767,10 @@ describe("Vault Model Conformance", () => {
         objectType: "workspace_c3v",
         relation: "can_read",
         subjectType: "user_c3v",
-        subjectId: "carol",
+        subjectId: uuid("carol"),
         context: { now: OUT_OF_HOURS },
       },
-      ["dev", "staging"],
+      [uuid("dev"), uuid("staging")],
     );
   });
 
@@ -751,10 +783,10 @@ describe("Vault Model Conformance", () => {
         objectType: "workspace_c3v",
         relation: "can_read",
         subjectType: "user_c3v",
-        subjectId: "dan",
+        subjectId: uuid("dan"),
         context: { ip: "10.0.4.7" },
       },
-      ["dev"],
+      [uuid("dev")],
     );
   });
 
@@ -772,7 +804,7 @@ describe("Vault Model Conformance", () => {
       objectType: "workspace_c3v",
       relation: "can_read",
       subjectType: "user_c3v",
-      subjectId: subject,
+      subjectId: uuid(subject),
       ...(context ? { context } : {}),
     };
     const mine = await tsfga
@@ -837,9 +869,9 @@ describe("Vault Model Conformance", () => {
         objectType: "workspace_c3v",
         relation: "can_read",
         subjectType: "user_c3v",
-        subjectId: "carol",
+        subjectId: uuid("carol"),
       },
-      { openfga: "refused", tsfga: ["dev", "staging"] },
+      { openfga: "refused", tsfga: [uuid("dev"), uuid("staging")] },
     );
   });
 
@@ -856,10 +888,10 @@ describe("Vault Model Conformance", () => {
         objectType: "workspace_c3v",
         relation: "can_read",
         subjectType: "user_c3v",
-        subjectId: "carol",
+        subjectId: uuid("carol"),
         context: { now: IN_HOURS },
       },
-      ["dev", "staging", "prod"],
+      [uuid("dev"), uuid("staging"), uuid("prod")],
     );
   });
 
@@ -872,10 +904,10 @@ describe("Vault Model Conformance", () => {
       tsfga,
       {
         objectType: "workspace_c3v",
-        objectId: "prod",
+        objectId: uuid("prod"),
         relation: "reader",
         subjectType: "user_c3v",
-        subjectId: "frank",
+        subjectId: uuid("frank"),
       },
       "refused",
     );
@@ -888,10 +920,10 @@ describe("Vault Model Conformance", () => {
       tsfga,
       {
         objectType: "workspace_c3v",
-        objectId: "prod",
+        objectId: uuid("prod"),
         relation: "reader",
         subjectType: "user_c3v",
-        subjectId: "frank",
+        subjectId: uuid("frank"),
         conditionName: "ip_allowed_c3v",
       },
       "accepted",
@@ -905,10 +937,10 @@ describe("Vault Model Conformance", () => {
       tsfga,
       {
         objectType: "workspace_c3v",
-        objectId: "dev",
+        objectId: uuid("dev"),
         relation: "reader",
         subjectType: "user_c3v",
-        subjectId: "frank",
+        subjectId: uuid("frank"),
         conditionName: "env_tagged_c3v",
       },
       "refused",
@@ -922,10 +954,10 @@ describe("Vault Model Conformance", () => {
       tsfga,
       {
         objectType: "workspace_c3v",
-        objectId: "prod",
+        objectId: uuid("prod"),
         relation: "reader",
         subjectType: "team_c3v",
-        subjectId: "platform",
+        subjectId: uuid("platform"),
         subjectRelation: "member",
         conditionName: "ip_allowed_c3v",
       },
@@ -940,10 +972,10 @@ describe("Vault Model Conformance", () => {
       tsfga,
       {
         objectType: "workspace_c3v",
-        objectId: "dev",
+        objectId: uuid("dev"),
         relation: "writer",
         subjectType: "team_c3v",
-        subjectId: "platform",
+        subjectId: uuid("platform"),
         subjectRelation: "member",
       },
       "refused",
@@ -957,10 +989,10 @@ describe("Vault Model Conformance", () => {
       tsfga,
       {
         objectType: "workspace_c3v",
-        objectId: "dev",
+        objectId: uuid("dev"),
         relation: "reader",
         subjectType: "user_c3v",
-        subjectId: "frank",
+        subjectId: uuid("frank"),
         conditionName: "no_such_condition_c3v",
       },
       "refused",
