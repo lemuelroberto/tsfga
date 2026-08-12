@@ -381,7 +381,7 @@ describe("KyselyTupleStore", () => {
       // The parts the query excluded stay empty even though rows
       // matching them exist.
       expect(direct).toBeNull();
-      expect(wildcard).toBeNull();
+      expect(wildcard).toHaveLength(0);
     });
 
     test("findTuplesByRelation returns all tuples", async () => {
@@ -780,7 +780,7 @@ describe("KyselyTupleStore", () => {
         wildcardRefs: null,
         usersetRefs: [],
       });
-      expect(wildcard).toBeNull();
+      expect(wildcard).toHaveLength(0);
     });
 
     test("a nil-UUID grant and a wildcard grant coexist", async () => {
@@ -1005,14 +1005,16 @@ describe("KyselyTupleStore", () => {
                       t.subjectRelation === null,
                   ) ?? null)
                 : null,
+              // A list since the wildcard slot became one; the
+              // unique index means it holds 0 or 1 rows here.
               wildcard: includeWildcard
-                ? (all.find(
+                ? all.filter(
                     (t) =>
                       t.subjectType === "user" &&
                       t.subjectId === "*" &&
                       t.subjectRelation === null,
-                  ) ?? null)
-                : null,
+                  )
+                : [],
               usersets: includeUsersets
                 ? all.filter((t) => t.subjectRelation !== null)
                 : [],
@@ -1060,7 +1062,7 @@ describe("KyselyTupleStore", () => {
       });
 
       expect(result.direct?.subjectId).toBe("*");
-      expect(result.wildcard).toBeNull();
+      expect(result.wildcard).toHaveLength(0);
     });
   });
 
@@ -1230,7 +1232,7 @@ describe("KyselyTupleStore", () => {
       expect(result.direct).not.toBeNull();
       expect(result.direct?.subjectId).toBe(uuid2);
       expect(result.direct?.subjectRelation).toBeNull();
-      expect(result.wildcard).toBeNull();
+      expect(result.wildcard).toHaveLength(0);
       expect(result.usersets).toHaveLength(1);
       expect(result.usersets[0]?.subjectRelation).toBe("member");
     });
@@ -1256,8 +1258,8 @@ describe("KyselyTupleStore", () => {
       });
 
       expect(result.direct).toBeNull();
-      expect(result.wildcard).not.toBeNull();
-      expect(result.wildcard?.subjectId).toBe("*");
+      expect(result.wildcard).toHaveLength(1);
+      expect(result.wildcard[0]?.subjectId).toBe("*");
     });
 
     test("rowToTuple carries every field", async () => {

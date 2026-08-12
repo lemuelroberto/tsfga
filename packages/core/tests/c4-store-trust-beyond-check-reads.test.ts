@@ -329,7 +329,7 @@ describe("duplicate and repeated rows", () => {
     const honest = store.findCheckTuples.bind(store);
     store.findCheckTuples = async (query) =>
       query.objectType === "doc"
-        ? { direct: null, wildcard: null, usersets: [row, row, row] }
+        ? { direct: null, wildcard: [], usersets: [row, row, row] }
         : honest(query);
 
     expect(
@@ -382,7 +382,7 @@ describe("duplicate and repeated rows", () => {
     const honest = store.findCheckTuples.bind(store);
     store.findCheckTuples = async (query) =>
       query.objectType === "doc"
-        ? { direct: null, wildcard: null, usersets: [row, row] }
+        ? { direct: null, wildcard: [], usersets: [row, row] }
         : honest(query);
 
     expect(

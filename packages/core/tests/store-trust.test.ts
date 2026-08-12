@@ -85,7 +85,7 @@ class RogueStore extends MockTupleStore {
     this.lastQuery = query;
     return {
       direct: null,
-      wildcard: null,
+      wildcard: [],
       usersets: [],
       ...this.reply,
     };
@@ -133,7 +133,7 @@ describe("a store cannot widen what the model admits", () => {
 
     test("a wildcard tuple on a relation without `type:*` denies", async () => {
       store = new RogueStore({
-        wildcard: makeTuple({ ...request, subjectId: "*" }),
+        wildcard: [makeTuple({ ...request, subjectId: "*" })],
       });
 
       expect(
@@ -192,7 +192,7 @@ describe("a store cannot widen what the model admits", () => {
       // The classifier bug the reference adapter's shape invites:
       // alice's tuple filed as the wildcard would grant everyone.
       store = new RogueStore({
-        wildcard: makeTuple({ ...request, subjectId: "alice" }),
+        wildcard: [makeTuple({ ...request, subjectId: "alice" })],
       });
       store.relationConfigs.push(
         makeConfig({
@@ -325,7 +325,7 @@ describe("a store cannot widen what the model admits", () => {
 
     test("a wildcard grant still grants", async () => {
       store = new RogueStore({
-        wildcard: makeTuple({ ...request, subjectId: "*" }),
+        wildcard: [makeTuple({ ...request, subjectId: "*" })],
       });
 
       expect(
@@ -414,11 +414,13 @@ describe("the clamp matches the condition, not just the shape", () => {
 
   test("a conditioned wildcard row where only the bare wildcard is admitted", async () => {
     store = new RogueStore({
-      wildcard: makeTuple({
-        ...request,
-        subjectId: "*",
-        conditionName: "weekday_only",
-      }),
+      wildcard: [
+        makeTuple({
+          ...request,
+          subjectId: "*",
+          conditionName: "weekday_only",
+        }),
+      ],
     });
 
     expect(

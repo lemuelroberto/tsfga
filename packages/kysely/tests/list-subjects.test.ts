@@ -156,6 +156,26 @@ describe("listSubjects over the adapter", () => {
         { type: "user", wildcard: true },
       ]),
     );
+    // Both definitions exist because `listSubjects` now evaluates
+    // an admitted row's condition rather than only matching its
+    // name. `other_cond` is never evaluated — carol's row is
+    // dropped by the ref match, which is what this test is about —
+    // but a fixture naming a condition the store does not define is
+    // a state no model write can produce, and leaving it that way
+    // would make an undefined-condition refusal look like the ref
+    // filter working.
+    for (const name of ["weekday_only", "other_cond"]) {
+      await store.upsertConditionDefinition({
+        name,
+        expression: 'day != "sun"',
+        parameters: { day: "string" },
+      });
+    }
+    // Satisfies `weekday_only`, so alice's row is reported for the
+    // reason under test: its ref is admitted. The context is the
+    // only thing keeping the row alive, which the second assertion
+    // below pins.
+    const weekday = { context: { day: "mon" } };
 
     // The condition is not part of a tuple's natural key, so each
     // spelling needs its own subject: written on one, the last
@@ -188,8 +208,20 @@ describe("listSubjects over the adapter", () => {
     }
 
     expect(
-      subjects(await client.listSubjects("document", doc, "editor")),
+      subjects(await client.listSubjects("document", doc, "editor", weekday)),
     ).toEqual(["user:*", `user:${alice}`]);
+
+    // The ref match and the condition's value are two gates, not
+    // one: alice's ref is admitted either way, and a context the
+    // condition does not hold under drops her row where the bare
+    // wildcard's survives.
+    expect(
+      subjects(
+        await client.listSubjects("document", doc, "editor", {
+          context: { day: "sun" },
+        }),
+      ),
+    ).toEqual(["user:*"]);
 
     // The wildcard is admitted bare here, so a conditioned wildcard
     // is a different ref and is not. It needs its own object for
@@ -204,7 +236,9 @@ describe("listSubjects over the adapter", () => {
     });
 
     expect(
-      subjects(await client.listSubjects("document", otherDoc, "editor")),
+      subjects(
+        await client.listSubjects("document", otherDoc, "editor", weekday),
+      ),
     ).toEqual([]);
   });
 

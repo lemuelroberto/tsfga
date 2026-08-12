@@ -120,13 +120,24 @@ export interface CheckTuplesQuery {
  * algorithm treats "the model forbids it" and "nothing is stored"
  * identically, so nothing downstream has to tell them apart.
  *
- * `usersets` is `readonly` because the check algorithm aliases a
- * shared empty array for the excluded case rather than allocating
- * one per node.
+ * `usersets` and `wildcard` are `readonly` because the check
+ * algorithm aliases a shared empty array for the excluded case
+ * rather than allocating one per node.
+ *
+ * **`direct` is one row; `wildcard` is a list.** The direct probe
+ * is an exact-subject lookup, and a contextual tuple on that key
+ * *replaces* the stored row — upstream's `ReadUserTuple`. Every
+ * other read is a scan, and contextual rows are *concatenated*
+ * with the stored ones, no dedup — upstream's `Read`
+ * (`pkg/storage/storagewrappers/combinedtuplereader.go:63-103`).
+ * One slot cannot hold both a stored `user:*` row and a
+ * contextual one carrying a different condition context, and both
+ * have to be evaluated: a caller must not be able to cancel a
+ * stored grant, or a stored denial, by shadowing its key.
  */
 export interface CheckTuples {
   direct: Tuple | null;
-  wildcard: Tuple | null;
+  wildcard: readonly Tuple[];
   usersets: readonly Tuple[];
 }
 

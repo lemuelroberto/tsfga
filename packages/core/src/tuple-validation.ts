@@ -2,6 +2,7 @@ import { coerceContext } from "./conditions.ts";
 import {
   type ConditionalTupleCause,
   InvalidConditionalTupleError,
+  InvalidRequestContextError,
   InvalidSubjectTypeError,
   RelationConfigNotFoundError,
   TsfgaError,
@@ -444,28 +445,73 @@ function hasControlChar(value: string): boolean {
  * and nulls carry no characters and are skipped, exactly as the
  * `switch` on the value kind skips them.
  *
- * Returns the offending string so the refusal can name it, or
- * `null`.
+ * Returns the offending string so the refusal can name it, with
+ * the keys leading to it outermost first, or `null`.
+ *
+ * The path names keys only: a list contributes no element to it,
+ * so a bad string inside `claims.roles` reports
+ * `["claims", "roles"]` whether it is the value or an element of
+ * it. Upstream reports no path at all, so this is additional
+ * rather than divergent.
  */
-function forbiddenChars(value: unknown): string | null {
+interface ForbiddenChar {
+  readonly path: readonly string[];
+  readonly value: string;
+}
+
+function forbiddenChars(
+  value: unknown,
+  path: readonly string[] = [],
+): ForbiddenChar | null {
   if (typeof value === "string") {
-    return hasControlChar(value) ? value : null;
+    return hasControlChar(value) ? { path, value } : null;
   }
   if (Array.isArray(value)) {
     for (const item of value) {
-      const found = forbiddenChars(item);
+      const found = forbiddenChars(item, path);
       if (found !== null) return found;
     }
     return null;
   }
   if (typeof value === "object" && value !== null) {
     for (const [key, nested] of Object.entries(value)) {
-      if (hasControlChar(key)) return key;
-      const found = forbiddenChars(nested);
+      if (hasControlChar(key)) return { path, value: key };
+      const found = forbiddenChars(nested, [...path, key]);
       if (found !== null) return found;
     }
   }
   return null;
+}
+
+/**
+ * The same walk over a *request's* context, which upstream
+ * validates before it resolves anything.
+ *
+ * `CheckCommand` runs `validation.ValidateStruct(requestCtx)`
+ * ahead of the resolver (`pkg/server/commands/check_command.go:197`,
+ * `internal/validation/validation.go:402-440`), so a control
+ * character in the request context is a request-level refusal and
+ * not a denial: the check never happens. tsfga applied the rule to
+ * a tuple's context and nowhere else, which let a caller put a
+ * value through the gate that upstream rejects outright.
+ *
+ * A tuple's context is *not* validated here — it is validated by
+ * `validateTupleWrite`, which names the tuple it belongs to.
+ *
+ * @throws InvalidRequestContextError when a key or a string value,
+ *   at any depth, holds a Unicode control character.
+ */
+export function validateRequestContext(
+  context: Record<string, unknown> | undefined,
+): void {
+  if (context === undefined) return;
+  const found = forbiddenChars(context);
+  if (found === null) return;
+  throw new InvalidRequestContextError(
+    "context contains forbidden characters",
+    found.path,
+    found.value,
+  );
 }
 
 /** What only the write path applies, on top of the shared gate. */

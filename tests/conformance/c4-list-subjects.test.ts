@@ -35,11 +35,16 @@ describe("listSubjects: conditions, wildcards and mixed shapes", () => {
     await teardownBatch(db);
   });
 
-  async function mine(object: string, relation: string): Promise<string[]> {
+  async function mine(
+    object: string,
+    relation: string,
+    context?: Record<string, unknown>,
+  ): Promise<string[]> {
     const rows = await tsfgaClient.listSubjects(
       "doc_c4",
       uuid(object),
       relation,
+      { context },
     );
     return rows.map(renderSubject).sort();
   }
@@ -98,8 +103,8 @@ describe("listSubjects: conditions, wildcards and mixed shapes", () => {
     // d3 carries two rows on one relation: alice's is conditioned
     // on `weekday_c4`, bob's is not.
 
-    test("tsfga reports the conditioned row without evaluating it", async () => {
-      expect(await mine("d3", "direct_viewer")).toEqual([
+    test("tsfga reports the conditioned row when the context satisfies it", async () => {
+      expect(await mine("d3", "direct_viewer", { day: "mon" })).toEqual([
         `user_c4:${uuid("alice")}`,
         `user_c4:${uuid("bob")}`,
       ]);
@@ -114,11 +119,10 @@ describe("listSubjects: conditions, wildcards and mixed shapes", () => {
     });
 
     test("GAP-363: upstream drops it when the context does not", async () => {
-      // The one direction that matters: tsfga names a subject
-      // upstream, given the same request, does not. tsfga's answer
-      // is context-free by construction — `listSubjects` takes no
-      // context at all — so the row it reports is one a `check`
-      // under this context would deny.
+      // The one direction that matters: a subject tsfga names that
+      // upstream, given the same request, does not. Both sides are
+      // asked under `{ day: "tue" }`, so a row tsfga reports here
+      // is one a `check` under this context would deny.
       const upstream = await theirs(
         "d3",
         "direct_viewer",
@@ -126,14 +130,17 @@ describe("listSubjects: conditions, wildcards and mixed shapes", () => {
         { day: "tue" },
       );
       expect(upstream).toEqual([`user_c4:${uuid("bob")}`]);
-      expect(await mine("d3", "direct_viewer")).toEqual(upstream);
+      expect(await mine("d3", "direct_viewer", { day: "tue" })).toEqual(
+        upstream,
+      );
     });
 
     test("GAP-363: with no context at all, upstream refuses", async () => {
       // `failed to evaluate relationship condition: 'weekday_c4' —
-      // tuple ... is missing context parameters '[day]'`. tsfga
-      // cannot reach that outcome: `listSubjects` has nowhere to
-      // put a context, so it never evaluates and always answers.
+      // tuple ... is missing context parameters '[day]'`. Both
+      // sides are asked with no context, so a conditioned row on
+      // the relation is unevaluable and the call must refuse
+      // rather than report the row unevaluated.
       const upstream = await theirs("d3", "direct_viewer", [
         { type: "user_c4" },
       ])

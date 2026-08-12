@@ -531,6 +531,23 @@ export function createCheckScope(
     );
   }
 
+  const maxDepth = options.maxDepth ?? 25;
+  // The same predicate, for the same reasons. `NaN` is the one
+  // that matters here: `depth >= NaN` is false at every node, so a
+  // caller who was trying to set a budget silently removes it, and
+  // this file's contract says exhaustion must never resolve
+  // `false`. A fraction admits one dispatch more than it states
+  // (`depth >= 2.5` first holds at 3), and `0` — like a negative —
+  // is a budget no check can ever run inside.
+  if (
+    !(maxDepth >= 1) ||
+    (maxDepth !== Number.POSITIVE_INFINITY && !Number.isInteger(maxDepth))
+  ) {
+    throw new TsfgaError(
+      `maxDepth must be a positive integer or Infinity, got ${maxDepth}`,
+    );
+  }
+
   // Cache for relation configs and condition definitions: static
   // per model, but read at every node. A store that already caches
   // is passed through: `checkMany` builds a scope per context group
@@ -541,7 +558,7 @@ export function createCheckScope(
 
   return {
     store: caching,
-    maxDepth: options.maxDepth ?? 25,
+    maxDepth,
     maxBreadth,
     memo: new Map(),
     inflight: new Map(),
@@ -1216,7 +1233,7 @@ async function readNodeTuples(
  * Stand-in for a node whose reads the config rules out entirely.
  * Never mutated, so aliasing it across nodes is safe.
  */
-const NO_TUPLES: CheckTuples = { direct: null, wildcard: null, usersets: [] };
+const NO_TUPLES: CheckTuples = { direct: null, wildcard: [], usersets: [] };
 
 /**
  * Discard anything in a store's reply that the query did not ask
@@ -1316,13 +1333,26 @@ function clampToQuery(
       : reply.usersets.filter(isUserset);
   }
 
+  // Every element, not the first one. The wildcard slot became a
+  // list so a contextual row can join a stored one instead of
+  // replacing it, and the clamp is the reason that shape is not a
+  // way in: each row is matched against the same four fields the
+  // single slot was, so a row the model does not admit is dropped
+  // however it arrived.
+  const isWildcard = (tuple: Tuple): boolean =>
+    isProbe(tuple, "*", query.wildcardRefs);
+  let wildcard: readonly Tuple[] = NO_TUPLES.wildcard;
+  if (query.wildcardRefs === null || query.wildcardRefs.length > 0) {
+    wildcard = reply.wildcard.every(isWildcard)
+      ? reply.wildcard
+      : reply.wildcard.filter(isWildcard);
+  }
+
   return {
     direct: isProbe(reply.direct, query.subjectId, query.directRefs)
       ? reply.direct
       : null,
-    wildcard: isProbe(reply.wildcard, "*", query.wildcardRefs)
-      ? reply.wildcard
-      : null,
+    wildcard,
     usersets,
   };
 }
@@ -1357,7 +1387,7 @@ async function checkBase(
   const { store, maxBreadth } = scope;
   const {
     direct: directTuple,
-    wildcard: wildcardTuple,
+    wildcard: wildcardTuples,
     usersets: usersetTuples,
   } = await reads;
 
@@ -1390,7 +1420,9 @@ async function checkBase(
   if (directTuple && !directTuple.conditionName) {
     return GRANTED;
   }
-  if (wildcardTuple && !wildcardTuple.conditionName) {
+  // Any unconditioned wildcard row answers, whichever it is: the
+  // rows are a union, so one that grants outright ends the node.
+  if (wildcardTuples.some((tuple) => !tuple.conditionName)) {
     return GRANTED;
   }
   if (selfTuple && !selfTuple.conditionName) {
@@ -1407,7 +1439,12 @@ async function checkBase(
   if (directTuple) {
     handlers.push(() => evaluateCondition(store, directTuple, request.context));
   }
-  if (wildcardTuple) {
+  // One branch per conditioned wildcard row. They race as siblings
+  // of a union, so a stored row whose condition holds still grants
+  // when a contextual row on the same key does not — which is the
+  // whole of issue 342: the contextual row joins the stored one,
+  // it does not stand in for it.
+  for (const wildcardTuple of wildcardTuples) {
     handlers.push(() =>
       evaluateCondition(store, wildcardTuple, request.context),
     );
@@ -1715,7 +1752,23 @@ async function resolveTupleset(
     throw new RelationConfigNotFoundError(request.objectType, tupleset);
   }
 
-  const admitted = linked.filter((tuple) =>
+  // The store's reply is a hint here too. `clampToQuery` re-applies
+  // the exact node match to `findCheckTuples`; this read had only
+  // the subject-shape half of the same guarantee, so an adapter
+  // whose `WHERE` lost `object_id` or `relation` handed back a row
+  // linking a *different* document to a folder and this dispatch
+  // granted on it. The three fields are the ones `onNode` spells,
+  // and the drop is silent for the reason given there: a check is
+  // the wrong place to discover an adapter bug, and denying is the
+  // conservative answer.
+  const onNode = linked.filter(
+    (tuple) =>
+      tuple.objectType === request.objectType &&
+      tuple.objectId === request.objectId &&
+      tuple.relation === tupleset,
+  );
+
+  const admitted = onNode.filter((tuple) =>
     admitsSubjectRef(
       config,
       directSubjectRef(

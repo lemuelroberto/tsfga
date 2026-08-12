@@ -126,9 +126,14 @@ export class MockTupleStore implements TupleStore {
       return tuple !== null && admits(refs, tuple) ? tuple : null;
     };
 
+    // The wildcard slot is a list. This store keeps one row per
+    // natural key, so it holds 0 or 1 — the list is there because
+    // the contextual overlay concatenates onto it.
+    const wildcardRow = probe(query.wildcardRefs, "*");
+
     return {
       direct: probe(query.directRefs, query.subjectId),
-      wildcard: probe(query.wildcardRefs, "*"),
+      wildcard: wildcardRow === null ? [] : [wildcardRow],
       usersets: onRelation.filter(
         (t) =>
           t.subjectRelation !== null &&

@@ -43,10 +43,21 @@ export interface TupleStore {
    * row this relation admits, exactly as a wrong type is not.
    *
    * Slots are exact. `direct` is the tuple for this subject with
-   * no subject relation; `wildcard` is the one for
+   * no subject relation; `wildcard` holds the rows for
    * `subjectType:*`, likewise with no subject relation; every row
    * in `usersets` has a subject relation. Anything else is
    * discarded.
+   *
+   * **`direct` is one row and `wildcard` is a list**, and the
+   * asymmetry is upstream's rather than a convenience.
+   * `CombinedTupleReader` overrides a stored row with a contextual
+   * one only in `ReadUserTuple`, the exact-subject lookup;
+   * everything else is a scan, and `Read` concatenates the
+   * contextual rows with the stored ones with no dedup at all
+   * (`pkg/storage/storagewrappers/combinedtuplereader.go:63-103`).
+   * A store holding one row per natural key returns at most one
+   * wildcard row and simply wraps it; the list exists because the
+   * contextual overlay adds to it.
    */
   findCheckTuples(query: CheckTuplesQuery): Promise<CheckTuples>;
 

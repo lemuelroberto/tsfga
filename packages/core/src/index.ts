@@ -1,6 +1,6 @@
 import { check } from "./check.ts";
 import { type CheckOutcome, checkMany } from "./check-many.ts";
-import { compileCondition } from "./conditions.ts";
+import { compileCondition, evaluateTupleCondition } from "./conditions.ts";
 import { validateRelationConfigWrite } from "./config-validation.ts";
 import {
   DuplicateTupleError,
@@ -14,6 +14,7 @@ import {
   DEFAULT_WRITE_CONTEXT_BYTE_LIMIT,
   directSubjectRef,
   isSelfDefining,
+  validateRequestContext,
   validateTupleWrite,
 } from "./tuple-validation.ts";
 import type {
@@ -25,6 +26,24 @@ import type {
   RelationConfig,
   RemoveTupleRequest,
 } from "./types.ts";
+
+/**
+ * What `listSubjects` takes beyond the object and relation.
+ *
+ * An optional fourth argument rather than a request object, which
+ * is what `check` and `listObjects` take and what this should
+ * become. The migration is owed and deliberately not taken here:
+ * it touches every call site in the repo and the consumers', for a
+ * shape change that adds nothing to this release.
+ */
+export interface ListSubjectsOptions {
+  /**
+   * CEL context for the conditions on the rows, exactly as
+   * `CheckRequest.context` is for a check. A tuple's own
+   * `conditionContext` still wins over it.
+   */
+  context?: Record<string, unknown>;
+}
 
 export interface TsfgaClient {
   /**
@@ -43,6 +62,10 @@ export interface TsfgaClient {
    * @throws RelationConfigNotFoundError, InvalidSubjectTypeError
    *   or InvalidConditionalTupleError when a contextual tuple
    *   fails the same validation `addTuple` applies.
+   * @throws InvalidRequestContextError when `context` holds a
+   *   Unicode control character in a key or a string value, at any
+   *   depth. Raised before any store read, because upstream
+   *   validates the request context before it resolves anything.
    */
   check(request: CheckRequest): Promise<boolean>;
   /**
@@ -56,7 +79,8 @@ export interface TsfgaClient {
    * Answers come back in request order, one per request. A check
    * that fails reports its error in its own outcome instead of
    * failing the batch, matching OpenFGA's BatchCheck; only invalid
-   * options throw.
+   * options throw. A request context the model refuses
+   * (`InvalidRequestContextError`) is one such per-item failure.
    *
    * The scope is bounded by the call, so it can be used inside a
    * transaction: a tuple written earlier in the same transaction is
@@ -104,19 +128,23 @@ export interface TsfgaClient {
    *   InvalidConditionalTupleError when a contextual tuple fails
    *   the same validation `addTuple` applies. Raised once for the
    *   call, before any candidate is checked.
+   * @throws InvalidRequestContextError for a `context` upstream
+   *   refuses, as `check` does and before anything is read.
    */
   listObjects(request: ListObjectsRequest): Promise<string[]>;
   /**
    * List direct subjects only — no userset or relation expansion.
    *
    * Filtered by the relation's `directlyAssignable`, **matched
-   * exactly, condition included**: a row carrying a condition the
-   * relation does not admit is no more reported than one carrying
-   * a type it does not admit. So a subject this returns is one
-   * `check` could act on, not merely one that is stored.
-   * That matters because narrowing a relation does not revalidate
-   * the tuples already written, so inadmissible rows are an
-   * ordinary state to be in.
+   * exactly, condition included**, and then by the condition's
+   * *value*: a row carrying a condition the relation does not
+   * admit is no more reported than one carrying a type it does not
+   * admit, and a row whose condition does not hold under
+   * `options.context` is not reported either. So a subject this
+   * returns is one `check` could act on, not merely one that is
+   * stored. That matters because narrowing a relation does not
+   * revalidate the tuples already written, so inadmissible rows
+   * are an ordinary state to be in.
    *
    * The consequence, stated plainly: there is then no library path
    * that *finds* such a row in order to delete it. Upstream keeps
@@ -126,11 +154,21 @@ export interface TsfgaClient {
    * @throws RelationConfigNotFoundError when the relation has no
    *   config. It used to report every stored row instead, which
    *   made this the one path that admitted what `check` refuses.
+   * @throws ConditionNotFoundError, ConditionEvaluationError or
+   *   InvalidConditionalTupleError when an admitted row's
+   *   condition cannot be evaluated — a missing parameter, a
+   *   value of the wrong type, a condition the store does not
+   *   define. Upstream refuses the call for the same row, and
+   *   reporting the subject unevaluated would be the granting
+   *   direction.
+   * @throws InvalidRequestContextError for a `context` upstream
+   *   refuses, as `check` does.
    */
   listSubjects(
     objectType: string,
     objectId: string,
     relation: string,
+    options?: ListSubjectsOptions,
   ): Promise<
     Array<{
       subjectType: string;
@@ -168,12 +206,48 @@ export function createTsfga(
   options?: CheckOptions,
 ): TsfgaClient {
   return {
-    check(request: CheckRequest): Promise<boolean> {
+    async check(request: CheckRequest): Promise<boolean> {
+      // Before any store read, as upstream validates it before it
+      // resolves anything. `async` so the refusal reaches the
+      // caller as a rejected promise rather than a synchronous
+      // throw — every other refusal on this method already does.
+      validateRequestContext(request.context);
       return check(store, request, options);
     },
 
-    checkMany(requests: readonly CheckRequest[]): Promise<CheckOutcome[]> {
-      return checkMany(store, requests, options);
+    async checkMany(
+      requests: readonly CheckRequest[],
+    ): Promise<CheckOutcome[]> {
+      // Per item, not per batch. A request context upstream refuses
+      // is a `validation_error` on that check, and BatchCheck
+      // records a failing item's error against the item rather than
+      // failing the batch — the same rule `checkMany` already
+      // applies to everything `check` throws. Refusing the whole
+      // call for one dirty context would be the one error in the
+      // batch that behaves differently.
+      const outcomes = new Map<number, CheckOutcome>();
+      const admitted: CheckRequest[] = [];
+      const positions: number[] = [];
+      for (const [index, request] of requests.entries()) {
+        try {
+          validateRequestContext(request?.context);
+        } catch (error) {
+          outcomes.set(index, { allowed: false, error });
+          continue;
+        }
+        positions.push(index);
+        admitted.push(request);
+      }
+      // Called even when nothing is admitted: the option validation
+      // lives there and must still reach the caller.
+      const answered = await checkMany(store, admitted, options);
+      const merged = new Array<CheckOutcome>(requests.length);
+      for (const [slot, index] of positions.entries()) {
+        const outcome = answered[slot];
+        if (outcome) merged[index] = outcome;
+      }
+      for (const [index, outcome] of outcomes) merged[index] = outcome;
+      return merged;
     },
 
     async addTuple(request: AddTupleRequest): Promise<void> {
@@ -215,7 +289,8 @@ export function createTsfga(
       return store.deleteTuple(request);
     },
 
-    listObjects(request: ListObjectsRequest): Promise<string[]> {
+    async listObjects(request: ListObjectsRequest): Promise<string[]> {
+      validateRequestContext(request.context);
       return listObjects(store, request, options);
     },
 
@@ -223,6 +298,7 @@ export function createTsfga(
       objectType: string,
       objectId: string,
       relation: string,
+      subjectOptions?: ListSubjectsOptions,
     ): Promise<
       Array<{
         subjectType: string;
@@ -245,6 +321,8 @@ export function createTsfga(
       // Reporting subjects `check` would refuse to act on would
       // have been the two paths disagreeing in the granting
       // direction, which is worse than either answer alone.
+      const context = subjectOptions?.context;
+      validateRequestContext(context);
       const config = await store.findRelationConfig(objectType, relation);
       if (config === null) {
         throw new RelationConfigNotFoundError(objectType, relation);
@@ -254,7 +332,20 @@ export function createTsfga(
         objectId,
         relation,
       );
-      return tuples
+      const admitted = tuples
+        // The store's reply is a hint here as it is everywhere
+        // else. `clampToQuery` re-applies the exact node match to
+        // the check reads and `resolveTupleset` to the tupleset
+        // read; this one had only the subject-shape half, so an
+        // adapter whose `WHERE` lost `object_id` or `relation`
+        // reported another object's subjects as this one's. The
+        // three fields are the ones `onNode` spells.
+        .filter(
+          (tuple) =>
+            tuple.objectType === objectType &&
+            tuple.objectId === objectId &&
+            tuple.relation === relation,
+        )
         .filter((tuple) =>
           admitsSubjectRef(
             config,
@@ -265,12 +356,34 @@ export function createTsfga(
               tuple.conditionName,
             ),
           ),
-        )
-        .map((tuple) => ({
+        );
+
+      // The condition's *value*, after its shape. The restriction
+      // match says the row carries a condition the relation admits;
+      // it says nothing about whether that condition holds for this
+      // request, and upstream's ListUsers evaluates it — a row
+      // whose condition is false is not reported, and one that
+      // cannot be evaluated refuses the whole call rather than
+      // being reported unevaluated. Both directions are observable
+      // and both were wrong here.
+      //
+      // Sequential rather than raced: the rows of one object are
+      // few, and the first row that cannot be evaluated is then the
+      // one the refusal names, in read order.
+      const rows: Array<{
+        subjectType: string;
+        subjectId: string;
+        subjectRelation: string | null;
+      }> = [];
+      for (const tuple of admitted) {
+        if (!(await evaluateTupleCondition(store, tuple, context))) continue;
+        rows.push({
           subjectType: tuple.subjectType,
           subjectId: tuple.subjectId,
           subjectRelation: tuple.subjectRelation,
-        }));
+        });
+      }
+      return rows;
     },
 
     async writeRelationConfig(config: RelationConfig): Promise<void> {
@@ -320,10 +433,16 @@ export {
   ImplicitTupleError,
   InvalidConditionalTupleError,
   InvalidRelationConfigError,
+  // Raised by `check`, `checkMany` and `listObjects` for a request
+  // context upstream refuses, before anything is resolved.
+  InvalidRequestContextError,
   InvalidStoredDataError,
   InvalidSubjectTypeError,
   type RelationConfigDefect,
   RelationConfigNotFoundError,
+  // `InvalidRequestContextError.cause` is a union for the same
+  // reason the two beside it are.
+  type RequestContextDefect,
   // `InvalidSubjectTypeError.cause` is a union rather than one
   // literal, so a caller switching on it needs the name — the same
   // reason `ConditionalTupleCause` and `RelationConfigDefect` are
@@ -341,6 +460,7 @@ export {
   type SubjectShape,
   subjectShape,
   type TupleWriteValidationOptions,
+  validateRequestContext,
   validateTupleWrite,
 } from "./tuple-validation.ts";
 export type {

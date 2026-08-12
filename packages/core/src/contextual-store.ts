@@ -7,6 +7,7 @@ import type {
   RelationConfig,
   RemoveTupleRequest,
   Tuple,
+  TypeRestriction,
 } from "./types.ts";
 
 /**
@@ -37,29 +38,41 @@ export class ContextualTupleStore implements TupleStore {
    * The overlay is deliberately asymmetric, and merging the three
    * reads into one call must not quietly even it out.
    *
-   * A direct or wildcard probe returns *one* tuple, so a
-   * contextual tuple on that exact key **replaces** the stored one
-   * — it is not unioned with it. That is what lets a caller
-   * override a conditioned stored tuple with an unconditioned
-   * contextual one. The userset scan returns a *set*, so there
-   * contextual rows are **concatenated** with the stored ones.
+   * The **direct** probe returns *one* tuple, so a contextual tuple
+   * on that exact key **replaces** the stored one — it is not
+   * unioned with it. That is what lets a caller override a
+   * conditioned stored tuple with an unconditioned contextual one,
+   * and it is upstream's `ReadUserTuple`, which returns the first
+   * contextual row whose user matches and never consults the store.
+   *
+   * Every other read is a **scan**, and upstream's `Read` /
+   * `ReadUsersetTuples` concatenate the contextual rows with the
+   * stored ones with no dedup at all
+   * (`pkg/storage/storagewrappers/combinedtuplereader.go:63-103`).
+   * So the wildcard rows and the userset rows are **concatenated**.
+   *
+   * The wildcard used to replace, like the direct probe, and that
+   * was a hole in the granting direction: a caller cancelled a
+   * stored `blocked@user:*` row by sending a contextual row on the
+   * same key whose condition could not hold. A contextual row
+   * duplicating a stored one now grants twice rather than once,
+   * which is what upstream does and is harmless for a boolean
+   * answer.
    *
    * A part the overlay already answers is dropped from the inner
-   * query, so a replaced probe still costs the store nothing.
+   * query, so a replaced probe still costs the store nothing. The
+   * wildcard is no longer such a part: the store must still be
+   * asked, because its rows join the contextual ones.
    */
   async findCheckTuples(query: CheckTuplesQuery): Promise<CheckTuples> {
     const direct =
       query.directRefs?.length === 0
         ? null
         : this.findContextualDirect(query, query.subjectId);
-    const wildcard =
-      query.wildcardRefs?.length === 0
-        ? null
-        : this.findContextualDirect(query, "*");
 
     const stored = await this.inner.findCheckTuples({
       ...query,
-      // These fields **suppress**, and suppressing is `[]`.
+      // This field **suppresses**, and suppressing is `[]`.
       //
       // The reading to avoid: `directRefs` is not a permission to
       // be forwarded or withheld, it is a restriction, and its
@@ -69,16 +82,19 @@ export class ContextualTupleStore implements TupleStore {
       // ask the store" into "ask the store, and accept anything".
       // `[]` is the value that says the part is excluded.
       directRefs: direct === null ? query.directRefs : [],
-      wildcardRefs: wildcard === null ? query.wildcardRefs : [],
     });
+
+    const excluded = (refs: readonly TypeRestriction[] | null): boolean =>
+      refs !== null && refs.length === 0;
 
     return {
       direct: direct ?? stored.direct,
-      wildcard: wildcard ?? stored.wildcard,
-      usersets:
-        query.usersetRefs === null || query.usersetRefs.length > 0
-          ? [...this.findContextualUsersets(query), ...stored.usersets]
-          : stored.usersets,
+      wildcard: excluded(query.wildcardRefs)
+        ? stored.wildcard
+        : [...this.findContextualWildcards(query), ...stored.wildcard],
+      usersets: excluded(query.usersetRefs)
+        ? stored.usersets
+        : [...this.findContextualUsersets(query), ...stored.usersets],
     };
   }
 
@@ -96,6 +112,18 @@ export class ContextualTupleStore implements TupleStore {
           t.subjectId === subjectId &&
           t.subjectRelation === null,
       ) ?? null
+    );
+  }
+
+  private findContextualWildcards(query: CheckTuplesQuery): Tuple[] {
+    return this.contextualTuples.filter(
+      (t) =>
+        t.objectType === query.objectType &&
+        t.objectId === query.objectId &&
+        t.relation === query.relation &&
+        t.subjectType === query.subjectType &&
+        t.subjectId === "*" &&
+        t.subjectRelation === null,
     );
   }
 

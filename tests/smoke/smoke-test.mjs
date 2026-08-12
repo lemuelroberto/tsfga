@@ -42,7 +42,7 @@ const mockStore = {
             conditionName: null,
             conditionContext: null,
           },
-    wildcard: null,
+    wildcard: [],
     usersets: [],
   }),
   findTuplesByRelation: async () => [],
@@ -86,7 +86,7 @@ const notAllowedStore = {
   ...mockStore,
   findCheckTuples: async () => ({
     direct: null,
-    wildcard: null,
+    wildcard: [],
     usersets: [],
   }),
 };

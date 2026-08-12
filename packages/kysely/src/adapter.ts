@@ -94,7 +94,7 @@ export class KyselyTupleStore implements TupleStore {
     // Every part excluded means no row could be used. Return the
     // empty result rather than a `WHERE false` round-trip.
     if (!wanted(directRefs) && !wanted(wildcardRefs) && !wanted(usersetRefs)) {
-      return { direct: null, wildcard: null, usersets: [] };
+      return { direct: null, wildcard: [], usersets: [] };
     }
 
     const rows = await this.db
@@ -156,7 +156,12 @@ export class KyselyTupleStore implements TupleStore {
       .execute();
 
     let direct: Tuple | null = null;
-    let wildcard: Tuple | null = null;
+    // A list, because the slot is one: `idx_tuples_unique` means
+    // this scan can return at most one `subject_type:*` row, so
+    // what is wrapped here is 0 or 1 rows. The shape exists for
+    // `ContextualTupleStore`, which adds the request's own wildcard
+    // rows to whatever the store found instead of replacing them.
+    const wildcard: Tuple[] = [];
     const usersets: Tuple[] = [];
 
     for (const row of rows) {
@@ -169,7 +174,7 @@ export class KyselyTupleStore implements TupleStore {
         // `direct` rather than being reported twice.
         direct = tuple;
       } else if (wanted(wildcardRefs) && row.subject_id === WILDCARD) {
-        wildcard = tuple;
+        wildcard.push(tuple);
       }
       // Both arms are positively matched rather than falling
       // through to `wildcard`, so a row the query did not ask for
