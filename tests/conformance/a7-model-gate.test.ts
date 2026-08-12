@@ -9,6 +9,7 @@ import {
 import type { DB } from "@tsfga/kysely";
 import { KyselyTupleStore } from "@tsfga/kysely";
 import type { Kysely } from "kysely";
+import { expectPinnedModelWriteDivergence } from "./helpers/conformance.ts";
 import {
   beginTransaction,
   destroyDb,
@@ -111,6 +112,20 @@ describe("Model-shape write gate conformance", () => {
       }
     }
     return "accepted";
+  }
+
+  /**
+   * The same writes, but letting the refusal out.
+   *
+   * `tsfga` above reduces a refusal to a word, which is what the
+   * two-sided assertions want. `expectPinnedModelWriteDivergence`
+   * wants the error itself, so it can insist a refusal is a
+   * `TsfgaError` rather than a mis-ordered fixture.
+   */
+  async function tsfgaWrite(configs: readonly RelationConfig[]): Promise<void> {
+    for (const relationConfig of configs) {
+      await tsfgaClient.writeRelationConfig(relationConfig);
+    }
   }
 
   test("control: a valid intersection model is stored by both", async () => {
@@ -359,8 +374,9 @@ describe("Model-shape write gate conformance", () => {
    */
   test("the gap (154): no tupleset type defines it", async () => {
     const type = "doc_a7g5";
-    expect(
-      await openfga({
+    await expectPinnedModelWriteDivergence(
+      storeId,
+      {
         schema_version: "1.1",
         type_definitions: [
           USER,
@@ -394,35 +410,36 @@ describe("Model-shape write gate conformance", () => {
             },
           },
         ],
-      }),
-    ).toBe("refused");
-    // `resolveTupleset` skips a row whose type does not define the
-    // computed relation — correct per-row behaviour for a model
-    // where *some* type defines it. Upstream additionally requires
-    // at least one type to define it, at model-write time. tsfga
-    // applies only the per-row half; the at-least-one half is the
-    // documented gap, and every check on the relation answers
-    // `false` instead.
-    expect(
-      await tsfga([
-        config("folder_a7g5", "owner", {
-          directlyAssignable: [{ type: "user_a7g" }],
-        }),
-        config(type, "parent", {
-          directlyAssignable: [{ type: "folder_a7g5" }],
-        }),
-        config(type, "viewer", {
-          tupleToUserset: [{ tupleset: "parent", computedUserset: "viewer" }],
-        }),
-      ]),
-    ).toBe("accepted");
+      },
+      // `resolveTupleset` skips a row whose type does not define the
+      // computed relation — correct per-row behaviour for a model
+      // where *some* type defines it. Upstream additionally requires
+      // at least one type to define it, at model-write time. tsfga
+      // applies only the per-row half; the at-least-one half is the
+      // documented gap, and every check on the relation answers
+      // `false` instead.
+      () =>
+        tsfgaWrite([
+          config("folder_a7g5", "owner", {
+            directlyAssignable: [{ type: "user_a7g" }],
+          }),
+          config(type, "parent", {
+            directlyAssignable: [{ type: "folder_a7g5" }],
+          }),
+          config(type, "viewer", {
+            tupleToUserset: [{ tupleset: "parent", computedUserset: "viewer" }],
+          }),
+        ]),
+      { openfga: "refused", tsfga: "accepted" },
+    );
   });
 
   /** The second undecidable rule — see the note above. */
   test("the gap (155): a rewrite names an undefined relation", async () => {
     const type = "doc_a7g6";
-    expect(
-      await openfga({
+    await expectPinnedModelWriteDivergence(
+      storeId,
+      {
         schema_version: "1.1",
         type_definitions: [
           USER,
@@ -445,18 +462,18 @@ describe("Model-shape write gate conformance", () => {
             },
           },
         ],
-      }),
-    ).toBe("refused");
-    // Accepted here, and surfaced months later as a
-    // `RelationConfigNotFoundError` on a check — a refusal
-    // attributed to the request rather than to the model. The
-    // check-time behaviour is right; the earlier, cheaper refusal
-    // that names the actual mistake is what is missing.
-    expect(
-      await tsfga([
-        config(type, "a", { directlyAssignable: [{ type: "user_a7g" }] }),
-        config(type, "viewer", { impliedBy: ["a"], excludedBy: "nope_a7g" }),
-      ]),
-    ).toBe("accepted");
+      },
+      // Accepted here, and surfaced months later as a
+      // `RelationConfigNotFoundError` on a check — a refusal
+      // attributed to the request rather than to the model. The
+      // check-time behaviour is right; the earlier, cheaper refusal
+      // that names the actual mistake is what is missing.
+      () =>
+        tsfgaWrite([
+          config(type, "a", { directlyAssignable: [{ type: "user_a7g" }] }),
+          config(type, "viewer", { impliedBy: ["a"], excludedBy: "nope_a7g" }),
+        ]),
+      { openfga: "refused", tsfga: "accepted" },
+    );
   });
 });

@@ -864,6 +864,42 @@ validator that sees the whole model at once — a batch config write
 instead, where it raises `RelationConfigNotFoundError` and blames
 the request rather than the model.
 
+### Which refusals are accounted for
+
+The rules above are one half of a gate, and the question a
+consumer actually has is the other half: *which refusals does
+OpenFGA make that tsfga does not?*
+
+`packages/core/write-gate-causes.json` answers it. It enumerates
+every refusal OpenFGA v1.18.2 constructs in the seven Go files
+carrying its write- and model-write refusal vocabulary, and
+disposes of each one: implemented by a named rule, implemented
+partly with the gap written out, pinned as a divergence with the
+test that pins it, open with the reason it is open, or
+inapplicable with the reason. The enumeration is mechanical, and
+its recall over those files is enforced on every CI run — each of
+the 107 error-construction sites in them is attributed to a cause
+or listed as an exclusion with a reason, and an unattributed one
+fails the build.
+
+**What it does not claim.** It does not audit whether a rule's
+body is a correct port of the cause it claims; those dispositions
+are decided once, by hand, and reviewed. It does not cover the
+protobuf field constraints, which live in a Go module the
+enumeration cannot read — those are entered by measurement
+against the running container, and their completeness is not
+claimed. What it does do is go red when the pinned container
+moves, when upstream adds, removes or renames a refusal, and when
+a reference in it stops resolving.
+
+**Refusals in the other direction get their own list.**
+`packages/core/capability-refusals.json` records refusals tsfga
+makes that OpenFGA does not. They are divergences rather than
+parity, and each carries a test that fails if the divergence ever
+disappears. Two lists rather than one list with an exception:
+inside a single bijection, any future rule could opt out of the
+completeness argument by declaring itself special.
+
 `addTuple` throws `ImplicitTupleError` for a tuple that says only
 what the model already says — `doc:1#blocked@doc:1#blocked`.
 Upstream refuses it: "cannot write a tuple that is implicit".

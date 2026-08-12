@@ -7,6 +7,21 @@ releases may contain breaking changes).
 
 ## Unreleased
 
+### Added
+
+- **The write-gate cause inventory.**
+  `packages/core/write-gate-causes.json` enumerates every refusal
+  OpenFGA v1.18.2 constructs in the seven Go files carrying its
+  write- and model-write refusal vocabulary — 98 causes over 107
+  construction sites — and disposes of each. `bun run
+  check:write-gate-causes` re-derives it from the pinned checkout
+  and fails on any difference, on an unattributed construction
+  site, or on a reference that no longer resolves.
+  `packages/core/capability-refusals.json` is the second list:
+  refusals tsfga makes that upstream does not, each with the pin
+  that fails if the divergence disappears. Neither file ships in
+  the package.
+
 ### Removed
 
 - **BREAKING: `matches()` is no longer supported.** A condition
