@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import { CAPABILITY_RULE_IDS, UPSTREAM_RULE_IDS } from "@tsfga/core";
 
 /**
  * The two refusal lists, checked for the properties a reader of
@@ -142,6 +143,65 @@ describe("the upstream cause inventory", () => {
   test("every source says why it is in scope", () => {
     for (const source of inventory().sources) {
       expect(source.why.length > 0).toBe(true);
+    }
+  });
+});
+
+describe("the bijection between the inventory and the rule ids", () => {
+  /** Every rule id an upstream cause or a probe claims. */
+  function claimedIds(): Set<string> {
+    const { causes, probes } = inventory();
+    const ids = new Set<string>();
+    for (const entry of [...causes, ...probes]) {
+      for (const rule of entry.rules ?? []) ids.add(rule);
+    }
+    return ids;
+  }
+
+  test("every claimed id is a declared upstream rule", () => {
+    const declared = new Set<string>(UPSTREAM_RULE_IDS);
+    for (const id of claimedIds()) {
+      expect(`${id} is declared: ${declared.has(id)}`).toBe(
+        `${id} is declared: true`,
+      );
+    }
+  });
+
+  test("every declared upstream rule is claimed by a cause", () => {
+    // The direction that makes the inventory a completeness
+    // artifact rather than a checklist. A rule nothing claims is a
+    // refusal tsfga makes with no upstream cause behind it -- which
+    // is what the capability list is for, and it must be in that
+    // list instead.
+    const claimed = claimedIds();
+    for (const id of UPSTREAM_RULE_IDS) {
+      expect(`${id} is claimed: ${claimed.has(id)}`).toBe(
+        `${id} is claimed: true`,
+      );
+    }
+  });
+
+  test("the two namespaces are disjoint", () => {
+    const upstream = new Set<string>(UPSTREAM_RULE_IDS);
+    for (const id of CAPABILITY_RULE_IDS) {
+      expect(`${id} is upstream: ${upstream.has(id)}`).toBe(
+        `${id} is upstream: false`,
+      );
+    }
+  });
+
+  test("every capability rule id has an entry", () => {
+    const entries = new Set(capability().refusals.map((each) => each.id));
+    for (const id of CAPABILITY_RULE_IDS) {
+      expect(`${id} has an entry: ${entries.has(id)}`).toBe(
+        `${id} has an entry: true`,
+      );
+    }
+    for (const entry of capability().refusals) {
+      const declared: readonly string[] = CAPABILITY_RULE_IDS;
+      expect(`${entry.id} is declared: ${declared.includes(entry.id)}`).toBe(
+        `${entry.id} is declared: true`,
+      );
     }
   });
 });

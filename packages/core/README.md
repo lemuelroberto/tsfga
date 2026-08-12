@@ -892,6 +892,20 @@ claimed. What it does do is go red when the pinned container
 moves, when upstream adds, removes or renames a refusal, and when
 a reference in it stops resolving.
 
+**Every rule has a name, and the error carries it.**
+`TsfgaError.ruleId` is the id of the rule that refused —
+`"TUPLE-SUBJECT-MALFORMED"`, `"CONFIG-REWRITE-NAMES-ITSELF"` — or
+`null` when the error is not a write refusal. `UPSTREAM_RULE_IDS`
+and `CAPABILITY_RULE_IDS` are exported, so a consumer can switch
+on a refusal without matching message prose, and can tell a
+parity refusal from one of tsfga's own.
+
+The ids are names, not an order. The rules stay where they are in
+the source and their precedence is the order of the statements
+that raise them; what an id buys is that a test can assert *which*
+of two competing refusals won, which is the only way precedence is
+observable at all.
+
 **Refusals in the other direction get their own list.**
 `packages/core/capability-refusals.json` records refusals tsfga
 makes that OpenFGA does not. They are divergences rather than

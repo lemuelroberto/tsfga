@@ -1,6 +1,7 @@
 import { InvalidRelationConfigError } from "./errors.ts";
 import type { TupleStore } from "./store-interface.ts";
 import type { ConditionDefinition, RelationConfig } from "./types.ts";
+import type { WriteRuleId } from "./write-rules.ts";
 
 /**
  * Validate a relation config against the rules OpenFGA's
@@ -116,7 +117,11 @@ export async function validateRelationConfigWrite(
   store: TupleStore,
   config: RelationConfig,
 ): Promise<void> {
+  // Each rule names itself. The id is a trailing argument at the
+  // raise site rather than an index in a table, so nothing about
+  // the order below moves -- and the order is the precedence.
   const refuse = (
+    ruleId: WriteRuleId,
     cause: ConstructorParameters<typeof InvalidRelationConfigError>[0],
     detail?: string,
   ): never => {
@@ -125,39 +130,65 @@ export async function validateRelationConfigWrite(
       config.objectType,
       config.relation,
       detail,
+      undefined,
+      ruleId,
     );
   };
 
   if (!isWellFormedName(config.objectType, MAX_TYPE_NAME_LENGTH)) {
-    refuse("malformed type name", describeName(config.objectType));
+    refuse(
+      "CONFIG-TYPE-NAME-MALFORMED",
+      "malformed type name",
+      describeName(config.objectType),
+    );
   }
 
   if (RESERVED_KEYWORDS.has(config.objectType)) {
-    refuse("reserved keyword", `type name '${config.objectType}'`);
+    refuse(
+      "CONFIG-TYPE-NAME-RESERVED",
+      "reserved keyword",
+      `type name '${config.objectType}'`,
+    );
   }
 
   if (!isWellFormedName(config.relation, MAX_RELATION_NAME_LENGTH)) {
-    refuse("malformed relation name", describeName(config.relation));
+    refuse(
+      "CONFIG-RELATION-NAME-MALFORMED",
+      "malformed relation name",
+      describeName(config.relation),
+    );
   }
 
   if (RESERVED_KEYWORDS.has(config.relation)) {
-    refuse("reserved keyword", `relation name '${config.relation}'`);
+    refuse(
+      "CONFIG-RELATION-NAME-RESERVED",
+      "reserved keyword",
+      `relation name '${config.relation}'`,
+    );
   }
 
   const selfNamed = selfNamingRewrite(config);
   if (selfNamed !== null) {
-    refuse("rewrite names its own relation", selfNamed);
+    refuse(
+      "CONFIG-REWRITE-NAMES-ITSELF",
+      "rewrite names its own relation",
+      selfNamed,
+    );
   }
 
   if (config.intersection !== null && config.intersection.length < 2) {
     refuse(
+      "CONFIG-INTERSECTION-TOO-FEW-OPERANDS",
       "intersection has fewer than two operands",
       `${config.intersection.length}`,
     );
   }
 
   if (config.directlyAssignable.length === 0 && !hasRewrite(config)) {
-    refuse("relation admits nothing and rewrites nothing");
+    refuse(
+      "CONFIG-ADMITS-AND-REWRITES-NOTHING",
+      "relation admits nothing and rewrites nothing",
+    );
   }
 
   // An `intersection` with no `direct` operand is upstream's
@@ -173,6 +204,7 @@ export async function validateRelationConfigWrite(
     !config.intersection.some((operand) => operand.type === "direct")
   ) {
     refuse(
+      "CONFIG-RESTRICTIONS-ON-NON-ASSIGNABLE",
       "type restrictions on a non-assignable relation",
       config.directlyAssignable.map((each) => each.type).join(", "),
     );
@@ -183,7 +215,13 @@ export async function validateRelationConfigWrite(
     const definition = await store.findConditionDefinition(
       restriction.condition,
     );
-    if (!definition) refuse("undefined condition", restriction.condition);
+    if (!definition) {
+      refuse(
+        "CONFIG-CONDITION-UNDEFINED",
+        "undefined condition",
+        restriction.condition,
+      );
+    }
   }
 
   for (const tupleset of tuplesetRelations(config)) {
@@ -192,6 +230,7 @@ export async function validateRelationConfigWrite(
     if (!linked) continue;
     if (hasRewrite(linked)) {
       refuse(
+        "CONFIG-TUPLESET-NOT-DIRECT",
         "tupleset relation is not a direct relation",
         `${tupleset} is computed`,
       );
@@ -199,12 +238,14 @@ export async function validateRelationConfigWrite(
     for (const restriction of linked.directlyAssignable) {
       if (restriction.relation !== undefined) {
         refuse(
+          "CONFIG-TUPLESET-ADMITS-USERSET",
           "tupleset relation admits a userset",
           `${tupleset} admits ${restriction.type}#${restriction.relation}`,
         );
       }
       if (restriction.wildcard) {
         refuse(
+          "CONFIG-TUPLESET-ADMITS-WILDCARD",
           "tupleset relation admits a wildcard",
           `${tupleset} admits ${restriction.type}:*`,
         );
@@ -213,7 +254,7 @@ export async function validateRelationConfigWrite(
   }
 
   if (await hasNoEntrypoint(store, config)) {
-    refuse("relation has no entrypoint");
+    refuse("CONFIG-NO-ENTRYPOINT", "relation has no entrypoint");
   }
 }
 
@@ -248,6 +289,7 @@ export async function validateRelationConfigWrite(
  */
 export function validateConditionWrite(condition: ConditionDefinition): void {
   const refuse = (
+    ruleId: WriteRuleId,
     cause: ConstructorParameters<typeof InvalidRelationConfigError>[0],
     detail: string,
   ): never => {
@@ -257,11 +299,16 @@ export function validateConditionWrite(condition: ConditionDefinition): void {
       null,
       detail,
       condition.name,
+      ruleId,
     );
   };
 
   if (!isWellFormedName(condition.name, MAX_RELATION_NAME_LENGTH)) {
-    refuse("malformed condition name", describeName(condition.name));
+    refuse(
+      "CONDITION-NAME-MALFORMED",
+      "malformed condition name",
+      describeName(condition.name),
+    );
   }
 
   // A different loop, and every key runs it: upstream's message
@@ -269,6 +316,7 @@ export function validateConditionWrite(condition: ConditionDefinition): void {
   for (const parameter of Object.keys(condition.parameters ?? {})) {
     if (!isWellFormedName(parameter, MAX_RELATION_NAME_LENGTH)) {
       refuse(
+        "CONDITION-PARAMETER-NAME-MALFORMED",
         "malformed condition parameter name",
         `${describeName(parameter)} in '${parameter}'`,
       );

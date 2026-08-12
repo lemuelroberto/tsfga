@@ -13,6 +13,7 @@ import type {
   RelationConfig,
   TypeRestriction,
 } from "./types.ts";
+import type { WriteRuleId } from "./write-rules.ts";
 
 /**
  * A subject ref with its condition dropped.
@@ -414,6 +415,11 @@ export function validateObjectRef(
   objectType: string,
   objectId: string,
   runeLimit: number,
+  ruleIds?: {
+    malformed: WriteRuleId;
+    wildcard: WriteRuleId;
+    tooLong: WriteRuleId;
+  },
 ): void {
   if (!isWellFormedId(objectId, OBJECT_ID_RESERVED)) {
     throw new InvalidObjectError(
@@ -422,6 +428,7 @@ export function validateObjectRef(
       objectId,
       "an object id must be non-empty and hold no ':', '#', " +
         "space or control character",
+      ruleIds?.malformed,
     );
   }
   if (objectId === "*") {
@@ -429,6 +436,8 @@ export function validateObjectRef(
       "object id is a typed wildcard",
       objectType,
       objectId,
+      undefined,
+      ruleIds?.wildcard,
     );
   }
   const runes = [...`${objectType}:${objectId}`].length;
@@ -438,6 +447,7 @@ export function validateObjectRef(
       objectType,
       objectId,
       `${runes} characters exceeds ${runeLimit}`,
+      ruleIds?.tooLong,
     );
   }
 }
@@ -594,6 +604,7 @@ export function validateRequestContext(
     "context contains forbidden characters",
     found.path,
     found.value,
+    "REQUEST-CONTEXT-FORBIDDEN-CHARS",
   );
 }
 
@@ -644,7 +655,11 @@ export async function validateTupleWrite(
     request.relation,
   );
   if (!config) {
-    throw new RelationConfigNotFoundError(request.objectType, request.relation);
+    throw new RelationConfigNotFoundError(
+      request.objectType,
+      request.relation,
+      "TUPLE-RELATION-UNDEFINED",
+    );
   }
 
   const shape = subjectShape(
@@ -673,6 +688,8 @@ export async function validateTupleWrite(
       request.relation,
       config.directlyAssignable,
       "malformed subject",
+      undefined,
+      "TUPLE-SUBJECT-WILDCARD-SHAPE",
     );
   }
 
@@ -705,6 +722,7 @@ export async function validateTupleWrite(
       config.directlyAssignable,
       "malformed subject",
       subjectDefect,
+      "TUPLE-SUBJECT-MALFORMED",
     );
   }
 
@@ -712,6 +730,11 @@ export async function validateTupleWrite(
     request.objectType,
     request.objectId,
     WRITE_OBJECT_RUNE_LIMIT,
+    {
+      malformed: "TUPLE-OBJECT-MALFORMED",
+      wildcard: "TUPLE-OBJECT-WILDCARD",
+      tooLong: "TUPLE-OBJECT-TOO-LONG",
+    },
   );
 
   if (!admitsSubjectShape(config, shape)) {
@@ -720,6 +743,9 @@ export async function validateTupleWrite(
       request.objectType,
       request.relation,
       config.directlyAssignable,
+      undefined,
+      undefined,
+      "TUPLE-SUBJECT-NOT-ADMITTED",
     );
   }
 
@@ -731,10 +757,11 @@ export async function validateTupleWrite(
   );
   // Explicitly typed so TypeScript treats it as never-returning
   // and narrows after each call.
-  const refuse: (cause: ConditionalTupleCause, detail?: string) => never = (
-    cause,
-    detail,
-  ) => {
+  const refuse: (
+    ruleId: WriteRuleId,
+    cause: ConditionalTupleCause,
+    detail?: string,
+  ) => never = (ruleId, cause, detail) => {
     throw new InvalidConditionalTupleError(
       cause,
       ref,
@@ -742,6 +769,7 @@ export async function validateTupleWrite(
       request.relation,
       config.directlyAssignable,
       detail,
+      ruleId,
     );
   };
 
@@ -757,7 +785,11 @@ export async function validateTupleWrite(
     if (context === null || context === undefined) return;
     const size = protoStructSize(context);
     if (size > limit) {
-      refuse("context size limit exceeded", `${size} bytes exceeds ${limit}`);
+      refuse(
+        "TUPLE-CONTEXT-TOO-LARGE",
+        "context size limit exceeded",
+        `${size} bytes exceeds ${limit}`,
+      );
     }
   };
 
@@ -766,7 +798,9 @@ export async function validateTupleWrite(
   // definition to look up, no context to read — so it costs no
   // extra round-trip.
   if (ref.condition === undefined) {
-    if (!admitsSubjectRef(config, ref)) refuse("condition is missing");
+    if (!admitsSubjectRef(config, ref)) {
+      refuse("TUPLE-CONDITION-MISSING", "condition is missing");
+    }
     enforceContextSize();
     return;
   }
@@ -777,7 +811,11 @@ export async function validateTupleWrite(
   // control character reports *that*, not "undefined condition",
   // even though no such condition can be defined.
   if (hasControlChar(ref.condition)) {
-    refuse("context contains forbidden characters", "condition name");
+    refuse(
+      "TUPLE-CONDITION-NAME-FORBIDDEN-CHARS",
+      "context contains forbidden characters",
+      "condition name",
+    );
   }
 
   // Upstream's order, and it is observable: a name that is not
@@ -787,10 +825,13 @@ export async function validateTupleWrite(
   // type restriction"; an undefined one reports "undefined
   // condition" whatever the restriction says.
   const definition = await store.findConditionDefinition(ref.condition);
-  if (!definition) refuse("undefined condition");
+  if (!definition) refuse("TUPLE-CONDITION-UNDEFINED", "undefined condition");
 
   if (!admitsSubjectRef(config, ref)) {
-    refuse("invalid condition for type restriction");
+    refuse(
+      "TUPLE-CONDITION-NOT-ADMITTED",
+      "invalid condition for type restriction",
+    );
   }
 
   const context = request.conditionContext;
@@ -801,7 +842,11 @@ export async function validateTupleWrite(
   // that is both mistyped and dirty reports the characters.
   const offending = forbiddenChars(context);
   if (offending !== null) {
-    refuse("context contains forbidden characters", JSON.stringify(offending));
+    refuse(
+      "TUPLE-CONTEXT-FORBIDDEN-CHARS",
+      "context contains forbidden characters",
+      JSON.stringify(offending),
+    );
   }
 
   // Only the keys actually present are validated. A conditioned
@@ -812,6 +857,7 @@ export async function validateTupleWrite(
     coerceContext(definition.parameters, context);
   } catch (error) {
     refuse(
+      "TUPLE-CONTEXT-PARAMETER-TYPE",
       "parameter type error",
       error instanceof Error ? error.message : String(error),
     );
@@ -824,7 +870,11 @@ export async function validateTupleWrite(
   const declared = definition.parameters ?? {};
   for (const key of Object.keys(context)) {
     if (!(key in declared)) {
-      refuse("invalid context parameter", key);
+      refuse(
+        "TUPLE-CONTEXT-PARAMETER-UNDECLARED",
+        "invalid context parameter",
+        key,
+      );
     }
   }
 

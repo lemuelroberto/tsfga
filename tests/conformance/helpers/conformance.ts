@@ -10,6 +10,7 @@ import {
   type TsfgaClient,
   TsfgaError,
   type TypeRestriction,
+  type WriteRuleId,
 } from "@tsfga/core";
 import {
   type FgaContextualTuple,
@@ -365,6 +366,43 @@ export async function expectWriteConformance(
 
   expect(tsfga.outcome).toBe(openFgaOutcome);
   expect(tsfga.outcome).toBe(expected);
+}
+
+/**
+ * As `expectWriteConformance`, and additionally: assert **which**
+ * tsfga rule refused.
+ *
+ * A tuple carrying two defects is refused by whichever rule runs
+ * first, and that order is upstream's. `expectWriteConformance`
+ * reduces both sides to a word, so it cannot tell one refusal from
+ * another and a reordering reads as green.
+ *
+ * The rule is asserted on **tsfga's own** error and never across
+ * engines, for the reason `expectPinnedModelWriteDivergence`
+ * gives: the two engines' prose can never be equal, so comparing
+ * it would pin OpenFGA's wording rather than its behaviour.
+ *
+ * Not for a case whose defect is the *identifier itself*. A rule
+ * gating the id domain would take precedence over every rule
+ * below it, so pinning one there pins a decision about where such
+ * a rule belongs rather than upstream's order.
+ */
+export async function expectWriteConformanceWithCause(
+  storeId: string,
+  authorizationModelId: string,
+  tsfgaClient: TsfgaClient,
+  tuple: AddTupleRequest,
+  expected: "accepted" | "refused",
+  pin: { tsfga: WriteRuleId },
+): Promise<void> {
+  const [tsfga, openFgaOutcome] = await Promise.all([
+    tsfgaWriteOutcome(tsfgaClient, tuple),
+    upstreamWriteOutcome(storeId, authorizationModelId, tuple),
+  ]);
+
+  expect(tsfga.outcome).toBe(openFgaOutcome);
+  expect(tsfga.outcome).toBe(expected);
+  expect(tsfga.error?.ruleId ?? null).toBe(pin.tsfga);
 }
 
 /** What a tuple write may do. */

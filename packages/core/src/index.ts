@@ -324,6 +324,7 @@ export function createTsfga(
           request.objectType,
           request.objectId,
           request.relation,
+          "TUPLE-IMPLICIT",
         );
       }
       await validateTupleWrite(store, request, {
@@ -344,6 +345,7 @@ export function createTsfga(
           request.subjectType,
           request.subjectId,
           request.subjectRelation ?? null,
+          "TUPLE-DUPLICATE",
         );
       }
     },
@@ -520,6 +522,7 @@ export function createTsfga(
         condition.name,
         condition.expression,
         condition.parameters,
+        "CONDITION-EXPRESSION-COMPILE",
       );
       await store.upsertConditionDefinition(condition);
     },
@@ -609,3 +612,14 @@ export type {
   Tuple,
   TypeRestriction,
 } from "./types.ts";
+export {
+  CAPABILITY_RULE_IDS,
+  type CapabilityRuleId,
+  UPSTREAM_RULE_IDS,
+  type UpstreamRuleId,
+  // `TsfgaError.ruleId` names one of these. A consumer gets a
+  // stable discriminator that does not depend on message prose,
+  // and the two arrays say which refusals are parity with OpenFGA
+  // and which are tsfga's own.
+  type WriteRuleId,
+} from "./write-rules.ts";

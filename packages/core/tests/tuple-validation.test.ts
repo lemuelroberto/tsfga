@@ -814,3 +814,102 @@ describe("addTuple refuses a duplicate", () => {
     ).rejects.toBeInstanceOf(DuplicateTupleError);
   });
 });
+
+/**
+ * Which rule wins when a write carries two defects at once.
+ *
+ * The order of the rules in `validateTupleWrite` is upstream's,
+ * and it is observable: a caller sees one refusal, and which one
+ * it is says which rule ran first. Until `ruleId` existed there
+ * was nothing to assert it with — every refusal reduced to the
+ * same word, so a reordering passed. Measured before these
+ * landed: of seventeen adjacent rule-block swaps, three failed
+ * anything anywhere in the repository.
+ *
+ * Five of the twenty silent sites, one line each. The rest are
+ * listed in the commit that added these.
+ *
+ * **Three of these are about a malformed id**, and a rule that
+ * gates the id domain itself would take precedence over all of
+ * them. That is a decision about where such a rule belongs, not a
+ * test to quietly update.
+ */
+describe("two defects at once report the earlier rule", () => {
+  let store: MockTupleStore;
+  let fga: TsfgaClient;
+
+  beforeEach(() => {
+    store = new MockTupleStore();
+    seed(store);
+    fga = createTsfga(store);
+  });
+
+  /** The rule that refused, or `"accepted"`. */
+  async function ruleFor(request: AddTupleRequest): Promise<string> {
+    try {
+      await fga.addTuple(request);
+      return "accepted";
+    } catch (error) {
+      if (!(error instanceof TsfgaError)) throw error;
+      return error.ruleId ?? "unnamed";
+    }
+  }
+
+  test("implicit beats every gate below it", async () => {
+    // `doc:1#both@doc:1#both` is implicit *and* names a subject
+    // type the relation does not admit.
+    expect(
+      await ruleFor({
+        objectType: "doc",
+        objectId: "1",
+        relation: "both",
+        subjectType: "doc",
+        subjectId: "1",
+        subjectRelation: "both",
+      }),
+    ).toBe("TUPLE-IMPLICIT");
+  });
+
+  test("the wildcard shape beats the rest of IsValidUser", async () => {
+    expect(
+      await ruleFor({
+        objectType: "doc",
+        objectId: "1",
+        relation: "both",
+        subjectType: "user",
+        subjectId: "*",
+        subjectRelation: "x".repeat(600),
+      }),
+    ).toBe("TUPLE-SUBJECT-WILDCARD-SHAPE");
+  });
+
+  test("a malformed subject beats a malformed object", async () => {
+    expect(
+      await ruleFor({
+        objectType: "doc",
+        objectId: "a:b",
+        relation: "both",
+        subjectType: "user",
+        subjectId: "a b",
+      }),
+    ).toBe("TUPLE-SUBJECT-MALFORMED");
+  });
+
+  test("a malformed object beats an unadmitted subject type", async () => {
+    expect(
+      await ruleFor({
+        objectType: "doc",
+        objectId: "a:b",
+        relation: "both",
+        subjectType: "team",
+        subjectId: "t1",
+      }),
+    ).toBe("TUPLE-OBJECT-MALFORMED");
+  });
+
+  test("a parameter type error beats an undeclared key", async () => {
+    expect(await ruleFor(conditioned({ s: 5, stray: "x" }))).toBe(
+      "TUPLE-CONTEXT-PARAMETER-TYPE",
+    );
+  });
+});

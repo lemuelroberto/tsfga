@@ -9,6 +9,13 @@ releases may contain breaking changes).
 
 ### Added
 
+- **`TsfgaError.ruleId`.** Every write- and config-gate refusal
+  names the rule that raised it. `UPSTREAM_RULE_IDS` and
+  `CAPABILITY_RULE_IDS` are exported alongside the `WriteRuleId`,
+  `UpstreamRuleId` and `CapabilityRuleId` types. Additive: the
+  field is `null` on every error that is not a write refusal, and
+  no constructor signature loses an argument.
+
 - **The write-gate cause inventory.**
   `packages/core/write-gate-causes.json` enumerates every refusal
   OpenFGA v1.18.2 constructs in the seven Go files carrying its

@@ -715,8 +715,25 @@ and errors, the `TupleStore` interface, `check`, `checkMany`,
 and the validation helpers a store author needs —
 `admitsSubjectRef`, `admitsSubjectShape`, `directSubjectRef`,
 `subjectShape`, `formatRestriction`, `isSelfDefining`,
-`validateTupleWrite` and `validateRelationConfigWrite`.
-`KyselyTupleStore` is exported from `@tsfga/kysely`.
+`validateTupleWrite` and `validateRelationConfigWrite`. It also
+re-exports the two write-rule namespaces — `UPSTREAM_RULE_IDS`,
+`CAPABILITY_RULE_IDS` and the `WriteRuleId`, `UpstreamRuleId` and
+`CapabilityRuleId` types — which name what `TsfgaError.ruleId`
+carries. `KyselyTupleStore` is exported from `@tsfga/kysely`.
+
+**Every write rule names itself, and the ids are not an order.**
+`packages/core/src/write-rules.ts` holds two id namespaces:
+`UPSTREAM_RULE_IDS`, in total bijection with
+`packages/core/write-gate-causes.json`, and `CAPABILITY_RULE_IDS`,
+for refusals tsfga makes that OpenFGA does not. The rules
+themselves stay where they are in `tuple-validation.ts`,
+`config-validation.ts` and `index.ts`; an id is a trailing
+argument at the raise site. **Do not lift them into an ordered
+table.** A rule's array index would become its precedence, no
+per-rule diff can see an index, and the reordering that results is
+invisible to the suite — measured: splitting one restriction loop
+into two passes changed which cause a malformed config reported,
+and every test still passed.
 
 ## API Stability Policy (pre-v1)
 

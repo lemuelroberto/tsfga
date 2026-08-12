@@ -15,6 +15,7 @@ import type {
   ConditionParameterType,
   Tuple,
 } from "./types.ts";
+import type { WriteRuleId } from "./write-rules.ts";
 
 /**
  * The one CEL environment every expression is parsed in.
@@ -512,12 +513,13 @@ function typeCheck(
     | Readonly<Record<string, ConditionParameterType>>
     | null
     | undefined,
+  ruleId?: WriteRuleId,
 ): void {
   if (parameters === undefined || parameters === null) return;
   try {
     refuseUntypedExpression(compiled.ast.input, parameters);
   } catch (error) {
-    throw new ConditionCompileError(conditionName, error);
+    throw new ConditionCompileError(conditionName, error, ruleId);
   }
 }
 
@@ -544,6 +546,7 @@ export function compileCondition(
   conditionName: string,
   expression: string,
   parameters?: Readonly<Record<string, ConditionParameterType>> | null,
+  ruleId?: WriteRuleId,
 ): ParseResult {
   const cached = exprCache.get(expression);
   if (cached) {
@@ -553,7 +556,7 @@ export function compileCondition(
     // than the bound, which is the case the bound exists for.
     exprCache.delete(expression);
     exprCache.set(expression, cached);
-    typeCheck(conditionName, cached, parameters);
+    typeCheck(conditionName, cached, parameters, ruleId);
     return cached;
   }
   let compiled: ParseResult;
@@ -565,9 +568,9 @@ export function compileCondition(
     // above, a non-`TsfgaError` escapes `writeConditionDefinition`.
     refuseUndeclaredCalls(compiled.ast);
   } catch (error) {
-    throw new ConditionCompileError(conditionName, error);
+    throw new ConditionCompileError(conditionName, error, ruleId);
   }
-  typeCheck(conditionName, compiled, parameters);
+  typeCheck(conditionName, compiled, parameters, ruleId);
   if (exprCache.size >= EXPR_CACHE_MAX_ENTRIES) {
     const oldest = exprCache.keys().next();
     if (!oldest.done) exprCache.delete(oldest.value);

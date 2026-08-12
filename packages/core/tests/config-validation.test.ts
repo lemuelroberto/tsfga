@@ -537,3 +537,92 @@ describe("createTsfga validates writeContextByteLimit", () => {
     }
   });
 });
+
+/**
+ * Which rule wins when a config carries two defects at once.
+ *
+ * The order in `validateRelationConfigWrite` is upstream's, and it
+ * is observable in exactly the way `tuple-validation.test.ts`
+ * describes: one refusal comes back, and which one says which rule
+ * ran first. Five of the silent sites, one assertion each.
+ */
+describe("two config defects at once report the earlier rule", () => {
+  let store: MockTupleStore;
+  let fga: TsfgaClient;
+
+  beforeEach(() => {
+    store = new MockTupleStore();
+    fga = createTsfga(store);
+  });
+
+  /** The rule that refused, or `"accepted"`. */
+  async function ruleFor(written: Promise<unknown>): Promise<string> {
+    try {
+      await written;
+      return "accepted";
+    } catch (error) {
+      if (!(error instanceof InvalidRelationConfigError)) throw error;
+      return error.ruleId ?? "unnamed";
+    }
+  }
+
+  test("the type name is judged before the relation name", async () => {
+    expect(
+      await ruleFor(
+        fga.writeRelationConfig(
+          config({ objectType: "do c", relation: "vie:wer" }),
+        ),
+      ),
+    ).toBe("CONFIG-TYPE-NAME-MALFORMED");
+  });
+
+  test("a self-naming rewrite beats a short intersection", async () => {
+    expect(
+      await ruleFor(
+        fga.writeRelationConfig(
+          config({
+            intersection: [{ type: "computedUserset", relation: "viewer" }],
+          }),
+        ),
+      ),
+    ).toBe("CONFIG-REWRITE-NAMES-ITSELF");
+  });
+
+  test("a short intersection beats admitting and rewriting nothing", async () => {
+    expect(
+      await ruleFor(fga.writeRelationConfig(config({ intersection: [] }))),
+    ).toBe("CONFIG-INTERSECTION-TOO-FEW-OPERANDS");
+  });
+
+  test("a tupleset userset is reported before a tupleset wildcard", async () => {
+    await fga.writeRelationConfig(
+      config({
+        relation: "parent",
+        directlyAssignable: [
+          { type: "folder", relation: "member", wildcard: true },
+        ],
+      }),
+    );
+    expect(
+      await ruleFor(
+        fga.writeRelationConfig(
+          config({
+            tupleToUserset: [{ tupleset: "parent", computedUserset: "viewer" }],
+          }),
+        ),
+      ),
+    ).toBe("CONFIG-TUPLESET-ADMITS-USERSET");
+  });
+
+  test("a condition name is judged before its parameter keys", async () => {
+    expect(
+      await ruleFor(
+        fga.writeConditionDefinition({
+          name: "bad name",
+          expression: "true",
+          parameters: { "bad:key": "string" },
+        }),
+      ),
+    ).toBe("CONDITION-NAME-MALFORMED");
+  });
+});

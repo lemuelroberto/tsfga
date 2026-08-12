@@ -1,5 +1,6 @@
 import type { SubjectShape } from "./tuple-validation.ts";
 import type { TypeRestriction } from "./types.ts";
+import type { WriteRuleId } from "./write-rules.ts";
 
 /**
  * The base every error this library raises extends, so a caller
@@ -19,15 +20,33 @@ import type { TypeRestriction } from "./types.ts";
  * catching `TsfgaError` sees it either way.
  */
 export class TsfgaError extends Error {
-  constructor(message: string) {
+  /**
+   * Which write rule refused, when a write rule did.
+   *
+   * `null` everywhere else -- an option error, a check-path
+   * refusal, an evaluation failure. It is the join between the
+   * code that refuses and
+   * `packages/core/write-gate-causes.json`, and it is what lets an
+   * assertion be about *which* of two competing refusals won: a
+   * tuple carrying two defects is refused by whichever rule runs
+   * first, and a test that can only see "refused" reports a
+   * reordering as green.
+   *
+   * See `write-rules.ts` for the two namespaces and why there are
+   * two.
+   */
+  readonly ruleId: WriteRuleId | null;
+
+  constructor(message: string, ruleId?: WriteRuleId) {
     super(message);
     this.name = "TsfgaError";
+    this.ruleId = ruleId ?? null;
   }
 }
 
 export class RelationConfigNotFoundError extends TsfgaError {
-  constructor(objectType: string, relation: string) {
-    super(`No relation config found for ${objectType}.${relation}`);
+  constructor(objectType: string, relation: string, ruleId?: WriteRuleId) {
+    super(`No relation config found for ${objectType}.${relation}`, ruleId);
     this.name = "RelationConfigNotFoundError";
   }
 }
@@ -135,6 +154,7 @@ export class InvalidSubjectTypeError extends TsfgaError {
     allowed: readonly TypeRestriction[],
     cause?: SubjectDefect,
     detail?: string,
+    ruleId?: WriteRuleId,
   ) {
     super(
       cause === undefined
@@ -142,6 +162,7 @@ export class InvalidSubjectTypeError extends TsfgaError {
             `${objectType}.${relation}`
         : `Invalid subject for ${objectType}.${relation}: ${cause}` +
             (detail === undefined ? "" : ` (${detail})`),
+      ruleId,
     );
     this.name = "InvalidSubjectTypeError";
     if (cause !== undefined) this.cause = cause;
@@ -223,10 +244,12 @@ export class InvalidObjectError extends TsfgaError {
     objectType: string,
     objectId: string,
     detail?: string,
+    ruleId?: WriteRuleId,
   ) {
     super(
       `Invalid object '${objectType}:${objectId}': ${cause}` +
         (detail === undefined ? "" : ` (${detail})`),
+      ruleId,
     );
     this.name = "InvalidObjectError";
     this.cause = cause;
@@ -301,11 +324,13 @@ export class InvalidConditionalTupleError extends TsfgaError {
     relation: string,
     allowed: readonly TypeRestriction[],
     detail?: string,
+    ruleId?: WriteRuleId,
   ) {
     super(
       `Invalid conditional tuple for ${objectType}.${relation}: ${cause}` +
         (detail === undefined ? "" : ` (${detail})`) +
         `. Subject: '${formatRestriction(subject)}'`,
+      ruleId,
     );
     this.name = "InvalidConditionalTupleError";
     this.cause = cause;
@@ -333,9 +358,14 @@ export class ImplicitTupleError extends TsfgaError {
   readonly objectId: string;
   readonly relation: string;
 
-  constructor(objectType: string, objectId: string, relation: string) {
+  constructor(
+    objectType: string,
+    objectId: string,
+    relation: string,
+    ruleId?: WriteRuleId,
+  ) {
     const ref = `${objectType}:${objectId}#${relation}`;
-    super(`Cannot write a tuple that is implicit: ${ref}@${ref}`);
+    super(`Cannot write a tuple that is implicit: ${ref}@${ref}`, ruleId);
     this.name = "ImplicitTupleError";
     this.objectType = objectType;
     this.objectId = objectId;
@@ -368,6 +398,7 @@ export class DuplicateTupleError extends TsfgaError {
     subjectType: string,
     subjectId: string,
     subjectRelation: string | null,
+    ruleId?: WriteRuleId,
   ) {
     const subject =
       subjectRelation === null
@@ -376,6 +407,7 @@ export class DuplicateTupleError extends TsfgaError {
     super(
       `Cannot write a tuple which already exists: ` +
         `${objectType}:${objectId}#${relation}@${subject}`,
+      ruleId,
     );
     this.name = "DuplicateTupleError";
     this.objectType = objectType;
@@ -554,13 +586,17 @@ export class InvalidRelationConfigError extends TsfgaError {
     relation: string | null,
     detail?: string,
     conditionName?: string,
+    ruleId?: WriteRuleId,
   ) {
     const where =
       objectType === null || relation === null
         ? `Invalid condition definition` +
           (conditionName === undefined ? "" : ` '${conditionName}'`)
         : `Invalid relation config for ${objectType}.${relation}`;
-    super(`${where}: ${cause}${detail === undefined ? "" : ` (${detail})`}`);
+    super(
+      `${where}: ${cause}${detail === undefined ? "" : ` (${detail})`}`,
+      ruleId,
+    );
     this.name = "InvalidRelationConfigError";
     this.cause = cause;
     this.objectType = objectType;
@@ -622,12 +658,14 @@ export class InvalidRequestContextError extends TsfgaError {
     cause: RequestContextDefect,
     path: readonly string[],
     value?: string,
+    ruleId?: WriteRuleId,
   ) {
     super(
       `Invalid request context` +
         (path.length === 0 ? "" : ` at '${path.join(".")}'`) +
         `: ${cause}` +
         (value === undefined ? "" : ` ('${value}')`),
+      ruleId,
     );
     this.name = "InvalidRequestContextError";
     this.cause = cause;
@@ -654,8 +692,8 @@ export class ConditionNotFoundError extends TsfgaError {
  */
 export class ConditionCompileError extends TsfgaError {
   override readonly cause: unknown;
-  constructor(conditionName: string, cause: unknown) {
-    super(`Failed to compile condition '${conditionName}': ${cause}`);
+  constructor(conditionName: string, cause: unknown, ruleId?: WriteRuleId) {
+    super(`Failed to compile condition '${conditionName}': ${cause}`, ruleId);
     this.name = "ConditionCompileError";
     this.cause = cause;
   }
