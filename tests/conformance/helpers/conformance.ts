@@ -1,5 +1,6 @@
 import { expect } from "bun:test";
 import * as fs from "node:fs";
+import type { WriteAuthorizationModelRequest } from "@openfga/sdk";
 import { transformer } from "@openfga/syntax-transformer";
 import {
   type AddTupleRequest,
@@ -15,6 +16,7 @@ import {
   fgaCheck,
   fgaListObjects,
   fgaWrite,
+  fgaWriteModelOutcome,
 } from "./openfga.ts";
 
 /**
@@ -415,6 +417,115 @@ export async function expectPinnedWriteDivergence(
         throw error;
       }),
     fgaWrite(storeId, authorizationModelId, tuple),
+  ]);
+
+  expect(openFgaOutcome).toBe(expected.openfga);
+  expect(tsfgaOutcome).toBe(expected.tsfga);
+}
+
+/** What a model write may do. */
+export type ModelWriteOutcome = "accepted" | "refused";
+
+/**
+ * Run a tsfga write and report whether tsfga took it.
+ *
+ * The tsfga side is a thunk rather than a typed payload because
+ * OpenFGA validates a whole model in one call while tsfga
+ * validates per relation config and per condition definition. The
+ * caller passes whichever write carries the shape under test —
+ * `writeConditionDefinition`, `writeRelationConfig`, or several of
+ * them in sequence.
+ *
+ * A tsfga refusal counts only when it is a `TsfgaError`, as
+ * everywhere else in this file: a mis-ordered fixture or a dropped
+ * connection reported as a refusal would satisfy the assertion it
+ * was meant to test.
+ */
+async function tsfgaModelWriteOutcome(
+  tsfgaWrite: () => Promise<unknown>,
+  cause?: string,
+): Promise<ModelWriteOutcome> {
+  try {
+    await tsfgaWrite();
+    return "accepted";
+  } catch (error: unknown) {
+    if (!(error instanceof TsfgaError)) throw error;
+    // The cause is asserted on tsfga's own error and never across
+    // engines: OpenFGA's message and tsfga's will never be equal,
+    // so comparing them would be two independent assertions wearing
+    // one, and asserting on upstream's text is the version rot pins
+    // exist to prevent.
+    if (cause !== undefined) expect(error.message).toContain(cause);
+    return "refused";
+  }
+}
+
+/**
+ * Assert that tsfga and OpenFGA agree on whether a model may be
+ * *written* at all.
+ *
+ * The model-write counterpart to `expectWriteConformance`. Model
+ * validation is a moment of its own: OpenFGA compiles every
+ * condition while it validates the model, so an expression that
+ * cannot compile is refused at `WriteAuthorizationModel` and never
+ * reaches a check. A suite that only asserts checks cannot see
+ * that moment at all.
+ *
+ * `expected` is what both systems must do, so a test that asserts
+ * a *legal* model also fails if either side wrongly refuses it.
+ */
+export async function expectModelWriteConformance(
+  storeId: string,
+  model: WriteAuthorizationModelRequest,
+  tsfgaWrite: () => Promise<unknown>,
+  expected: ModelWriteOutcome,
+): Promise<void> {
+  const [tsfgaOutcome, openFgaOutcome] = await Promise.all([
+    tsfgaModelWriteOutcome(tsfgaWrite),
+    fgaWriteModelOutcome(storeId, model).then(
+      (outcome): ModelWriteOutcome =>
+        outcome === "accepted" ? "accepted" : "refused",
+    ),
+  ]);
+
+  expect(tsfgaOutcome).toBe(openFgaOutcome);
+  expect(tsfgaOutcome).toBe(expected);
+}
+
+/**
+ * Pin a *model-write* divergence: assert what each engine does
+ * with the same model, knowing they do different things.
+ *
+ * Refuses to pass on agreement, like its two siblings. A pinned
+ * model write that has stopped diverging is not a passing test, it
+ * is a README paragraph to delete and an
+ * `expectModelWriteConformance` to write.
+ *
+ * `options.tsfgaCause` discriminates between competing refusals on
+ * tsfga's own side. Three distinct write-time gates — the
+ * declaration allow-list, the type check, and a parse failure —
+ * all surface as `"refused"`, so a pin firing for the wrong one is
+ * indistinguishable from one firing for the right one, and it
+ * would keep passing after the gate it names was removed. It is
+ * optional because most cells have no competing refusal: when both
+ * engines refuse an unparseable expression, which parser
+ * complained is not interesting.
+ */
+export async function expectPinnedModelWriteDivergence(
+  storeId: string,
+  model: WriteAuthorizationModelRequest,
+  tsfgaWrite: () => Promise<unknown>,
+  expected: { openfga: ModelWriteOutcome; tsfga: ModelWriteOutcome },
+  options?: { tsfgaCause?: string },
+): Promise<void> {
+  expect(expected.openfga).not.toBe(expected.tsfga);
+
+  const [tsfgaOutcome, openFgaOutcome] = await Promise.all([
+    tsfgaModelWriteOutcome(tsfgaWrite, options?.tsfgaCause),
+    fgaWriteModelOutcome(storeId, model).then(
+      (outcome): ModelWriteOutcome =>
+        outcome === "accepted" ? "accepted" : "refused",
+    ),
   ]);
 
   expect(openFgaOutcome).toBe(expected.openfga);

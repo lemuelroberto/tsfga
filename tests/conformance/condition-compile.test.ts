@@ -10,6 +10,7 @@ import {
 import type { DB } from "@tsfga/kysely";
 import { KyselyTupleStore } from "@tsfga/kysely";
 import type { Kysely } from "kysely";
+import { expectModelWriteConformance } from "./helpers/conformance.ts";
 import {
   beginTransaction,
   destroyDb,
@@ -95,28 +96,17 @@ describe("Condition Compilation Conformance", () => {
 
   for (const [i, expression] of UNPARSEABLE.entries()) {
     test(`both refuse to define ${JSON.stringify(expression)}`, async () => {
-      const [tsfgaOutcome, openFgaOutcome] = await Promise.all([
-        tsfgaClient
-          .writeConditionDefinition({
+      await expectModelWriteConformance(
+        storeId,
+        modelWith(expression),
+        () =>
+          tsfgaClient.writeConditionDefinition({
             name: `gate_${i}`,
             expression,
             parameters: { x: "int" },
-          })
-          .then(() => "accepted" as const)
-          .catch((error: unknown) => {
-            // Only tsfga's own refusal counts. A dropped connection
-            // reported as a refusal would satisfy the assertion it
-            // exists to make.
-            if (error instanceof TsfgaError) return "refused" as const;
-            throw error;
           }),
-        fgaWriteModelOutcome(storeId, modelWith(expression)).then((outcome) =>
-          outcome === "accepted" ? "accepted" : "refused",
-        ),
-      ]);
-
-      expect(tsfgaOutcome).toBe(openFgaOutcome);
-      expect(tsfgaOutcome).toBe("refused");
+        "refused",
+      );
     });
   }
 
