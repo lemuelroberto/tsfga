@@ -911,6 +911,271 @@ describe("matches() reads its pattern as RE2, not as a RegExp", () => {
 });
 
 /**
+ * The RE2 translation is **total**: every construct either
+ * translates faithfully or refuses.
+ *
+ * It used to pass anything it did not recognise through to
+ * `new RegExp`, which is not the neutral act it looks like. The
+ * `u` flag rejects an unknown escape, the compile then retried
+ * without `u`, and Annex B web compatibility reads `\A` as the
+ * literal letter `A` — so `\Aabc` matched `Aabc` and did not match
+ * `abc`, in both directions, with no error anywhere (issue 383).
+ * That is the only failure mode in this area that a caller cannot
+ * see, and refusing by default closes it for constructs nobody has
+ * enumerated as well as for the ones below.
+ *
+ * The conformance assertions live in
+ * `tests/conformance/c5-cel-re2.test.ts`, against the container.
+ * These are the unit-level rows, including the ones no model in
+ * that suite can reach — `(?s)` and `(?m)` need a subject holding a
+ * newline, and both engines refuse a control character in a request
+ * context (issue 386), so this file is the only place they are
+ * reachable at all.
+ */
+describe("the RE2 translation refuses what it cannot spell", () => {
+  const matches = async (
+    subject: string,
+    pattern: string,
+  ): Promise<boolean> => {
+    const store = new MockTupleStore();
+    store.conditionDefinitions.push({
+      name: "re",
+      expression: "s.matches(r)",
+      parameters: { s: "string", r: "string" },
+    });
+    return evaluateTupleCondition(store, makeTuple({ conditionName: "re" }), {
+      s: subject,
+      r: pattern,
+    });
+  };
+
+  const refuses = (pattern: string) =>
+    expect(matches("a", pattern)).rejects.toBeInstanceOf(
+      ConditionEvaluationError,
+    );
+
+  /** Whether a *constant* pattern is refused at write time, which
+   *  is the `invalid` / `untranslatable` split made observable. */
+  const write = async (pattern: string): Promise<string> => {
+    const client = createTsfga(new MockTupleStore());
+    return client
+      .writeConditionDefinition({
+        name: "re",
+        expression: `s.matches(${JSON.stringify(pattern)})`,
+        parameters: { s: "string" },
+      })
+      .then(() => "accepted")
+      .catch((error: unknown) =>
+        error instanceof ConditionCompileError ? "refused" : "other",
+      );
+  };
+
+  describe("the flags a model in the suite cannot reach", () => {
+    // A newline is a control character, and both engines refuse one
+    // in a request context, so no conformance cell can carry it.
+    test("(?s) makes . match a newline", async () => {
+      expect(await matches("a\nb", "^a.b$")).toBe(false);
+      expect(await matches("a\nb", "(?s)^a.b$")).toBe(true);
+    });
+
+    test("(?m) anchors each line", async () => {
+      expect(await matches("a\nb", "^b$")).toBe(false);
+      expect(await matches("a\nb", "(?m)^b$")).toBe(true);
+    });
+
+    test("\\A and \\z are the text anchors (?m) does not move", async () => {
+      expect(await matches("a\nb", "\\Aa")).toBe(true);
+      expect(await matches("a\nb", "\\Ab")).toBe(false);
+      expect(await matches("a\nb", "b\\z")).toBe(true);
+      expect(await matches("a\nb", "a\\z")).toBe(false);
+    });
+
+    test("\\A under (?m) refuses rather than becoming ^", async () => {
+      // `^` is `\A` only while `m` is absent, and RE2 has no other
+      // spelling of the text anchor JavaScript could reach. RE2
+      // compiles the pattern, so the *write* must still succeed.
+      await refuses("(?m)\\Aa");
+      expect(await write("(?m)\\Aa")).toBe("accepted");
+    });
+  });
+
+  describe("383: escapes JavaScript would read as literals", () => {
+    test("\\A is the start of the text, not the letter A", async () => {
+      expect(await matches("abc", "\\Aabc")).toBe(true);
+      expect(await matches("Aabc", "\\Aabc")).toBe(false);
+    });
+
+    test("\\z is the end of the text, not the letter z", async () => {
+      expect(await matches("abc", "abc\\z")).toBe(true);
+      expect(await matches("abcz", "abc\\z")).toBe(false);
+    });
+
+    test("\\Q…\\E quotes its contents", async () => {
+      expect(await matches("a.c", "^\\Qa.c\\E$")).toBe(true);
+      expect(await matches("abc", "^\\Qa.c\\E$")).toBe(false);
+      expect(await matches("a+b", "^\\Qa+b\\E$")).toBe(true);
+    });
+
+    test("an unterminated \\Q runs to the end of the pattern", async () => {
+      expect(await matches("a.c", "^\\Qa.c")).toBe(true);
+      expect(await matches("axc", "^\\Qa.c")).toBe(false);
+    });
+
+    test("\\x{…} is a wide hex escape and \\xHH a narrow one", async () => {
+      expect(await matches("\u{1F600}", "^\\x{1F600}$")).toBe(true);
+      expect(await matches("A", "^\\x41$")).toBe(true);
+      expect(await matches("x", "^\\x41$")).toBe(false);
+    });
+
+    test("\\a is the bell character", async () => {
+      expect(await matches("\u0007", "^\\a$")).toBe(true);
+      expect(await matches("a", "^\\a$")).toBe(false);
+    });
+
+    test("\\s is RE2's five characters, not JavaScript's set", async () => {
+      // Go's `\s` is `[\t\n\f\r ]`. JavaScript's also holds `\v`,
+      // every `Zs` space and the BOM, so passing it through widened
+      // the class silently and invisibly.
+      expect(await matches(" ", "^\\s$")).toBe(true);
+      expect(await matches("\t", "^\\s$")).toBe(true);
+      expect(await matches("\u000b", "^\\s$")).toBe(false);
+      expect(await matches("\u00a0", "^\\s$")).toBe(false);
+      expect(await matches("\u000b", "^\\S$")).toBe(true);
+      expect(await matches("a b", "^[a-z\\s]+$")).toBe(true);
+      expect(await matches("a\u00a0b", "^[a-z\\s]+$")).toBe(false);
+    });
+  });
+
+  describe("384: RE2 syntax that has a JavaScript spelling", () => {
+    test("an octal escape", async () => {
+      expect(await matches("A", "^\\101$")).toBe(true);
+      expect(await matches("\n", "^\\12$")).toBe(true);
+      expect(await matches(" ", "^\\0$")).toBe(true);
+    });
+
+    test("a lone backreference digit is still refused", async () => {
+      // `\1` alone is a backreference, which RE2 does not have.
+      await refuses("(a)\\1");
+      expect(await write("(a)\\1")).toBe("refused");
+    });
+
+    test("a script name becomes \\p{Script=…}", async () => {
+      expect(await matches("α", "^\\p{Greek}$")).toBe(true);
+      expect(await matches("a", "^\\p{Greek}$")).toBe(false);
+      expect(await matches("a", "^\\p{Latin}$")).toBe(true);
+    });
+
+    test("a general category keeps its own spelling", async () => {
+      expect(await matches("a", "^\\p{Ll}$")).toBe(true);
+      expect(await matches("A", "^\\p{Ll}$")).toBe(false);
+    });
+
+    test("a negation inside the braces becomes \\P", async () => {
+      expect(await matches("a", "^\\p{^L}$")).toBe(false);
+      expect(await matches("1", "^\\p{^L}$")).toBe(true);
+      expect(await matches("a", "^\\P{^L}$")).toBe(true);
+    });
+
+    test("\\p{Any} is every rune", async () => {
+      expect(await matches("😀", "^\\p{Any}$")).toBe(true);
+      expect(await matches("😀", "^[\\p{Any}]$")).toBe(true);
+    });
+
+    test("a duplicate group name is renamed, not refused", async () => {
+      // RE2 allows one name twice and JavaScript does not. Nothing
+      // in this module ever reads a capture back, so renaming the
+      // later one is free.
+      expect(await matches("aa", "^(?P<n>a)(?P<n>a)$")).toBe(true);
+      expect(await matches("a", "^(?P<n>a)(?P<n>a)$")).toBe(false);
+    });
+
+    test("the three inline flag forms stay refused", async () => {
+      // Deliberate, and the residue this pass leaves: JavaScript's
+      // modifier groups reached V8 only in 12.5, later than the
+      // runtimes this package supports. RE2 accepts all three, so
+      // none of them refuses the write.
+      for (const pattern of ["a(?i)bc", "(?i:abc)", "(?-i)abc"]) {
+        await refuses(pattern);
+        expect(await write(pattern)).toBe("accepted");
+      }
+    });
+  });
+
+  describe("385: patterns RE2 refuses, refused as invalid", () => {
+    // `invalid` rather than `untranslatable`, so a model carrying
+    // one as a constant is refused at write time as upstream
+    // refuses it — issue 241's gate reading this pass's verdicts.
+    for (const pattern of [
+      "[a-\\w]",
+      "[a-[:digit:]]",
+      "[\\b]",
+      "[\\B]",
+      "a{1000}",
+      "a{1001}",
+      "a{2,1000}",
+      "a{2,1}",
+      "\\C",
+    ]) {
+      const name = `${JSON.stringify(pattern)} refuses check and write`;
+      test(name, async () => {
+        await refuses(pattern);
+        expect(await write(pattern)).toBe("refused");
+      });
+    }
+
+    test("a repetition below the ceiling still compiles", async () => {
+      expect(await matches("a".repeat(999), `^a{999}$`)).toBe(true);
+      expect(await matches("aa", "^a{1,999}$")).toBe(true);
+    });
+  });
+
+  describe("an unrecognised construct refuses rather than compiling", () => {
+    for (const pattern of ["\\y", "\\Z", "\\E", "\\8", "\\9", "\\xZZ", "\\"]) {
+      test(`${JSON.stringify(pattern)} is refused`, async () => {
+        await refuses(pattern);
+      });
+    }
+
+    test("an escaped non-ASCII rune is refused", async () => {
+      await refuses("\\é");
+    });
+  });
+
+  describe("what the u flag would have refused is emitted for it", () => {
+    // Each of these used to compile only because the translation
+    // fell back to a non-unicode `RegExp`. There is no fallback
+    // now, so each has to be spelled for the `u` flag.
+    test("a brace that opens no repetition is a literal", async () => {
+      expect(await matches("a{2}", "^a\\{2\\}$")).toBe(true);
+      expect(await matches("a{,2}", "^a{,2}$")).toBe(true);
+      expect(await matches("a}", "^a}$")).toBe(true);
+    });
+
+    test("a bracket outside a bracket expression is a literal", async () => {
+      expect(await matches("a]", "^a]$")).toBe(true);
+      expect(await matches("]", "^[]]$")).toBe(true);
+      expect(await matches("[", "^[[]$")).toBe(true);
+    });
+
+    test("RE2 escapes any ASCII punctuation", async () => {
+      expect(await matches("-", "^\\-$")).toBe(true);
+      expect(await matches("!", "^\\!$")).toBe(true);
+      expect(await matches("/", "^\\/$")).toBe(true);
+    });
+
+    test("a dash after a class is a literal, not a range", async () => {
+      expect(await matches("a-b", "^[\\w-]+$")).toBe(true);
+      expect(await matches("-", "^[[:alpha:]-]$")).toBe(true);
+    });
+
+    test("an astral literal is one code point", async () => {
+      expect(await matches("😀", "^.$")).toBe(true);
+      expect(await matches("😀", "^[😀]$")).toBe(true);
+    });
+  });
+});
+
+/**
  * The splice that puts `matches` on tsfga's implementation, at the
  * seam issue 240 opened.
  *
