@@ -5,6 +5,7 @@ import * as dropUnusedIndexes from "./003-drop-unused-indexes.ts";
 import * as dropMetadataColumns from "./004-drop-metadata-columns.ts";
 import * as typeRestrictions from "./005-type-restrictions.ts";
 import * as subjectIdText from "./006-subject-id-text.ts";
+import * as objectIdText from "./007-object-id-text.ts";
 
 /**
  * All tsfga schema migrations, keyed by name in execution order.
@@ -18,6 +19,7 @@ export const migrations: Record<string, Migration> = {
   "004-drop-metadata-columns": dropMetadataColumns,
   "005-type-restrictions": typeRestrictions,
   "006-subject-id-text": subjectIdText,
+  "007-object-id-text": objectIdText,
 };
 
 /**

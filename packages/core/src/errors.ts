@@ -35,6 +35,39 @@ export function formatRestriction(restriction: TypeRestriction): string {
 }
 
 /**
+ * Every way a subject ref can be refused before its condition is
+ * ever considered.
+ *
+ * `undefined` — no cause at all — is the ordinary case: the type is
+ * well-formed and defined, and simply not among the ones the
+ * relation admits. The named causes are the two refusals upstream
+ * reports on the `user` field ahead of any type restriction, in
+ * `ValidateUser` (`internal/validation/validation.go:357-380`).
+ *
+ * They are causes on `InvalidSubjectTypeError` rather than classes
+ * of their own, and rather than `ConditionalTupleCause` values,
+ * because both are decided without reading the condition.
+ */
+export type SubjectDefect =
+  /**
+   * The ref is not well-formed at all — `team:*#member`, a wildcard
+   * id carrying a subject relation — which upstream refuses in
+   * `IsValidUser` before the type is looked up at all
+   * (`pkg/tuple/tuple.go:477-517`).
+   */
+  | "malformed subject"
+  /**
+   * The ref is well-formed, but its type is not one the model
+   * defines. Upstream's `TypeNotFoundError` on the `user` field,
+   * raised immediately after the well-formedness check and before
+   * any type restriction is consulted.
+   *
+   * Distinct from the ordinary no-cause refusal, which is about a
+   * type the model *does* define and this relation does not admit.
+   */
+  | "undefined subject type";
+
+/**
  * The subject's *type* is not assignable here, whatever condition
  * it might carry.
  *
@@ -49,18 +82,11 @@ export class InvalidSubjectTypeError extends TsfgaError {
    * Why the subject was refused, when the reason is not simply
    * "the relation does not admit this type".
    *
-   * `undefined` is the ordinary case and the only one anything
-   * raises today, so every existing throw site and every existing
-   * message is unchanged. `"malformed subject"` covers a subject
-   * ref that is not well-formed at all — `team:*#member`, a
-   * wildcard id carrying a subject relation — which upstream
-   * refuses in `ValidateUser` *before* any type restriction or
-   * condition is consulted (`pkg/tuple/tuple.go:477-517`). It is
-   * a cause on this error rather than a class of its own, and
-   * rather than a `ConditionalTupleCause`, because it is decided
-   * without reading the condition.
+   * `undefined` is the ordinary case, so every refusal that names
+   * no cause keeps its original message. See `SubjectDefect` for
+   * the named ones.
    */
-  override readonly cause?: "malformed subject";
+  override readonly cause?: SubjectDefect;
   /** The subject ref the write named. */
   readonly subject: SubjectShape;
   readonly objectType: string;
@@ -76,6 +102,12 @@ export class InvalidSubjectTypeError extends TsfgaError {
    * write and get the message back. OpenFGA names only the
    * offending type. A caller with a legitimate reason to see the
    * list reads it here.
+   *
+   * `[]` on a refusal that names a `SubjectDefect` means the
+   * restrictions were never consulted, not that the relation
+   * admits nothing: those causes are decided ahead of them, and
+   * the list is carried only where the caller already held the
+   * config.
    */
   readonly allowed: readonly TypeRestriction[];
 
@@ -84,7 +116,7 @@ export class InvalidSubjectTypeError extends TsfgaError {
     objectType: string,
     relation: string,
     allowed: readonly TypeRestriction[],
-    cause?: "malformed subject",
+    cause?: SubjectDefect,
     detail?: string,
   ) {
     super(
@@ -264,6 +296,28 @@ export class DuplicateTupleError extends TsfgaError {
  * invalid-model error discriminated by its message.
  */
 export type RelationConfigDefect =
+  /**
+   * The object type's own name is not one the model can carry.
+   *
+   * Upstream refuses it at the API boundary, before the typesystem
+   * ever sees the model — `type_invalid_pattern` for a name holding
+   * `:`, `#`, `@`, a space or a control character, and
+   * `type_invalid_length` for an empty or over-long one
+   * (`pkg/server/errors/encoded_errors.go:190-198`). One cause
+   * covers both: upstream's own split is between two proto
+   * constraints on the same field, not between two defects.
+   */
+  | "malformed type name"
+  /**
+   * The relation's own name is not one the model can carry.
+   *
+   * `relation_invalid_pattern` / `relation_invalid_length`, the
+   * same pair on the relation field. The predicate is upstream's
+   * `IsValidRelation` (`pkg/tuple/tuple.go:440-457`) — no `:`,
+   * `#`, `@`, space or control character — under a shorter length
+   * bound than a type name's.
+   */
+  | "malformed relation name"
   /** A set operation with fewer than two children. */
   | "intersection has fewer than two operands"
   /** A tupleset relation may not be assignable to a userset. */

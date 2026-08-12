@@ -303,6 +303,18 @@ export class KyselyTupleStore implements TupleStore {
     return BigInt(result.numDeletedRows) > 0n;
   }
 
+  /**
+   * The distinct object ids of one type, in no particular order —
+   * `listObjects` re-checks every candidate and returns the ones
+   * that hold, so the order carries no meaning and no `ORDER BY`
+   * is paid for.
+   *
+   * Ids come back exactly as they were written. `object_id` is
+   * `text` since migration `007`; while it was `uuid`, PostgreSQL
+   * canonicalised every id on the way in and out, so two ids that
+   * differ only in hex case or hyphenation — two objects upstream
+   * — collapsed into one candidate.
+   */
   async listCandidateObjectIds(objectType: string): Promise<string[]> {
     const rows = await this.db
       .selectFrom("tsfga.tuples")

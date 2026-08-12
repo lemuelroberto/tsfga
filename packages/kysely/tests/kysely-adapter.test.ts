@@ -779,6 +779,100 @@ describe("KyselyTupleStore", () => {
   });
 
   /**
+   * GAP-281. `object_id` is `text` since migration `007`, so an
+   * object id is stored as it was written and compared byte for
+   * byte — as upstream compares it, where `SplitObject` keeps
+   * everything after the first `:` verbatim. While the column was
+   * `uuid`, PostgreSQL parsed and canonicalised every id, so two
+   * ids a caller (and OpenFGA) treat as distinct shared one row
+   * and one set of grants.
+   */
+  describe("Object ids are opaque strings", () => {
+    test("ids differing only in hex case are two objects", async () => {
+      const lower = "00000000-0000-4000-a000-0000000000ff";
+      const upper = lower.toUpperCase();
+
+      await store.insertTuple({
+        objectType: "doc",
+        objectId: upper,
+        relation: "viewer",
+        subjectType: "user",
+        subjectId: uuid2,
+      });
+
+      const written = await readDirect(
+        "doc",
+        upper,
+        "viewer",
+        "user",
+        uuid2,
+      );
+      expect(written?.objectId).toBe(upper);
+      expect(
+        await readDirect("doc", lower, "viewer", "user", uuid2),
+      ).toBeNull();
+      expect(await store.findTuplesByRelation("doc", lower, "viewer")).toEqual(
+        [],
+      );
+    });
+
+    test("a hyphenless id is not the hyphenated one", async () => {
+      const hyphenated = "00000000-0000-4000-a000-0000000000fe";
+      const bare = hyphenated.replaceAll("-", "");
+
+      await store.insertTuple({
+        objectType: "doc",
+        objectId: bare,
+        relation: "viewer",
+        subjectType: "user",
+        subjectId: uuid2,
+      });
+
+      expect((await readDirect("doc", bare, "viewer", "user", uuid2))?.objectId)
+        .toBe(bare);
+      expect(
+        await readDirect("doc", hyphenated, "viewer", "user", uuid2),
+      ).toBeNull();
+    });
+
+    /**
+     * An id no `uuid` column could hold. The driver used to refuse
+     * it with its own `DatabaseError` — not a `TsfgaError`, and
+     * inside a transaction one that aborts every later statement.
+     * The column now carries it, and well-formedness is
+     * `@tsfga/core`'s write-path rule.
+     */
+    test("a non-UUID object id round-trips", async () => {
+      await store.insertTuple({
+        objectType: "doc",
+        objectId: "readme.md",
+        relation: "viewer",
+        subjectType: "user",
+        subjectId: uuid2,
+      });
+
+      const tuple = await readDirect(
+        "doc",
+        "readme.md",
+        "viewer",
+        "user",
+        uuid2,
+      );
+      expect(tuple?.objectId).toBe("readme.md");
+      expect(await store.listCandidateObjectIds("doc")).toEqual(["readme.md"]);
+      expect(
+        await store.deleteTuple({
+          objectType: "doc",
+          objectId: "readme.md",
+          relation: "viewer",
+          subjectType: "user",
+          subjectId: uuid2,
+        }),
+      ).toBe(true);
+    });
+  });
+
+  /**
    * The merged read has to return exactly the rows the three
    * separate predicates would have. The oracle here is
    * `findTuplesByRelation`, which returns every row on the

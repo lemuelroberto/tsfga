@@ -213,29 +213,114 @@ env.registerFunction(
   (value: string, pattern: string) => compileRe2(pattern).test(value),
 );
 
+/** A closed range of code points, low first. */
+type CodePointRange = readonly [number, number];
+
 /**
  * What a POSIX bracket class stands for, as RE2 defines it.
  *
  * A JavaScript `RegExp` reads `[[:alpha:]]` as a class of the
  * characters `[:alph`, which matches nothing an author meant and
  * errors nowhere — the silent half of issue 020.
+ *
+ * Held as code point ranges rather than as class source text
+ * because RE2's negated form (`[[:^alpha:]]`) is the complement of
+ * the class over the **whole** code point space, which is a set
+ * operation and not a string one. Each list is ascending and
+ * disjoint, which is what `complementRanges` assumes.
  */
-const POSIX_CLASSES: Readonly<Record<string, string>> = {
-  alnum: "a-zA-Z0-9",
-  alpha: "a-zA-Z",
-  ascii: "\\x00-\\x7F",
-  blank: " \\t",
-  cntrl: "\\x00-\\x1F\\x7F",
-  digit: "0-9",
-  graph: "\\x21-\\x7E",
-  lower: "a-z",
-  print: "\\x20-\\x7E",
-  punct: "!-\\/:-@\\[-`{-~",
-  space: "\\t\\n\\v\\f\\r ",
-  upper: "A-Z",
-  word: "0-9A-Za-z_",
-  xdigit: "0-9A-Fa-f",
+const POSIX_CLASSES: Readonly<Record<string, readonly CodePointRange[]>> = {
+  alnum: [
+    [0x30, 0x39],
+    [0x41, 0x5a],
+    [0x61, 0x7a],
+  ],
+  alpha: [
+    [0x41, 0x5a],
+    [0x61, 0x7a],
+  ],
+  ascii: [[0x00, 0x7f]],
+  blank: [
+    [0x09, 0x09],
+    [0x20, 0x20],
+  ],
+  cntrl: [
+    [0x00, 0x1f],
+    [0x7f, 0x7f],
+  ],
+  digit: [[0x30, 0x39]],
+  graph: [[0x21, 0x7e]],
+  lower: [[0x61, 0x7a]],
+  print: [[0x20, 0x7e]],
+  punct: [
+    [0x21, 0x2f],
+    [0x3a, 0x40],
+    [0x5b, 0x60],
+    [0x7b, 0x7e],
+  ],
+  space: [
+    [0x09, 0x0d],
+    [0x20, 0x20],
+  ],
+  upper: [[0x41, 0x5a]],
+  word: [
+    [0x30, 0x39],
+    [0x41, 0x5a],
+    [0x5f, 0x5f],
+    [0x61, 0x7a],
+  ],
+  xdigit: [
+    [0x30, 0x39],
+    [0x41, 0x46],
+    [0x61, 0x66],
+  ],
 };
+
+/** The last code point, which is where a negated class ends. */
+const MAX_CODE_POINT = 0x10ffff;
+
+/**
+ * A code point as a class member.
+ *
+ * `\uXXXX` is read the same way with and without the `u` flag, so
+ * an ordinary expansion does not drag the flag in with it. Only a
+ * code point past the BMP needs `\u{…}`, and only a negated class
+ * produces one.
+ */
+function escapeCodePoint(code: number): string {
+  if (code > 0xffff) return `\\u{${code.toString(16).toUpperCase()}}`;
+  return `\\u${code.toString(16).toUpperCase().padStart(4, "0")}`;
+}
+
+function formatRanges(ranges: readonly CodePointRange[]): string {
+  let out = "";
+  for (const [low, high] of ranges) {
+    out +=
+      low === high
+        ? escapeCodePoint(low)
+        : `${escapeCodePoint(low)}-${escapeCodePoint(high)}`;
+  }
+  return out;
+}
+
+/**
+ * The gaps between the ranges, over the whole code point space.
+ *
+ * That is what RE2 means by `[:^alpha:]`: Go's
+ * `regexp/syntax.appendNegatedClass` complements the table against
+ * the full rune range, not against ASCII, so a letter outside ASCII
+ * is a member of the negated class.
+ */
+function complementRanges(ranges: readonly CodePointRange[]): CodePointRange[] {
+  const out: CodePointRange[] = [];
+  let next = 0;
+  for (const [low, high] of ranges) {
+    if (low > next) out.push([next, low - 1]);
+    next = high + 1;
+  }
+  if (next <= MAX_CODE_POINT) out.push([next, MAX_CODE_POINT]);
+  return out;
+}
 
 /** Leading inline flag groups: `(?i)`, `(?is)`, `(?U)`. */
 const LEADING_FLAGS = /^\(\?([imsU]+)\)/;
@@ -246,8 +331,46 @@ const REPETITION = /^\{\d+(,\d*)?\}/;
 /** `[:alpha:]` and its negated form, inside a bracket expression. */
 const POSIX_CLASS = /^\[:(\^?)([a-z]+):\]/;
 
-function refusePattern(pattern: string, reason: string): never {
-  throw new Error(`error parsing regexp: ${reason}: \`${pattern}\``);
+/** A flag group RE2 accepts — scoped `(?i:…)` or bare `(?i)`. */
+const FLAG_GROUP = /^\(\?([imsU]*)(?:-([imsU]+))?[:)]/;
+
+/**
+ * Why a pattern did not become a `RegExp`.
+ *
+ * - `invalid` — RE2 refuses it too. Upstream refuses the *model*
+ *   that carries such a pattern as a constant, so tsfga refuses the
+ *   write (issue 241).
+ * - `untranslatable` — RE2 accepts it and no faithful JavaScript
+ *   spelling exists, so the pattern is refused where it is met.
+ *   Refusing the write instead would refuse a model upstream
+ *   accepts, which would trade one divergence for a worse one.
+ *
+ * The distinction only exists because the refusal now has two
+ * audiences: a check, which must refuse either way, and
+ * `writeConditionDefinition`, which must refuse only what upstream
+ * refuses.
+ */
+type Re2RefusalKind = "invalid" | "untranslatable";
+
+class Re2PatternError extends Error {
+  readonly kind: Re2RefusalKind;
+
+  constructor(message: string, kind: Re2RefusalKind, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "Re2PatternError";
+    this.kind = kind;
+  }
+}
+
+function refusePattern(
+  pattern: string,
+  reason: string,
+  kind: Re2RefusalKind,
+): never {
+  throw new Re2PatternError(
+    `error parsing regexp: ${reason}: \`${pattern}\``,
+    kind,
+  );
 }
 
 interface TranslatedPattern {
@@ -271,7 +394,9 @@ interface TranslatedPattern {
  *   classes, and `\pL` / `\p{L}`, which a `RegExp` without the `u`
  *   flag reads as a literal `p` — become their JavaScript
  *   equivalents. The expansion and the `u` flag land together
- *   because neither is right on its own.
+ *   because neither is right on its own. A negated POSIX class
+ *   (`[[:^alpha:]]`) expands to the class's complement over the
+ *   whole code point space, which is what RE2 computes.
  * - spellings JavaScript accepts and RE2 refuses — lookahead,
  *   lookbehind and backreferences — are refused here, turning what
  *   was a silent grant into the refusal upstream gives.
@@ -295,6 +420,9 @@ function translateRe2Pattern(pattern: string): TranslatedPattern {
 
   let source = "";
   let needsUnicode = false;
+  /** Open groups, so an unbalanced paren is named rather than left
+   *  for `new RegExp` — which cannot say which dialect refused. */
+  let depth = 0;
 
   /** Flip the quantifier just emitted, for `(?U)`. */
   const flipGreediness = () => {
@@ -306,9 +434,11 @@ function translateRe2Pattern(pattern: string): TranslatedPattern {
   /** A `\x` escape, in or out of a bracket expression. */
   const takeEscape = (inClass: boolean) => {
     const next = pattern[index + 1];
-    if (next === undefined) refusePattern(pattern, "trailing backslash");
+    if (next === undefined) {
+      refusePattern(pattern, "trailing backslash", "invalid");
+    }
     if (!inClass && next >= "1" && next <= "9") {
-      refusePattern(pattern, "invalid or unsupported Perl syntax");
+      refusePattern(pattern, "invalid or unsupported Perl syntax", "invalid");
     }
     if (next === "p" || next === "P") {
       needsUnicode = true;
@@ -348,14 +478,18 @@ function translateRe2Pattern(pattern: string): TranslatedPattern {
           index += 1;
           continue;
         }
-        if (posix[1] === "^") {
-          refusePattern(pattern, "unsupported negated POSIX class");
-        }
         const expansion = POSIX_CLASSES[posix[2] ?? ""];
         if (expansion === undefined) {
-          refusePattern(pattern, "invalid character class range");
+          refusePattern(pattern, "invalid character class range", "invalid");
         }
-        source += expansion;
+        if (posix[1] === "^") {
+          // The complement runs to `\u{10FFFF}`, which only the `u`
+          // flag reads as one code point.
+          needsUnicode = true;
+          source += formatRanges(complementRanges(expansion));
+        } else {
+          source += formatRanges(expansion);
+        }
         index += posix[0].length;
       } else {
         source += char;
@@ -363,7 +497,7 @@ function translateRe2Pattern(pattern: string): TranslatedPattern {
       }
     }
     if (index >= pattern.length) {
-      refusePattern(pattern, "missing closing ]");
+      refusePattern(pattern, "missing closing ]", "invalid");
     }
     source += "]";
     index += 1;
@@ -371,6 +505,7 @@ function translateRe2Pattern(pattern: string): TranslatedPattern {
   };
 
   const takeGroup = () => {
+    depth += 1;
     if (!pattern.startsWith("(?", index)) {
       source += "(";
       index += 1;
@@ -395,18 +530,25 @@ function translateRe2Pattern(pattern: string): TranslatedPattern {
     ) {
       // Valid JavaScript, invalid RE2. Refusing is what upstream
       // answers, and is the whole point of the granting direction.
-      refusePattern(pattern, "invalid or unsupported Perl syntax");
+      refusePattern(pattern, "invalid or unsupported Perl syntax", "invalid");
     }
     if (pattern.startsWith("(?<", index)) {
       source += "(?<";
       index += 3;
       return;
     }
-    // A flag group that is not at the very start applies to the
-    // rest of its own group in RE2 and to the whole pattern in
-    // JavaScript, and a scoped `(?i:…)` has no portable spelling.
-    // Refusing is loud; translating would be quietly wrong.
-    refusePattern(pattern, "unsupported inline group");
+    if (FLAG_GROUP.test(pattern.slice(index))) {
+      // RE2 accepts both `(?i:…)` and a bare `(?i)` applying to the
+      // rest of its enclosing group. JavaScript has neither
+      // portably: modifier groups reached V8 only in 12.5, so
+      // translating one would answer on Node 24 and refuse on Node
+      // 22, and a bare group scopes to the whole pattern. Refusing
+      // is loud and runtime-independent — and, because RE2 accepts
+      // it, it must not refuse the *write*.
+      refusePattern(pattern, "unsupported inline group", "untranslatable");
+    }
+    // Anything else spelled `(?…` is Perl syntax RE2 refuses too.
+    refusePattern(pattern, "invalid or unsupported Perl syntax", "invalid");
   };
 
   while (index < pattern.length) {
@@ -441,8 +583,13 @@ function translateRe2Pattern(pattern: string): TranslatedPattern {
     }
     source += char;
     index += 1;
-    if (char === ")") flipGreediness();
+    if (char === ")") {
+      depth -= 1;
+      if (depth < 0) refusePattern(pattern, "unexpected )", "invalid");
+      flipGreediness();
+    }
   }
+  if (depth > 0) refusePattern(pattern, "missing closing )", "invalid");
 
   return { source, flags, needsUnicode };
 }
@@ -475,15 +622,26 @@ function compileRe2(pattern: string): RegExp {
     // when the translation did not depend on what `u` means — a
     // `\p{L}` compiled without `u` is a literal `p`, which is the
     // silent wrong answer this whole path exists to close.
+    //
+    // A `RegExp` that will not compile is classed `untranslatable`
+    // and not `invalid`: the two dialects reject overlapping but
+    // different sets and this path cannot tell which side refused,
+    // so guessing `invalid` would refuse writes upstream accepts.
     if (translated.needsUnicode) {
-      throw new Error(`error parsing regexp: \`${pattern}\``, { cause: error });
+      throw new Re2PatternError(
+        `error parsing regexp: \`${pattern}\``,
+        "untranslatable",
+        { cause: error },
+      );
     }
     try {
       compiled = new RegExp(translated.source, translated.flags);
     } catch (fallbackError) {
-      throw new Error(`error parsing regexp: \`${pattern}\``, {
-        cause: fallbackError,
-      });
+      throw new Re2PatternError(
+        `error parsing regexp: \`${pattern}\``,
+        "untranslatable",
+        { cause: fallbackError },
+      );
     }
   }
 
@@ -514,14 +672,150 @@ interface Splice {
 }
 
 /**
+ * The expression with every comment blanked out, character for
+ * character.
+ *
+ * The splicer reads the source text around a call site, and CEL's
+ * `//` comment may sit anywhere whitespace may — including between
+ * a receiver and its `.`. Blanking rather than removing keeps every
+ * offset equal to the one cel-js reported, so the mask and the AST
+ * agree on where everything is.
+ *
+ * String literals are stepped over rather than blanked: their
+ * contents are never scanned, but a `//` inside one is not a
+ * comment and must not start one.
+ */
+function maskComments(source: string): string {
+  let masked = "";
+  let index = 0;
+  while (index < source.length) {
+    const char = source[index];
+    if (char === undefined) break;
+    if (char === '"' || char === "'") {
+      const previous = source[index - 1];
+      const raw = previous === "r" || previous === "R";
+      const triple = char.repeat(3);
+      const quote = source.startsWith(triple, index) ? triple : char;
+      masked += quote;
+      index += quote.length;
+      while (index < source.length) {
+        if (!raw && source[index] === "\\" && index + 1 < source.length) {
+          masked += source.slice(index, index + 2);
+          index += 2;
+          continue;
+        }
+        if (source.startsWith(quote, index)) {
+          masked += quote;
+          index += quote.length;
+          break;
+        }
+        masked += source[index];
+        index += 1;
+      }
+      continue;
+    }
+    if (char === "/" && source[index + 1] === "/") {
+      while (index < source.length && source[index] !== "\n") {
+        masked += " ";
+        index += 1;
+      }
+      continue;
+    }
+    masked += char;
+    index += 1;
+  }
+  return masked;
+}
+
+function isSpace(char: string | undefined): boolean {
+  return char !== undefined && /\s/.test(char);
+}
+
+/**
+ * Where a receiver call's method name sits in the source, or
+ * `null`.
+ *
+ * Scanned **backwards from the first argument**, not forwards from
+ * the receiver: cel-js ends a parenthesised expression's range
+ * *inside* the closing paren, so `(s).matches(r)` puts a `)`
+ * between the receiver's end and the name and a forward scan gave
+ * up — leaving the call bound to cel-js's own `matches` and its
+ * JavaScript `RegExp` semantics, which is issue 020 reopened behind
+ * one pair of parentheses (issue 240). The argument side has no
+ * such ambiguity: whatever the receiver's spelling, the bytes
+ * between the name and the first argument are `(`, whitespace and
+ * comments, and nothing else. Extra parens are consumed because a
+ * parenthesised argument reports its range inside them too.
+ */
+function findReceiverCallName(
+  masked: string,
+  name: string,
+  firstArgumentStart: number,
+): { start: number; end: number } | null {
+  let index = firstArgumentStart - 1;
+  while (isSpace(masked[index])) index -= 1;
+  if (masked[index] !== "(") return null;
+  while (masked[index] === "(") {
+    index -= 1;
+    while (isSpace(masked[index])) index -= 1;
+  }
+  const end = index + 1;
+  const start = end - name.length;
+  if (start < 0 || masked.slice(start, end) !== name) return null;
+  let before = start - 1;
+  while (isSpace(masked[before])) before -= 1;
+  if (masked[before] !== ".") return null;
+  return { start, end };
+}
+
+/**
+ * Refuse a constant pattern RE2 itself refuses.
+ *
+ * cel-go's `regexOptimizer` compiles every `matches` call whose
+ * pattern is a literal while the program is built, so upstream
+ * rejects the *model* rather than every check that reads it. tsfga
+ * does the same here, at `writeConditionDefinition` (issue 241).
+ *
+ * A pattern RE2 accepts and this translator cannot spell stays a
+ * run-time concern: refusing it here would refuse a model upstream
+ * accepts. A non-constant pattern is not compiled at all —
+ * upstream's optimiser only folds constants either.
+ */
+function refuseUncompilableConstantPattern(pattern: string): void {
+  try {
+    compileRe2(pattern);
+  } catch (error) {
+    if (error instanceof Re2PatternError && error.kind === "untranslatable") {
+      return;
+    }
+    throw error;
+  }
+}
+
+/** One walk of one expression. */
+interface SpliceScan {
+  readonly source: string;
+  /** `source` with its comments blanked; see `maskComments`. */
+  readonly masked: string;
+  readonly out: Splice[];
+}
+
+/**
  * Find every call this module owns an implementation for.
  *
  * The rewrite is a **source-text splice**, not an AST edit: only
  * the function's name moves, every other byte of the author's
  * expression survives untouched, and nothing depends on cel-js's
  * serializer round-tripping a literal the way it was written.
+ *
+ * A receiver call this module owns and cannot place **raises**
+ * rather than being left alone. cel-js refuses to let a built-in
+ * overload be replaced, so an unspliced `matches` does not fail to
+ * resolve — it resolves to cel-js's own JavaScript `RegExp`, which
+ * is the silent wrong answer the whole module exists to remove. A
+ * loud refusal is the only other option there is.
  */
-function collectSplices(node: ASTNode, source: string, out: Splice[]): void {
+function collectSplices(node: ASTNode, scan: SpliceScan): void {
   switch (node.op) {
     case "value":
     case "id":
@@ -529,12 +823,12 @@ function collectSplices(node: ASTNode, source: string, out: Splice[]): void {
 
     case ".":
     case ".?":
-      collectSplices(node.args[0], source, out);
+      collectSplices(node.args[0], scan);
       return;
 
     case "!_":
     case "-_":
-      collectSplices(node.args, source, out);
+      collectSplices(node.args, scan);
       return;
 
     case "[]":
@@ -553,24 +847,24 @@ function collectSplices(node: ASTNode, source: string, out: Splice[]): void {
     case "<=":
     case ">":
     case ">=":
-      collectSplices(node.args[0], source, out);
-      collectSplices(node.args[1], source, out);
+      collectSplices(node.args[0], scan);
+      collectSplices(node.args[1], scan);
       return;
 
     case "?:":
-      collectSplices(node.args[0], source, out);
-      collectSplices(node.args[1], source, out);
-      collectSplices(node.args[2], source, out);
+      collectSplices(node.args[0], scan);
+      collectSplices(node.args[1], scan);
+      collectSplices(node.args[2], scan);
       return;
 
     case "list":
-      for (const item of node.args) collectSplices(item, source, out);
+      for (const item of node.args) collectSplices(item, scan);
       return;
 
     case "map":
       for (const [key, value] of node.args) {
-        collectSplices(key, source, out);
-        collectSplices(value, source, out);
+        collectSplices(key, scan);
+        collectSplices(value, scan);
       }
       return;
 
@@ -582,37 +876,44 @@ function collectSplices(node: ASTNode, source: string, out: Splice[]): void {
       if (
         replacement !== undefined &&
         args.length === 1 &&
-        source.startsWith(name, node.range.start)
+        scan.source.startsWith(name, node.range.start)
       ) {
-        out.push({
+        scan.out.push({
           start: node.range.start,
           end: node.range.start + name.length,
           text: replacement,
         });
       }
-      for (const argument of args) collectSplices(argument, source, out);
+      for (const argument of args) collectSplices(argument, scan);
       return;
     }
 
     case "rcall": {
       const [name, receiver, args] = node.args;
       const replacement = RECEIVER_REWRITES.get(name);
-      if (replacement !== undefined && args.length === 1) {
-        // An `rcall` node starts at its receiver, so the name is
-        // found after it — behind a `.` and nothing else. Anything
-        // in between that is not whitespace means the source is
-        // not shaped the way this assumes, and the call is left
-        // alone rather than spliced blind.
-        const start = source.indexOf(name, receiver.range.end);
-        if (start !== -1) {
-          const between = source.slice(receiver.range.end, start);
-          if (/^\s*\.\s*$/.test(between)) {
-            out.push({ start, end: start + name.length, text: replacement });
-          }
+      const first = args[0];
+      if (
+        replacement !== undefined &&
+        args.length === 1 &&
+        first !== undefined
+      ) {
+        const site = findReceiverCallName(scan.masked, name, first.range.start);
+        if (site === null) {
+          throw new Error(
+            `cannot locate the call site of '${name}' in the ` +
+              `expression, so it cannot be rewritten onto tsfga's ` +
+              `implementation`,
+          );
+        }
+        scan.out.push({ ...site, text: replacement });
+        // A literal pattern is compiled now, as cel-go's
+        // `regexOptimizer` does while it builds the program.
+        if (first.op === "value" && typeof first.args === "string") {
+          refuseUncompilableConstantPattern(first.args);
         }
       }
-      collectSplices(receiver, source, out);
-      for (const argument of args) collectSplices(argument, source, out);
+      collectSplices(receiver, scan);
+      for (const argument of args) collectSplices(argument, scan);
       return;
     }
 
@@ -627,7 +928,11 @@ function collectSplices(node: ASTNode, source: string, out: Splice[]): void {
  */
 function rewriteCalls(expression: string, ast: ASTNode): string {
   const splices: Splice[] = [];
-  collectSplices(ast, expression, splices);
+  collectSplices(ast, {
+    source: expression,
+    masked: maskComments(expression),
+    out: splices,
+  });
   if (splices.length === 0) return expression;
 
   splices.sort((a, b) => b.start - a.start);

@@ -879,17 +879,190 @@ describe("matches() reads its pattern as RE2, not as a RegExp", () => {
       });
     }
 
-    test("a negated POSIX class is refused rather than guessed", async () => {
-      await expect(matches("abc", "[[:^alpha:]]")).rejects.toBeInstanceOf(
-        ConditionEvaluationError,
-      );
-    });
-
     test("a pattern neither dialect compiles is still an error", async () => {
       await expect(matches("abc", "a(")).rejects.toBeInstanceOf(
         ConditionEvaluationError,
       );
     });
+  });
+
+  describe("a negated POSIX class is the class's complement", () => {
+    // RE2 negates a POSIX class against the **whole** rune range,
+    // not against ASCII, so a letter outside ASCII is a member of
+    // `[[:^alpha:]]`. This was a refusal until the write-time
+    // compilation of issue 241 made refusing it a refusal of models
+    // upstream accepts.
+    test("it matches what the class does not", async () => {
+      expect(await matches("1", "^[[:^alpha:]]+$")).toBe(true);
+      expect(await matches("abc", "^[[:^alpha:]]+$")).toBe(false);
+      expect(await matches("😀", "^[[:^alpha:]]$")).toBe(true);
+    });
+
+    test("it composes with the rest of its bracket expression", async () => {
+      expect(await matches("a1", "^[a[:^digit:]]+$")).toBe(false);
+      expect(await matches("ax", "^[a[:^digit:]]+$")).toBe(true);
+    });
+
+    test("negating a negated class is the class again", async () => {
+      expect(await matches("abc", "^[^[:^alpha:]]+$")).toBe(true);
+      expect(await matches("a1", "^[^[:^alpha:]]+$")).toBe(false);
+    });
+  });
+});
+
+/**
+ * The splice that puts `matches` on tsfga's implementation, at the
+ * seam issue 240 opened.
+ *
+ * The name used to be located by scanning **forward** from the
+ * receiver's range end and demanding `\s*\.\s*`. cel-js ends a
+ * parenthesised expression's range inside the closing paren, so
+ * `(s).matches(r)` left `).` in the gap, the splice was skipped,
+ * and the call resolved to cel-js's own `matches` — a JavaScript
+ * `RegExp`, which is the divergence issue 020 paid to close. It is
+ * scanned backwards from the first argument now, which no
+ * receiver's spelling can move.
+ *
+ * Each spelling is asserted twice: once that RE2 syntax is honoured
+ * (so the splice happened) and once that syntax RE2 refuses is
+ * refused (so nothing fell through to a `RegExp` quietly).
+ */
+describe("every receiver spelling reaches the RE2 implementation", () => {
+  const evaluate = async (expression: string): Promise<boolean> => {
+    const store = new MockTupleStore();
+    store.conditionDefinitions.push({
+      name: "re",
+      expression,
+      parameters: { s: "string" },
+    });
+    return evaluateTupleCondition(store, makeTuple({ conditionName: "re" }), {
+      s: "abc",
+    });
+  };
+
+  const receivers: ReadonlyArray<readonly [string, string]> = [
+    ["bare", "s"],
+    ["parenthesised", "(s)"],
+    ["a concatenation", '(s + "")'],
+    ["a ternary", '(s == "" ? "zzz" : s)'],
+    ["an index", "[s][0]"],
+    ["a map index", '{"k": s}["k"]'],
+    ["nested parentheses", "(((s)))"],
+    ["a comment before the dot", "s // c\n"],
+    ["a comment after the dot", "s. //c\n"],
+  ];
+
+  for (const [label, receiver] of receivers) {
+    const dot = receiver.endsWith(". //c\n") ? "" : ".";
+
+    test(`${label}: an RE2 POSIX class is read as RE2`, async () => {
+      expect(await evaluate(`${receiver}${dot}matches("[[:alpha:]]+")`)).toBe(
+        true,
+      );
+    });
+
+    test(`${label}: an RE2 inline flag is read as RE2`, async () => {
+      expect(await evaluate(`${receiver}${dot}matches("(?i)ABC")`)).toBe(true);
+    });
+
+    test(`${label}: syntax RE2 refuses does not fall through`, async () => {
+      // A lookahead is valid JavaScript and invalid RE2, so an
+      // unspliced call would answer `true` where upstream refuses.
+      await expect(
+        evaluate(`${receiver}${dot}matches("a(?=b)")`),
+      ).rejects.toBeInstanceOf(TsfgaError);
+    });
+  }
+
+  test("a parenthesised argument is spliced too", async () => {
+    expect(await evaluate('s.matches(("[[:alpha:]]+"))')).toBe(true);
+  });
+
+  test("two calls in one expression are both spliced", async () => {
+    // The splices are applied back to front, so the second one's
+    // offsets must survive the first being a different length.
+    expect(
+      await evaluate('s.matches("[[:alpha:]]+") && (s).matches("(?i)ABC")'),
+    ).toBe(true);
+  });
+});
+
+/**
+ * A constant pattern is compiled when the condition is written.
+ *
+ * cel-go's `regexOptimizer` folds every `matches` call whose
+ * pattern is a literal while it builds the program, so upstream
+ * refuses the *model* rather than every check that reads it
+ * (issue 241). The refusal is narrowed to patterns RE2 itself
+ * refuses: a pattern RE2 accepts and this translator cannot spell
+ * stays a check-time refusal, because refusing the write would
+ * refuse a model upstream accepts.
+ */
+describe("a constant matches() pattern is compiled at write time", () => {
+  const write = async (expression: string): Promise<string> => {
+    const client = createTsfga(new MockTupleStore());
+    return client
+      .writeConditionDefinition({
+        name: "re",
+        expression,
+        parameters: { s: "string", r: "string" },
+      })
+      .then(() => "accepted")
+      .catch((error: unknown) =>
+        error instanceof ConditionCompileError ? "refused" : "other",
+      );
+  };
+
+  for (const pattern of [
+    "a(?=b)",
+    "a(?!b)",
+    "(?<=a)b",
+    "(a)\\\\1",
+    "(?P<x>a)(?P=x)",
+    "[[:nope:]]",
+    "a[",
+    "a(",
+  ]) {
+    test(`${JSON.stringify(pattern)} is refused`, async () => {
+      expect(await write(`s.matches("${pattern}")`)).toBe("refused");
+    });
+  }
+
+  for (const pattern of [
+    "^[[:alpha:]]+$",
+    "[[:^alpha:]]",
+    "(?i)abc",
+    "(?P<x>a)b",
+    "\\\\p{L}+",
+  ]) {
+    test(`${JSON.stringify(pattern)} is accepted`, async () => {
+      expect(await write(`s.matches("${pattern}")`)).toBe("accepted");
+    });
+  }
+
+  test("a pattern RE2 accepts and tsfga cannot spell is stored", async () => {
+    // `(?i:…)` is RE2, and JavaScript's modifier groups reached V8
+    // only in 12.5 — too late for the runtimes this package
+    // supports. Refusing the write would refuse a model upstream
+    // accepts, so the refusal stays where it always was.
+    expect(await write('s.matches("(?i:A)b")')).toBe("accepted");
+    const store = new MockTupleStore();
+    store.conditionDefinitions.push({
+      name: "re",
+      expression: 's.matches("(?i:A)b")',
+      parameters: { s: "string" },
+    });
+    await expect(
+      evaluateTupleCondition(store, makeTuple({ conditionName: "re" }), {
+        s: "ab",
+      }),
+    ).rejects.toBeInstanceOf(ConditionEvaluationError);
+  });
+
+  test("a pattern that is not a constant is not compiled", async () => {
+    // Upstream's optimiser folds constants only, so a pattern
+    // arriving in the context is a run-time concern on both sides.
+    expect(await write("s.matches(r)")).toBe("accepted");
   });
 });
 
