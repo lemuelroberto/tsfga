@@ -6,9 +6,9 @@ import type { RelationConfig } from "./types.ts";
  * Validate a relation config against the rules OpenFGA's
  * typesystem applies when it validates a model.
  *
- * Four shapes are refused, each measured against v1.18.2 as an
+ * Eight shapes are refused, each measured against v1.18.2 as an
  * `invalid_authorization_model` upstream and, before this,
- * accepted here — two of them changing an answer rather than
+ * accepted here — several of them changing an answer rather than
  * merely widening the write surface:
  *
  * - **an `intersection` with fewer than two operands.** Upstream:
@@ -26,15 +26,34 @@ import type { RelationConfig } from "./types.ts";
  * - **a type restriction naming a condition the store does not
  *   define.** Upstream: `condition nope is undefined for relation
  *   viewer`.
+ * - **a tupleset relation that is not a direct relation.**
+ *   Upstream: `the 'doc#alias' relation is referenced in at least
+ *   one tupleset and thus must be a direct relation`.
+ *   `resolveTupleset` reads a tupleset by tuples alone, with no
+ *   rewrite expansion, so a computed one finds nothing and the
+ *   relation answers `false` for every subject, forever.
+ * - **type restrictions on a relation that admits no direct
+ *   assignment.** Upstream: `the non-assignable relation 'viewer'
+ *   in object type 'doc' should not contain a relation type`. The
+ *   restrictions are dead weight with one live effect: a tuple can
+ *   be *written* against them and is then invisible to every
+ *   check.
+ * - **a relation that admits nothing and rewrites nothing.**
+ *   Upstream: `the assignable relation 'viewer' in object type
+ *   'doc' must contain at least one relation type`. Inert in both
+ *   directions, and there is no model it corresponds to.
+ * - **a relation with no entrypoint**, in the one form a single
+ *   config decides — see below.
  *
  * ## The stated gap: write order
  *
  * A model is one document upstream, so its relations are validated
- * together. Here configs arrive one at a time, and the two tupleset
- * rules are properties of a **different** relation than the one
- * being written — the relation named as `tupleset`. When that
- * relation's config has not been written yet there is nothing to
- * read, and this **skips the check** rather than guessing.
+ * together. Here configs arrive one at a time, and several rules
+ * are properties of a **different** relation than the one being
+ * written — the relation named as `tupleset`, or a relation on a
+ * linked type. When that relation's config has not been written
+ * yet there is nothing to read, and this **skips the check**
+ * rather than guessing.
  *
  * So a config declaring a tuple-to-userset **before** its tupleset
  * relation's config exists is not validated, and neither is a later
@@ -44,6 +63,32 @@ import type { RelationConfig } from "./types.ts";
  * A validator that fired on write order would be worse than one
  * with a gap written down: it would refuse correct models for
  * arriving in an order nothing documents.
+ *
+ * ### Two rules this gap keeps out entirely
+ *
+ * Upstream also refuses a rewrite naming a relation that does not
+ * exist, and a tuple-to-userset whose computed relation **no**
+ * tupleset type defines. Neither can be decided from one config,
+ * and not for want of trying: both premises are *always* absent
+ * for a forward reference, so "skip when absent" degenerates into
+ * "never check", while checking strictly refuses correct models.
+ *
+ * That is measured, not assumed. Run warn-only over this repo's
+ * own conformance corpus, the strict forms refuse 43 config writes
+ * across `deep-rewrite`, `a5-nested-folders`, `a5-ttu-chains`,
+ * `a7-recursion`, `a8-*` and `theopenlane.*` — every one of them
+ * an ordinary model whose relations happen to be written in
+ * definition order rather than dependency order. `viewer: a but
+ * not banned` written before `banned`, and `blocked: nblocked from
+ * parent` written before `nblocked`, are not defects.
+ *
+ * Both belong to a validator that sees the whole model at once —
+ * a batch config write, or a `validateModel()` pass — and both are
+ * left open deliberately rather than half-closed here. The
+ * check-time behaviour is already correct for the first (a check
+ * reaching an undefined relation is refused, as upstream refuses
+ * it); what is missing is only the earlier, cheaper refusal that
+ * names the actual mistake.
  *
  * The condition rule has no such gap, because the absence of a
  * condition definition *is* the defect rather than a missing
@@ -74,6 +119,28 @@ export async function validateRelationConfigWrite(
     );
   }
 
+  if (config.directlyAssignable.length === 0 && !hasRewrite(config)) {
+    refuse("relation admits nothing and rewrites nothing");
+  }
+
+  // An `intersection` with no `direct` operand is upstream's
+  // `intersection(...)` with no `This` child: the relation admits
+  // no direct assignment at all, so restrictions on it describe
+  // nothing. The converse is *not* a defect -- `directlyAssignable`
+  // beside `impliedBy` / `computedUserset` / `tupleToUserset` /
+  // `excludedBy` is `union(This, ...)` and `difference(This, ...)`,
+  // both valid and both all over the corpus.
+  if (
+    config.directlyAssignable.length > 0 &&
+    config.intersection !== null &&
+    !config.intersection.some((operand) => operand.type === "direct")
+  ) {
+    refuse(
+      "type restrictions on a non-assignable relation",
+      config.directlyAssignable.map((each) => each.type).join(", "),
+    );
+  }
+
   for (const restriction of config.directlyAssignable) {
     if (restriction.condition === undefined) continue;
     const definition = await store.findConditionDefinition(
@@ -86,6 +153,12 @@ export async function validateRelationConfigWrite(
     const linked = await store.findRelationConfig(config.objectType, tupleset);
     // Not yet written: see the write-order gap above.
     if (!linked) continue;
+    if (hasRewrite(linked)) {
+      refuse(
+        "tupleset relation is not a direct relation",
+        `${tupleset} is computed`,
+      );
+    }
     for (const restriction of linked.directlyAssignable) {
       if (restriction.relation !== undefined) {
         refuse(
@@ -101,6 +174,82 @@ export async function validateRelationConfigWrite(
       }
     }
   }
+
+  if (await hasNoEntrypoint(store, config)) {
+    refuse("relation has no entrypoint");
+  }
+}
+
+/** Whether the config rewrites at all, in any of the five arms. */
+function hasRewrite(config: RelationConfig): boolean {
+  return (
+    (config.impliedBy ?? []).length > 0 ||
+    config.computedUserset !== null ||
+    (config.tupleToUserset ?? []).length > 0 ||
+    config.excludedBy !== null ||
+    (config.intersection ?? []).length > 0
+  );
+}
+
+/**
+ * The one form of "no entrypoint" a single config decides.
+ *
+ * Upstream applies `hasEntrypoints` to every relation of a whole
+ * model: a relation is invalid when nothing can ever satisfy it.
+ * That is a whole-model property and `writeRelationConfig` sees one
+ * config, so only the closed case is decidable here — the relation
+ * whose *sole* arm is a tuple-to-userset onto itself, over a
+ * tupleset that admits its own object type and nothing else:
+ *
+ *     define parent: [doc]
+ *     define viewer: viewer from parent      # never `[user] or ...`
+ *
+ * Every check on it walks the parent chain and answers `false`, or
+ * — on a chain longer than the depth budget — raises, which is a
+ * *refusal* for a model upstream would never have stored.
+ *
+ * The three narrowings are each load-bearing. A directly
+ * assignable arm, or any second arm, is an entrypoint. A tupleset
+ * admitting some *other* type is not a cycle at all: that type's
+ * relation may well have one, which is why `adoc#viewer: viewer
+ * from bparent` over `bdoc` is ordinary. And a tupleset relation
+ * with no restrictions at all is not evidence of a cycle either;
+ * it is a config not yet written the way it will be.
+ *
+ * The general rule stays open beside the write-order gap above,
+ * rather than being closed half-way.
+ */
+async function hasNoEntrypoint(
+  store: TupleStore,
+  config: RelationConfig,
+): Promise<boolean> {
+  const entries = config.tupleToUserset ?? [];
+  if (entries.length === 0) return false;
+  if (config.directlyAssignable.length > 0) return false;
+  if (
+    (config.impliedBy ?? []).length > 0 ||
+    config.computedUserset !== null ||
+    config.excludedBy !== null ||
+    (config.intersection ?? []).length > 0
+  ) {
+    return false;
+  }
+
+  for (const entry of entries) {
+    if (entry.computedUserset !== config.relation) return false;
+    const linked = await store.findRelationConfig(
+      config.objectType,
+      entry.tupleset,
+    );
+    // Not yet written: see the write-order gap above.
+    if (!linked) return false;
+    if (linked.directlyAssignable.length === 0) return false;
+    const selfOnly = linked.directlyAssignable.every(
+      (restriction) => restriction.type === config.objectType,
+    );
+    if (!selfOnly) return false;
+  }
+  return true;
 }
 
 /**

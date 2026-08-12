@@ -33,6 +33,11 @@ import { fgaCreateStore, fgaWriteModelOutcome } from "./helpers/openfga.ts";
  * tsfga as the equivalent `RelationConfig`s. Parity means both
  * refuse.
  *
+ * Two of the shapes are asserted the other way, as gaps: upstream
+ * refuses and tsfga accepts, because the defect is a property of a
+ * relation other than the one being written and no single config
+ * can decide it. See the note above them.
+ *
  * The two write-order gaps `config-validation.ts` documents are
  * deliberately avoided: every config here is written in an order
  * where the premise it would be validated against already exists.
@@ -326,7 +331,33 @@ describe("Model-shape write gate conformance", () => {
     ).toBe("refused");
   });
 
-  test("GAP-154: a TTU whose computed relation no tupleset type defines is refused", async () => {
+  /**
+   * The two rules a single config cannot decide.
+   *
+   * Both are properties of a relation *other* than the one being
+   * written, and for a forward reference that relation is always
+   * absent at the moment of the write. So the "skip when the
+   * premise is not yet written" rule the tupleset checks use
+   * degenerates into "never check", while checking strictly
+   * refuses correct models.
+   *
+   * Measured rather than assumed. Run warn-only over this suite,
+   * the strict forms refuse 43 config writes across
+   * `deep-rewrite`, `a5-nested-folders`, `a5-ttu-chains`,
+   * `a7-recursion`, `a8-*` and `theopenlane.*` — every one an
+   * ordinary model written in definition order rather than
+   * dependency order. `a5-nested-folders` alone has
+   * `blocked: nblocked from parent` two configs ahead of
+   * `nblocked`, and `og_member: member from parent` ahead of
+   * `member`.
+   *
+   * Asserted one-sided, so the gap is a decision rather than a
+   * surprise, and so it goes red the moment tsfga starts refusing
+   * — which is when the issue closes. Closing it needs a validator
+   * that sees the whole model at once: a batch config write or a
+   * `validateModel()` pass.
+   */
+  test("the gap (154): no tupleset type defines it", async () => {
     const type = "doc_a7g5";
     expect(
       await openfga({
@@ -367,8 +398,11 @@ describe("Model-shape write gate conformance", () => {
     ).toBe("refused");
     // `resolveTupleset` skips a row whose type does not define the
     // computed relation — correct per-row behaviour for a model
-    // where *some* type defines it, but here no type does, and
-    // upstream refuses the model outright rather than answering.
+    // where *some* type defines it. Upstream additionally requires
+    // at least one type to define it, at model-write time. tsfga
+    // applies only the per-row half; the at-least-one half is the
+    // documented gap, and every check on the relation answers
+    // `false` instead.
     expect(
       await tsfga([
         config("folder_a7g5", "owner", {
@@ -381,10 +415,11 @@ describe("Model-shape write gate conformance", () => {
           tupleToUserset: [{ tupleset: "parent", computedUserset: "viewer" }],
         }),
       ]),
-    ).toBe("refused");
+    ).toBe("accepted");
   });
 
-  test("GAP-155: a rewrite naming an undefined relation is refused", async () => {
+  /** The second undecidable rule — see the note above. */
+  test("the gap (155): a rewrite names an undefined relation", async () => {
     const type = "doc_a7g6";
     expect(
       await openfga({
@@ -412,11 +447,16 @@ describe("Model-shape write gate conformance", () => {
         ],
       }),
     ).toBe("refused");
+    // Accepted here, and surfaced months later as a
+    // `RelationConfigNotFoundError` on a check — a refusal
+    // attributed to the request rather than to the model. The
+    // check-time behaviour is right; the earlier, cheaper refusal
+    // that names the actual mistake is what is missing.
     expect(
       await tsfga([
         config(type, "a", { directlyAssignable: [{ type: "user_a7g" }] }),
         config(type, "viewer", { impliedBy: ["a"], excludedBy: "nope_a7g" }),
       ]),
-    ).toBe("refused");
+    ).toBe("accepted");
   });
 });

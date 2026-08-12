@@ -230,7 +230,11 @@ describe("Relation Config Validation Conformance", () => {
       await expectConfigConformance(
         intersectionModel(1),
         [
-          config({ objectType: "one", relation: "a" }),
+          config({
+            objectType: "one",
+            relation: "a",
+            directlyAssignable: [{ type: "user" }],
+          }),
           config({
             objectType: "one",
             intersection: [{ type: "computedUserset", relation: "a" }],
@@ -244,7 +248,11 @@ describe("Relation Config Validation Conformance", () => {
       await expectConfigConformance(
         intersectionModel(2),
         [
-          config({ objectType: "two", relation: "a" }),
+          config({
+            objectType: "two",
+            relation: "a",
+            directlyAssignable: [{ type: "user" }],
+          }),
           config({
             objectType: "two",
             intersection: [
