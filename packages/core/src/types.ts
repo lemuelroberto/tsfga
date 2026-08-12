@@ -281,7 +281,26 @@ export interface ListObjectsRequest extends SubjectRequest {
   contextualTuples?: AddTupleRequest[];
 }
 
-/** Options for the check algorithm */
+/**
+ * Options for the check algorithm.
+ *
+ * Every field is validated where the API that reads it lives,
+ * because `CheckOptions` is shared by six entry points and no
+ * single one of them sees them all:
+ *
+ * | Option | Validated in |
+ * |---|---|
+ * | `maxDepth` | `check.ts` (`createCheckScope`) |
+ * | `maxBreadth` | `check.ts` (`createCheckScope`) |
+ * | `maxConcurrentChecks` | `check-many.ts` |
+ * | `writeContextByteLimit` | `index.ts` (`createTsfga`) |
+ * | `listObjectsMaxResults` | `list-objects.ts` |
+ * | `maxConditionEvaluationCost` | `conditions.ts` |
+ *
+ * The predicate is the same in all six places — an integer within
+ * the field's domain, or `Infinity` — and it is written as a
+ * negated comparison so `NaN` is rejected rather than admitted.
+ */
 export interface CheckOptions {
   /** Maximum recursion depth (default: 25) */
   maxDepth?: number;
@@ -327,6 +346,63 @@ export interface CheckOptions {
    * boundary.
    */
   writeContextByteLimit?: number;
+  /**
+   * Largest number of objects `listObjects` returns (default:
+   * 1000, matching OpenFGA's `listObjectsMaxResults` /
+   * `OPENFGA_LIST_OBJECTS_MAX_RESULTS`). Must be an integer >= 1,
+   * or `Infinity` to opt out.
+   *
+   * Named for the API it bounds rather than `maxResults`, because
+   * `CheckOptions` is shared and a bare name would read as a bound
+   * on all of it. `check`, `checkMany` and `listSubjects` ignore
+   * it; `listSubjects` has no upstream counterpart and gets no cap
+   * of its own.
+   *
+   * Upstream **truncates silently** — no cursor, no error, no
+   * field saying the answer was cut — and so does tsfga. Two
+   * consequences follow and neither is an accident:
+   *
+   * - **Which** objects come back above the cap differs between
+   *   the two engines. Upstream stops its worker pool on
+   *   completion order; tsfga stops launching in candidate order.
+   *   A caller may compare counts at the cap, never membership.
+   * - Reaching the cap **stops the producers**, so a candidate
+   *   past it is never resolved and never raises. The cap can
+   *   therefore mask a refusal a smaller pool would have surfaced.
+   *   Upstream has the same property for the same reason.
+   *
+   * Upstream floors its own configured value for the check
+   * evaluation cost and does not floor this one. tsfga floors
+   * neither.
+   */
+  listObjectsMaxResults?: number;
+  /**
+   * Largest evaluation cost one condition may charge before it is
+   * refused (default: 100, matching OpenFGA's default check
+   * evaluation cost). Must be an integer >= 1, or `Infinity` to
+   * opt out.
+   *
+   * The expression is fixed at model time and the **request**
+   * decides what it costs: `s.matches(p)` with both from context,
+   * `x == y` over two strings from context, `needle in haystack`
+   * over a list from context. All three are unbounded work driven
+   * by whoever is asking, on the authorization path. A pattern
+   * ceiling is not the defence; this is.
+   *
+   * **tsfga's cost model is an approximation of cel-go's and does
+   * not agree with it cell for cell.** cel-js has no runtime
+   * metering of any kind — its `limits` are structural bounds
+   * charged before any input is seen — so tsfga charges what it
+   * can derive from the AST and the coerced context. Where the two
+   * models disagree tsfga charges the larger figure, so the
+   * residue is in the **refusing** direction: a check upstream
+   * answers may be refused here, and one upstream refuses is never
+   * granted here on cost alone.
+   *
+   * A refusal is a `ConditionEvaluationError` whose message begins
+   * `evaluation cost limit exceeded`.
+   */
+  maxConditionEvaluationCost?: number;
 }
 
 /** Parameters for adding a tuple */

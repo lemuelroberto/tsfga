@@ -8,6 +8,7 @@ import {
 import {
   DuplicateTupleError,
   ImplicitTupleError,
+  InvalidObjectError,
   RelationConfigNotFoundError,
   TsfgaError,
 } from "./errors.ts";
@@ -211,6 +212,18 @@ export interface TsfgaClient {
   deleteConditionDefinition(name: string): Promise<boolean>;
 }
 
+/**
+ * Go's `\s` inside an RE2 pattern — `[\t\n\f\r ]` and nothing else.
+ *
+ * Narrower than JavaScript's `\s`, which also matches a vertical
+ * tab, a non-breaking space and every other Unicode space
+ * separator. Spelled out rather than borrowed, because the
+ * difference is the whole point: a non-breaking space is an
+ * ordinary character to both engines, and `\s` here would refuse
+ * an id upstream accepts.
+ */
+const LIST_USERS_WHITESPACE = /[\t\n\f\r ]/;
+
 export function createTsfga(
   store: TupleStore,
   options?: CheckOptions,
@@ -327,8 +340,24 @@ export function createTsfga(
       return store.deleteTuple(request);
     },
 
-    async listObjects(request: ListObjectsRequest): Promise<string[]> {
-      validateRequestContext(request.context);
+    listObjects(request: ListObjectsRequest): Promise<string[]> {
+      // No request-context gate here, deliberately. The three
+      // commands do not validate the same things:
+      // `CheckCommand.validateCheckRequest` runs
+      // `validation.ValidateStruct(requestCtx)`
+      // (`pkg/server/commands/check_command.go:197`) and
+      // `ListObjectsQuery.Execute` never does — it validates the
+      // contextual tuples, the target relation and the user, and
+      // passes `req.GetContext()` through untouched
+      // (`pkg/server/commands/list_objects.go:506-556`). At
+      // v1.18.2 `ValidateStruct` appears in that one file and
+      // nowhere else in `pkg/server/commands`.
+      //
+      // Issue 386 added the check-path gate and applied it here at
+      // the same time, which refused a call upstream answers. The
+      // contextual tuples' own condition contexts *are* validated,
+      // by `validateTupleWrite` — upstream validates those through
+      // `ValidateTupleForWrite`, so the two are not symmetric.
       return listObjects(store, request, options);
     },
 
@@ -360,7 +389,29 @@ export function createTsfga(
       // have been the two paths disagreeing in the granting
       // direction, which is worse than either answer alone.
       const context = subjectOptions?.context;
-      validateRequestContext(context);
+      // The object id is gated, and by a **narrower** rule than
+      // `check`'s. Upstream's nearest request is `ListUsers`, whose
+      // object is validated through the protobuf pattern only:
+      // `^[^\s]{1,256}$` refuses an empty id and one carrying
+      // whitespace, and nothing runs `unicode.IsControl` over it.
+      // Measured at v1.18.2: `doc:<id>` is a question
+      // `ListUsers` answers, with no users, where the same id on a
+      // check is a 400. So this must not borrow the check gate —
+      // the wider rule would refuse a request upstream answers.
+      //
+      // No request-context gate either, for 442's reason:
+      // `ValidateStruct` lives in `CheckCommand` and nowhere else
+      // in `pkg/server/commands`, and `ListUsers` is not a check.
+      // The comment here used to cite `CheckCommand` as its
+      // authority; it never was one.
+      if (objectId.length === 0 || LIST_USERS_WHITESPACE.test(objectId)) {
+        throw new InvalidObjectError(
+          "malformed object id",
+          objectType,
+          objectId,
+          "an object id must be non-empty and hold no whitespace",
+        );
+      }
       const config = await store.findRelationConfig(objectType, relation);
       if (config === null) {
         throw new RelationConfigNotFoundError(objectType, relation);
@@ -483,12 +534,21 @@ export {
   formatRestriction,
   ImplicitTupleError,
   InvalidConditionalTupleError,
+  // Raised by `check` and `checkMany` for an object the request
+  // cannot be about, by `addTuple` for one no row may carry, and by
+  // `listSubjects` under its narrower `ListUsers` rule.
+  InvalidObjectError,
   InvalidRelationConfigError,
-  // Raised by `check`, `checkMany` and `listObjects` for a request
-  // context upstream refuses, before anything is resolved.
+  // Raised by `check` and `checkMany` for a request context
+  // upstream refuses, before anything is resolved. **Not** by
+  // `listObjects` or `listSubjects`: `ValidateStruct` is the check
+  // command's alone.
   InvalidRequestContextError,
   InvalidStoredDataError,
   InvalidSubjectTypeError,
+  // `InvalidObjectError.cause` is a union for the same reason the
+  // others here are: a caller switching on it needs the name.
+  type ObjectDefect,
   type RelationConfigDefect,
   RelationConfigNotFoundError,
   // `InvalidRequestContextError.cause` is a union for the same

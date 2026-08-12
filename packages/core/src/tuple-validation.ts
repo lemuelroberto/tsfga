@@ -2,10 +2,10 @@ import { coerceContext } from "./conditions.ts";
 import {
   type ConditionalTupleCause,
   InvalidConditionalTupleError,
+  InvalidObjectError,
   InvalidRequestContextError,
   InvalidSubjectTypeError,
   RelationConfigNotFoundError,
-  TsfgaError,
 } from "./errors.ts";
 import type { TupleStore } from "./store-interface.ts";
 import type {
@@ -373,15 +373,23 @@ const SUBJECT_ID_RESERVED: readonly string[] = ["#", ":", " "];
 const OBJECT_ID_RESERVED: readonly string[] = ["#", ":", " "];
 
 /**
- * The object half of the same well-formedness gate.
+ * The object half of the same well-formedness gate, shared by the
+ * write path and the check path.
  *
- * It closes a hole rather than a failing test. `tsfga.tuples.
- * object_id` was a `uuid` column until migration `007` widened it
- * to `text`, so the driver refused every malformed object id and
- * the missing rule could not be observed — exactly the surface
- * migration `006` opened on the subject side, which is how the
- * subject-side gap came to be reported at all. The rule lands in
- * the same wave as the migration so the hole never opens.
+ * It closed a hole rather than a failing test on the write side.
+ * `tsfga.tuples.object_id` was a `uuid` column until migration
+ * `007` widened it to `text`, so the driver refused every malformed
+ * object id and the missing rule could not be observed — exactly
+ * the surface migration `006` opened on the subject side, which is
+ * how the subject-side gap came to be reported at all.
+ *
+ * The check path had no object gate at all until issue 422: a
+ * malformed id is a perfectly good text column value, so tsfga read
+ * no row and answered `false` where upstream answers 400. The two
+ * paths run the same predicate here because upstream runs the same
+ * one — `ValidateObject`, reached from `ValidateUserObjectRelation`,
+ * which `CheckCommand` and `WriteCommand` (through
+ * `ValidateTupleForWrite`) both call, contextual tuples included.
  *
  * `IsValidObject` is **not** `IsValidUserID`. It walks the whole
  * `type:id` string, so the one `:` it allows is the type separator
@@ -389,30 +397,105 @@ const OBJECT_ID_RESERVED: readonly string[] = ["#", ":", " "];
  * `objectId` a second one. It has no userset arm either, so a `#`
  * is refused outright rather than reinterpreted.
  *
- * Raised as the base `TsfgaError`, deliberately and provisionally:
- * there is no error class for a malformed *object*
- * (`InvalidSubjectTypeError` is the subject's, and its `subject`
- * field would have to be a lie), and adding one is a change to
- * `errors.ts`. What the rule buys today is that a caller catching
- * `TsfgaError` sees a refusal where they previously saw the
- * driver's own error — which, inside a transaction, aborted every
- * later statement. Giving it a class of its own is a follow-up.
+ * The three refusals are upstream's three, in upstream's order:
+ * the format predicate, then the typed wildcard (issue 443 — `*` is
+ * a *subject*, and `doc:*` is a row nothing may ever read), then
+ * the `TupleKey.object` proto bound. The bound is the caller's
+ * argument rather than a constant here because the error names the
+ * measurement, and the two paths inherit it from different places
+ * upstream even though both land on 256 runes.
+ *
+ * @throws InvalidObjectError — its own class since round 4; this
+ *   raised a bare `TsfgaError` provisionally, because
+ *   `InvalidSubjectTypeError`'s `subject` field would have to be a
+ *   lie.
  */
-function validateObjectId(request: AddTupleRequest): void {
-  const wire = `${request.objectType}:${request.objectId}`;
-  if (!isWellFormedId(request.objectId, OBJECT_ID_RESERVED)) {
-    throw new TsfgaError(
-      `Invalid object '${wire}': an object id must be non-empty and ` +
-        `hold no ':', '#', space or control character`,
+export function validateObjectRef(
+  objectType: string,
+  objectId: string,
+  runeLimit: number,
+): void {
+  if (!isWellFormedId(objectId, OBJECT_ID_RESERVED)) {
+    throw new InvalidObjectError(
+      "malformed object id",
+      objectType,
+      objectId,
+      "an object id must be non-empty and hold no ':', '#', " +
+        "space or control character",
     );
   }
-  const runes = [...wire].length;
-  if (runes > WRITE_OBJECT_RUNE_LIMIT) {
-    throw new TsfgaError(
-      `Invalid object for ${request.objectType}: ${runes} characters ` +
-        `exceeds ${WRITE_OBJECT_RUNE_LIMIT}`,
+  if (objectId === "*") {
+    throw new InvalidObjectError(
+      "object id is a typed wildcard",
+      objectType,
+      objectId,
     );
   }
+  const runes = [...`${objectType}:${objectId}`].length;
+  if (runes > runeLimit) {
+    throw new InvalidObjectError(
+      "object too long",
+      objectType,
+      objectId,
+      `${runes} characters exceeds ${runeLimit}`,
+    );
+  }
+}
+
+/**
+ * What the check path measures the object against: the same 256
+ * code points the write path does, on the same rendered string.
+ *
+ * Two names for one number, deliberately. Upstream reaches the
+ * bound through two different constraints — the `TupleKey.object`
+ * proto pattern on the write and the `CheckRequestTupleKey.Object`
+ * pattern on the check — and they are free to diverge without
+ * either being a bug, so the two call sites name their own.
+ */
+export const CHECK_OBJECT_RUNE_LIMIT = 256;
+
+/**
+ * And the subject: `CheckRequestTupleKey.User` is `^[^\s]{2,512}$`,
+ * the same 512 UTF-8 bytes on the same rendered wire string as
+ * `TupleKey.user`, for the same reason.
+ */
+export const CHECK_SUBJECT_BYTE_LIMIT = 512;
+
+/**
+ * The subject half of the request gate, as a complaint rather than
+ * a throw: the write path reports it as an
+ * `InvalidSubjectTypeError` carrying the relation's allow-list and
+ * the check path as one carrying an empty list, and neither may
+ * borrow the other's fields.
+ *
+ * Returns the detail string for the refusal, or `null` when the
+ * subject is well formed. The two rules are `IsValidUserID` —
+ * non-empty, no `:`, `#`, space or control character — and the
+ * proto bound on the rendered `type:id` or `type:id#relation`
+ * string, measured in bytes, which is the unit the container was
+ * bisected against.
+ */
+export function requestSubjectDefect(
+  subjectType: string,
+  subjectId: string,
+  subjectRelation: string | null | undefined,
+  byteLimit: number,
+): string | null {
+  if (!isWellFormedId(subjectId, SUBJECT_ID_RESERVED)) {
+    return (
+      "a subject id must be non-empty and hold no ':', '#', " +
+      "space or control character"
+    );
+  }
+  const wire =
+    subjectRelation === null || subjectRelation === undefined
+      ? `${subjectType}:${subjectId}`
+      : `${subjectType}:${subjectId}#${subjectRelation}`;
+  const bytes = utf8Length(wire);
+  if (bytes > byteLimit) {
+    return `${bytes} bytes exceeds ${byteLimit}`;
+  }
+  return null;
 }
 
 /**
@@ -608,36 +691,28 @@ export async function validateTupleWrite(
   // `*` is exempt from nothing: it holds none of the reserved
   // characters, and `IsValidUser` admits the bare wildcard
   // explicitly.
-  if (!isWellFormedId(request.subjectId, SUBJECT_ID_RESERVED)) {
+  const subjectDefect = requestSubjectDefect(
+    request.subjectType,
+    request.subjectId,
+    request.subjectRelation,
+    WRITE_SUBJECT_BYTE_LIMIT,
+  );
+  if (subjectDefect !== null) {
     throw new InvalidSubjectTypeError(
       shape,
       request.objectType,
       request.relation,
       config.directlyAssignable,
       "malformed subject",
-      "a subject id must be non-empty and hold no ':', '#', " +
-        "space or control character",
+      subjectDefect,
     );
   }
 
-  const subjectWire =
-    request.subjectRelation === null || request.subjectRelation === undefined
-      ? `${request.subjectType}:${request.subjectId}`
-      : `${request.subjectType}:${request.subjectId}` +
-        `#${request.subjectRelation}`;
-  const subjectBytes = utf8Length(subjectWire);
-  if (subjectBytes > WRITE_SUBJECT_BYTE_LIMIT) {
-    throw new InvalidSubjectTypeError(
-      shape,
-      request.objectType,
-      request.relation,
-      config.directlyAssignable,
-      "malformed subject",
-      `${subjectBytes} bytes exceeds ${WRITE_SUBJECT_BYTE_LIMIT}`,
-    );
-  }
-
-  validateObjectId(request);
+  validateObjectRef(
+    request.objectType,
+    request.objectId,
+    WRITE_OBJECT_RUNE_LIMIT,
+  );
 
   if (!admitsSubjectShape(config, shape)) {
     throw new InvalidSubjectTypeError(

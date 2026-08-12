@@ -3,6 +3,7 @@ import { check } from "../src/check.ts";
 import {
   ConditionEvaluationError,
   RelationConfigNotFoundError,
+  TsfgaError,
 } from "../src/errors.ts";
 import { createTsfga } from "../src/index.ts";
 import { listObjects } from "../src/list-objects.ts";
@@ -564,6 +565,205 @@ describe("listObjects", () => {
       expect(await failureMessage(listObjects(store, ALICE_VIEWER))).toBe(
         "doc:3 failed",
       );
+    });
+  });
+
+  /**
+   * Upstream stops at `ListObjectsMaxResults` (default 1000) and
+   * truncates silently — no cursor, no error, no field saying the
+   * answer was cut. The cap is asserted from **both** sides here on
+   * purpose: a cap that quietly shortened a small answer would be
+   * far worse than the divergence it closes, and nothing else in
+   * the suite would notice.
+   *
+   * Which thousand upstream keeps is whatever its worker pool
+   * finished first, so tsfga does not try to reproduce the
+   * membership. It keeps the first `listObjectsMaxResults` granting
+   * candidates in candidate order, which is deterministic on this
+   * side whatever the completion order was.
+   */
+  describe("the answer stops at listObjectsMaxResults", () => {
+    /** Grant alice outright on every candidate `1..count`. */
+    function grantAll(count: number) {
+      for (const objectId of docIds(count)) {
+        store.tuples.push(
+          makeTuple({
+            objectType: "doc",
+            objectId,
+            relation: "viewer",
+            subjectType: "user",
+            subjectId: "alice",
+          }),
+        );
+      }
+    }
+
+    test("a pool below the cap is returned whole", async () => {
+      // The boundary from below. This is the case a cap must never
+      // touch, and it is the expensive one to get wrong.
+      seedSharedSubtree(5);
+      grantAll(5);
+
+      expect(
+        await listObjects(store, ALICE_VIEWER, { listObjectsMaxResults: 10 }),
+      ).toEqual(docIds(5));
+    });
+
+    test("a pool exactly at the cap is returned whole", async () => {
+      seedSharedSubtree(5);
+      grantAll(5);
+
+      expect(
+        await listObjects(store, ALICE_VIEWER, { listObjectsMaxResults: 5 }),
+      ).toEqual(docIds(5));
+    });
+
+    test("a pool one over the cap loses exactly its last object", async () => {
+      seedSharedSubtree(6);
+      grantAll(6);
+
+      expect(
+        await listObjects(store, ALICE_VIEWER, { listObjectsMaxResults: 5 }),
+      ).toEqual(docIds(5));
+    });
+
+    test("the default cap is 1000", async () => {
+      // The figure itself, not just that some cap exists:
+      // `DefaultListObjectsMaxResults` is what the conformance
+      // fixtures measured at 1006 and 1100 candidates.
+      seedSharedSubtree(1001);
+      grantAll(1001);
+      for (const id of docIds(1001)) store.delays.set(id, 0);
+
+      expect(await listObjects(store, ALICE_VIEWER)).toHaveLength(1000);
+    });
+
+    test("Infinity opts out", async () => {
+      seedSharedSubtree(6);
+      grantAll(6);
+
+      expect(
+        await listObjects(store, ALICE_VIEWER, {
+          listObjectsMaxResults: Number.POSITIVE_INFINITY,
+        }),
+      ).toEqual(docIds(6));
+    });
+
+    test("a cap of 1 answers with the first granting candidate", async () => {
+      seedSharedSubtree(6);
+      grantAll(6);
+
+      expect(
+        await listObjects(store, ALICE_VIEWER, { listObjectsMaxResults: 1 }),
+      ).toEqual(["1"]);
+    });
+
+    test("only granting candidates count against the cap", async () => {
+      // The cap bounds the answer, not the walk: four candidates
+      // are checked to fill a cap of two, because two of them do
+      // not grant.
+      seedSharedSubtree(5);
+      for (const objectId of ["2", "4"]) {
+        store.tuples.push(
+          makeTuple({
+            objectType: "doc",
+            objectId,
+            relation: "viewer",
+            subjectType: "user",
+            subjectId: "alice",
+          }),
+        );
+      }
+
+      expect(
+        await listObjects(store, ALICE_VIEWER, {
+          listObjectsMaxResults: 2,
+          maxBreadth: 1,
+        }),
+      ).toEqual(["2", "4"]);
+      expect(store.started).toEqual(["1", "2", "3", "4"]);
+    });
+
+    test("reaching the cap stops the producers", async () => {
+      // Upstream stops its producers rather than filtering a
+      // complete walk, so a candidate past the cap is never
+      // resolved. Candidate 6 would fail the whole call; it is
+      // never launched, so it never does.
+      seedSharedSubtree(6);
+      grantAll(6);
+      store.failures.set("6", new StoreReadFailure("doc:6 failed"));
+
+      expect(
+        await listObjects(store, ALICE_VIEWER, {
+          listObjectsMaxResults: 3,
+          maxBreadth: 1,
+        }),
+      ).toEqual(["1", "2", "3"]);
+      expect(store.started).toEqual(["1", "2", "3"]);
+    });
+
+    test("a failure the pool did reach still aborts under a cap", async () => {
+      // The other half of the rule above, and the one that keeps
+      // the cap from becoming a way to swallow errors: the cap
+      // stops candidates being *launched*, it does not suppress a
+      // refusal from one that was.
+      seedSharedSubtree(6);
+      grantAll(6);
+      store.failures.set("2", new StoreReadFailure("doc:2 failed"));
+
+      expect(
+        await failureMessage(
+          listObjects(store, ALICE_VIEWER, {
+            listObjectsMaxResults: 3,
+            maxBreadth: 1,
+          }),
+        ),
+      ).toBe("doc:2 failed");
+    });
+
+    test("truncation is in candidate order, not completion order", async () => {
+      // All six race at breadth 6, so the granted count overshoots
+      // the cap and the answer is truncated on the way out. Which
+      // three survive must not depend on who finished first.
+      seedSharedSubtree(6);
+      grantAll(6);
+      for (const [index, id] of docIds(6).entries()) {
+        store.delays.set(id, (6 - index) * 5);
+      }
+
+      expect(
+        await listObjects(store, ALICE_VIEWER, {
+          listObjectsMaxResults: 3,
+          maxBreadth: 6,
+        }),
+      ).toEqual(["1", "2", "3"]);
+    });
+
+    test("a cap does not turn a refusal into a short list", async () => {
+      // A relation with no config is refused whatever the cap is.
+      // The gates run before the pool, and the cap bounds only the
+      // answer.
+      await expect(
+        listObjects(store, ALICE_VIEWER, { listObjectsMaxResults: 1 }),
+      ).rejects.toBeInstanceOf(RelationConfigNotFoundError);
+    });
+
+    test("an invalid cap rejects before any store read", async () => {
+      seedSharedSubtree(3);
+      grantAll(3);
+      store.resetCounts();
+
+      for (const listObjectsMaxResults of [0, -1, 1.5, Number.NaN]) {
+        await expect(
+          listObjects(store, ALICE_VIEWER, { listObjectsMaxResults }),
+        ).rejects.toBeInstanceOf(TsfgaError);
+      }
+
+      // Same predicate `maxDepth` carries, and applied in the same
+      // place it is read: an option the library cannot honour costs
+      // no round trip.
+      expect(store.callsWith("listCandidateObjectIds", "doc")).toBe(0);
+      expect(store.started).toEqual([]);
     });
   });
 

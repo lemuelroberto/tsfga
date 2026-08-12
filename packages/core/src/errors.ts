@@ -8,11 +8,15 @@ import type { TypeRestriction } from "./types.ts";
  * It is also raised **directly**, in one narrow family: a refusal
  * about the caller's own arguments that upstream cannot express
  * because its own field would not hold the value — an option
- * outside its domain (`maxBreadth`, `maxConcurrentChecks`,
- * `maxDepth`, `writeContextByteLimit`), or a malformed object id.
- * These are argument errors, not authorization outcomes, and
- * giving each a class would grow the surface without giving a
- * caller anything to do differently.
+ * outside its domain (`listObjectsMaxResults`, `maxBreadth`,
+ * `maxConditionEvaluationCost`, `maxConcurrentChecks`, `maxDepth`,
+ * `writeContextByteLimit`). These are argument errors, not
+ * authorization outcomes, and giving each a class would grow the
+ * surface without giving a caller anything to do differently.
+ *
+ * A malformed object id is no longer among them: it has
+ * `InvalidObjectError`, which extends this class, so a caller
+ * catching `TsfgaError` sees it either way.
  */
 export class TsfgaError extends Error {
   constructor(message: string) {
@@ -145,6 +149,89 @@ export class InvalidSubjectTypeError extends TsfgaError {
     this.objectType = objectType;
     this.relation = relation;
     this.allowed = allowed;
+  }
+}
+
+/**
+ * Every way the object half of a request or a write can be
+ * refused, before anything about the subject or the condition is
+ * considered.
+ *
+ * Upstream decides all three in `ValidateObject`, reached from
+ * `ValidateUserObjectRelation` — which `CheckCommand` and
+ * `WriteCommand` (through `ValidateTupleForWrite`) both call — so
+ * one predicate covers the check path, the write path and
+ * contextual tuples.
+ *
+ * A cause string rather than a class each, for the reason
+ * `ConditionalTupleCause` is one: upstream reports a single
+ * validation error and discriminates by message.
+ */
+export type ObjectDefect =
+  /**
+   * The id is empty, or holds a character `type:id` cannot carry
+   * — `:`, `#`, a space, or a Unicode control character.
+   *
+   * `IsValidObject` is **not** `IsValidUserID`. It walks the whole
+   * `type:id` string, so the one `:` it allows is the type
+   * separator — which tsfga carries in a field of its own, making
+   * any `:` in `objectId` a second one. It has no userset arm
+   * either, so a `#` is refused outright rather than reinterpreted.
+   */
+  | "malformed object id"
+  /**
+   * The id is `*`.
+   *
+   * A typed wildcard is a *subject*, never an object: upstream
+   * admits `user:*` on the `user` field through `ValidateUser` and
+   * refuses `doc:*` on the `object` field. So a `subjectId` of `*`
+   * stays legal and an `objectId` of `*` does not.
+   */
+  | "object id is a typed wildcard"
+  /**
+   * The rendered `type:id` string is longer than the bound.
+   *
+   * The bound is the caller's, not this error's: the write path and
+   * the check path measure the same string against the limit each
+   * inherits from upstream, and the detail names the measurement.
+   */
+  | "object too long";
+
+/**
+ * The object the request or the write named is not one the model
+ * can carry.
+ *
+ * Its own class rather than a cause on `InvalidSubjectTypeError`,
+ * whose `subject` field would have to be a lie, and rather than
+ * the bare `TsfgaError` this was raised as provisionally: the
+ * object half of a request is refused on both the read and the
+ * write path, and a caller that wants to tell "you named a bad
+ * object" from "you passed a bad option" has nothing to switch on
+ * otherwise.
+ *
+ * Nothing about the model is disclosed — the message names only
+ * what the caller sent, as upstream's does, and for the reason
+ * `InvalidSubjectTypeError` keeps its allow-list off the message.
+ */
+export class InvalidObjectError extends TsfgaError {
+  override readonly cause: ObjectDefect;
+  readonly objectType: string;
+  readonly objectId: string;
+
+  constructor(
+    cause: ObjectDefect,
+    objectType: string,
+    objectId: string,
+    detail?: string,
+  ) {
+    super(
+      `Invalid object '${objectType}:${objectId}': ${cause}` +
+        (detail === undefined ? "" : ` (${detail})`),
+    );
+    this.name = "InvalidObjectError";
+    this.cause = cause;
+    this.objectType = objectType;
+    this.objectId = objectId;
   }
 }
 
@@ -364,6 +451,38 @@ export type RelationConfigDefect =
    * `bad:p`, but the model gate refuses it before that matters.
    */
   | "malformed condition parameter name"
+  /**
+   * The object type's or the relation's name is one the DSL
+   * reserves — `self` or `this`.
+   *
+   * Upstream refuses it in `validateNames`
+   * (`pkg/typesystem/typesystem.go`), which looks at type and
+   * relation names and at **nothing else**. It is deliberately not
+   * a condition-name rule: v1.18.2 stores a condition named `self`
+   * without complaint, measured against the container.
+   *
+   * Separate from `"malformed type name"` and
+   * `"malformed relation name"`, which are the proto pattern and
+   * the length bound. A reserved name passes both and is still
+   * refused, and upstream's message for it is a different one.
+   */
+  | "reserved keyword"
+  /**
+   * A rewrite on the same object names the relation it defines,
+   * so the relation is defined in terms of itself with no tuple in
+   * between (`viewer: viewer`, `viewer: a or viewer`,
+   * `viewer: a but not viewer`).
+   *
+   * Exactly four positions: `computedUserset`, an entry of
+   * `impliedBy`, `excludedBy`, and an `intersection` operand of
+   * type `computedUserset`.
+   *
+   * **`tupleToUserset` is not one of them.**
+   * `viewer: viewer from parent` names its own relation on
+   * *another* object, which is upstream's single most common model
+   * shape and is valid.
+   */
+  | "rewrite names its own relation"
   /** A set operation with fewer than two children. */
   | "intersection has fewer than two operands"
   /** A tupleset relation may not be assignable to a userset. */
@@ -542,6 +661,24 @@ export class ConditionCompileError extends TsfgaError {
   }
 }
 
+/**
+ * A condition compiled and then could not be evaluated against a
+ * context.
+ *
+ * `cause` is free-form — whatever the evaluator threw — rather
+ * than a discriminating union, and it stays that way: the causes
+ * are CEL's, not tsfga's, and enumerating someone else's failure
+ * modes as a union would be a claim tsfga cannot keep.
+ *
+ * That includes the one refusal tsfga raises here on its own
+ * account: an expression whose evaluation cost exceeds
+ * `maxConditionEvaluationCost`. It is a refusal about the
+ * *request's* size, not about an expression that genuinely failed,
+ * and it is distinguished by its message — which begins
+ * `evaluation cost limit exceeded` — rather than by a cause value.
+ * A caller who needs to tell the two apart reads the message; the
+ * class is the same because upstream's is.
+ */
 export class ConditionEvaluationError extends TsfgaError {
   override cause: unknown;
   constructor(conditionName: string, cause: unknown) {

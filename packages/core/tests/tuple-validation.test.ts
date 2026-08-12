@@ -3,12 +3,13 @@ import { check } from "../src/check.ts";
 import {
   DuplicateTupleError,
   InvalidConditionalTupleError,
+  InvalidObjectError,
   InvalidSubjectTypeError,
   TsfgaError,
 } from "../src/errors.ts";
 import { createTsfga, type TsfgaClient } from "../src/index.ts";
 import { DEFAULT_WRITE_CONTEXT_BYTE_LIMIT } from "../src/tuple-validation.ts";
-import type { AddTupleRequest } from "../src/types.ts";
+import type { AddTupleRequest, CheckRequest } from "../src/types.ts";
 import { MockTupleStore } from "./helpers/mock-store.ts";
 
 /**
@@ -433,6 +434,16 @@ describe("addTuple refuses a malformed identifier", () => {
     subjectId,
   });
 
+  test("the object half still reports as a TsfgaError", async () => {
+    // `InvalidObjectError` replaced the bare `TsfgaError` this was
+    // raised as, and a caller catching the base class must still
+    // see it — `b5-identifiers.test.ts` asserts exactly that, from
+    // the other side.
+    await expect(
+      fga.addTuple({ ...bare("alice"), objectId: "a b" }),
+    ).rejects.toBeInstanceOf(TsfgaError);
+  });
+
   for (const [label, id] of [
     ["empty", ""],
     ["a colon", "a:b"],
@@ -515,12 +526,79 @@ describe("addTuple refuses a malformed identifier", () => {
     ["a backspace", `a${BACKSPACE}b`],
   ] as const) {
     test(`an object id holding ${label}`, async () => {
-      await expect(
-        fga.addTuple({ ...bare("alice"), objectId: id }),
-      ).rejects.toBeInstanceOf(TsfgaError);
+      const error = await fga
+        .addTuple({ ...bare("alice"), objectId: id })
+        .catch((e) => e);
+      expect(error).toBeInstanceOf(InvalidObjectError);
+      expect(error.cause).toBe("malformed object id");
       expect(store.tuples).toHaveLength(0);
     });
   }
+
+  test("an object id of '*' is refused", async () => {
+    // A typed wildcard is a *subject*. `doc:*` is a row nothing may
+    // ever read back, because no check may name it as its object —
+    // upstream refuses it in `ValidateObject`, before the type is
+    // looked up.
+    const error = await fga
+      .addTuple({ ...bare("alice"), objectId: "*" })
+      .catch((e) => e);
+    expect(error).toBeInstanceOf(InvalidObjectError);
+    expect(error.cause).toBe("object id is a typed wildcard");
+    expect(store.tuples).toHaveLength(0);
+  });
+
+  test("a check whose object id is '*' is refused too", async () => {
+    // The same gate, on the read path: one predicate, as upstream's
+    // `ValidateUserObjectRelation` is one.
+    const error = await check(store, {
+      objectType: "doc",
+      objectId: "*",
+      relation: "both",
+      subjectType: "user",
+      subjectId: "alice",
+    }).catch((e) => e);
+    expect(error).toBeInstanceOf(InvalidObjectError);
+    expect(error.cause).toBe("object id is a typed wildcard");
+  });
+
+  test("a contextual tuple's object id is gated identically", async () => {
+    await expect(
+      check(store, {
+        objectType: "doc",
+        objectId: "1",
+        relation: "both",
+        subjectType: "user",
+        subjectId: "alice",
+        contextualTuples: [{ ...bare("alice"), objectId: "*" }],
+      }),
+    ).rejects.toBeInstanceOf(InvalidObjectError);
+  });
+
+  test("a wildcard *subject* stays legal on both paths", async () => {
+    store.relationConfigs.push({
+      objectType: "doc",
+      relation: "public",
+      directlyAssignable: [{ type: "user", wildcard: true }],
+      impliedBy: null,
+      computedUserset: null,
+      tupleToUserset: null,
+      excludedBy: null,
+      intersection: null,
+    });
+    await expect(
+      fga.addTuple({ ...bare("*"), relation: "public" }),
+    ).resolves.toBeUndefined();
+    await expect(
+      check(store, {
+        objectType: "doc",
+        objectId: "1",
+        relation: "public",
+        subjectType: "user",
+        subjectId: "alice",
+      }),
+    ).resolves.toBe(true);
+  });
 
   test("the `object` field is bounded at 256 code points", async () => {
     // `doc:` is 4 runes, so 252 fits and 253 does not. The bound
@@ -529,12 +607,115 @@ describe("addTuple refuses a malformed identifier", () => {
     await expect(
       fga.addTuple({ ...bare("alice"), objectId: "a".repeat(252) }),
     ).resolves.toBeUndefined();
-    await expect(
-      fga.addTuple({ ...bare("alice"), objectId: "a".repeat(253) }),
-    ).rejects.toBeInstanceOf(TsfgaError);
+    const error = await fga
+      .addTuple({ ...bare("alice"), objectId: "a".repeat(253) })
+      .catch((e) => e);
+    expect(error).toBeInstanceOf(InvalidObjectError);
+    expect(error.cause).toBe("object too long");
     await expect(
       fga.addTuple({ ...bare("alice"), objectId: "é".repeat(200) }),
     ).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * The same two rules on the **check** path, which is where issue
+ * 422 was measured: a malformed id is a perfectly good text column
+ * value, so tsfga read no row and answered `false` where upstream
+ * answers 400. The predicate is shared with the write path above
+ * rather than re-spelled, and these pin the two halves that differ
+ * — the class each side raises, and the bounds.
+ *
+ * Two-sided in `tests/conformance/d2-request-idents.test.ts`.
+ */
+describe("check refuses a malformed identifier", () => {
+  let store: MockTupleStore;
+
+  beforeEach(() => {
+    store = new MockTupleStore();
+    seed(store);
+  });
+
+  const request = (overrides: {
+    objectId?: string;
+    subjectId?: string;
+  }): CheckRequest => ({
+    objectType: "doc",
+    objectId: "1",
+    relation: "both",
+    subjectType: "user",
+    subjectId: "alice",
+    ...overrides,
+  });
+
+  for (const [label, id] of [
+    ["empty", ""],
+    ["a colon", "a:b"],
+    ["a hash", "a#b"],
+    ["a space", "a b"],
+    ["a backspace", `a${BACKSPACE}b`],
+    ["a delete", `a${DELETE}b`],
+  ] as const) {
+    test(`an object id holding ${label}`, async () => {
+      const error = await check(store, request({ objectId: id })).catch(
+        (e) => e,
+      );
+      expect(error).toBeInstanceOf(InvalidObjectError);
+      expect(error.cause).toBe("malformed object id");
+    });
+
+    test(`a subject id holding ${label}`, async () => {
+      // The subject's refusal stays an `InvalidSubjectTypeError`
+      // with cause `malformed subject`: it is the same defect the
+      // write path reports, and only the allow-list differs —
+      // empty here, since nothing has read a relation config.
+      const error = await check(store, request({ subjectId: id })).catch(
+        (e) => e,
+      );
+      expect(error).toBeInstanceOf(InvalidSubjectTypeError);
+      expect(error.cause).toBe("malformed subject");
+    });
+  }
+
+  test("the bounds are the wire string's, not the id's", async () => {
+    // `doc:` is 4 runes and `user:` is 5 bytes, exactly as the
+    // write path measures them.
+    await expect(
+      check(store, request({ objectId: "a".repeat(252) })),
+    ).resolves.toBe(false);
+    const object = await check(
+      store,
+      request({ objectId: "a".repeat(253) }),
+    ).catch((e) => e);
+    expect(object).toBeInstanceOf(InvalidObjectError);
+    expect(object.cause).toBe("object too long");
+
+    await expect(
+      check(store, request({ subjectId: "a".repeat(507) })),
+    ).resolves.toBe(false);
+    const subject = await check(
+      store,
+      request({ subjectId: "a".repeat(508) }),
+    ).catch((e) => e);
+    expect(subject).toBeInstanceOf(InvalidSubjectTypeError);
+    expect(subject.cause).toBe("malformed subject");
+  });
+
+  test("a non-breaking space is an ordinary character", async () => {
+    // `unicode.IsControl` plus U+0020 and nothing wider. A rule
+    // spelled with JavaScript's `\s`, or with `\p{Zs}`, would
+    // refuse a request both engines answer — and would take every
+    // non-ASCII id in the corpus with it.
+    const nbsp = "\u00a0";
+    await expect(check(store, request({ objectId: `1${nbsp}` }))).resolves.toBe(
+      false,
+    );
+    await expect(
+      check(store, request({ subjectId: `alice${nbsp}` })),
+    ).resolves.toBe(false);
+    await expect(
+      check(store, request({ objectId: "dökümän-1" })),
+    ).resolves.toBe(false);
   });
 });
 

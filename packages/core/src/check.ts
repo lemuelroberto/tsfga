@@ -12,9 +12,13 @@ import {
   admitsSubjectRef,
   admittedRefsForShape,
   admittedUsersetRefs,
+  CHECK_OBJECT_RUNE_LIMIT,
+  CHECK_SUBJECT_BYTE_LIMIT,
   directSubjectRef,
   refsAdmit,
+  requestSubjectDefect,
   subjectShape,
+  validateObjectRef,
   validateTupleWrite,
 } from "./tuple-validation.ts";
 import {
@@ -659,14 +663,28 @@ export async function validateCheckSubject(
     );
   };
 
-  // Upstream's `userIDRegex` is `^[^:#\s\x00\p{Cc}]+$`, so neither
-  // character can occur in an id. Only these two are refused here:
-  // they are the ones a `type:id` or `type:id#relation` string
-  // carries, and so the ones that turn a mis-shaped request into a
-  // plausible-looking denial.
-  if (request.subjectId.includes(":") || request.subjectId.includes("#")) {
-    refuse("a subject id may not contain ':' or '#'");
-  }
+  // Upstream's `userIDRegex` is `^[^:#\s\x00\p{Cc}]+$`, and the
+  // whole of it applies: an empty id, a space, a control character
+  // and the two separators are each a 400 rather than a boolean,
+  // through the `CheckRequestTupleKey.User` proto pattern
+  // (`^[^\s]{2,512}$`, which also carries the length bound) and
+  // `IsValidUser` behind it.
+  //
+  // Until issue 422 only `:` and `#` were refused here, on the
+  // reading that they are the characters that turn a mis-shaped
+  // request into a plausible-looking denial. So do the others: a
+  // trailing space or a stray `U+0001` in an id read from an
+  // untrusted source matched no row, and a caller got `false` from
+  // tsfga where upstream told them the request was not a question.
+  // The predicate is the write path's, shared rather than
+  // re-spelled, so the two gates cannot drift.
+  const subjectDefect = requestSubjectDefect(
+    request.subjectType,
+    request.subjectId,
+    subjectRelation,
+    CHECK_SUBJECT_BYTE_LIMIT,
+  );
+  if (subjectDefect !== null) refuse(subjectDefect);
 
   if (subjectRelation !== null) {
     if (subjectRelation === "") {
@@ -720,6 +738,23 @@ export async function runCheck(
   request: CheckRequest,
 ): Promise<boolean> {
   let resolution = scope;
+
+  // The object first, and without a store read: upstream's
+  // `ValidateUserObjectRelation` settles the request's own strings
+  // before it looks anything up, and `ValidateObject` is the half
+  // tsfga had only on the write path. An id the wire cannot carry
+  // — empty, holding `:`, `#`, a space or a control character, the
+  // typed wildcard, or past 256 code points rendered — is a
+  // request upstream answers 400 to and tsfga answered `false` to,
+  // having read no row because no row could match.
+  //
+  // `listObjects` does not run this and needs no exemption: it
+  // names an object *type* and no id at all.
+  validateObjectRef(
+    request.objectType,
+    request.objectId,
+    CHECK_OBJECT_RUNE_LIMIT,
+  );
 
   // Before the contextual tuples, which is upstream's order:
   // `validateCheckRequest` validates the request's own tuple key

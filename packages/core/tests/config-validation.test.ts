@@ -157,6 +157,181 @@ describe("writeRelationConfig refuses what the model would", () => {
   });
 });
 
+/**
+ * The two rules that finish the single-config gate.
+ *
+ * `self` and `this` are reserved as a type name and as a relation
+ * name, and a rewrite on the same object may not name the relation
+ * it defines. Both are pinned two-sided against the container in
+ * `tests/conformance/d3-model-gate.test.ts`; here are the cause
+ * each raises and — the part no conformance cell can state,
+ * because it asserts an *absence* — the shapes each rule must go
+ * on accepting.
+ */
+describe("the model's own names are reserved", () => {
+  let fga: TsfgaClient;
+
+  beforeEach(() => {
+    fga = createTsfga(new MockTupleStore());
+  });
+
+  async function refusal(
+    relationConfig: RelationConfig,
+  ): Promise<InvalidRelationConfigError> {
+    try {
+      await fga.writeRelationConfig(relationConfig);
+    } catch (error) {
+      if (error instanceof InvalidRelationConfigError) return error;
+      throw error;
+    }
+    throw new Error("expected a refusal");
+  }
+
+  test("as an object type name", async () => {
+    for (const reserved of ["self", "this"]) {
+      const error = await refusal(
+        config({
+          objectType: reserved,
+          directlyAssignable: [{ type: "user" }],
+        }),
+      );
+      expect(error.cause).toBe("reserved keyword");
+      expect(error.objectType).toBe(reserved);
+    }
+  });
+
+  test("as a relation name", async () => {
+    for (const reserved of ["self", "this"]) {
+      const error = await refusal(
+        config({ relation: reserved, directlyAssignable: [{ type: "user" }] }),
+      );
+      expect(error.cause).toBe("reserved keyword");
+      expect(error.relation).toBe(reserved);
+    }
+  });
+
+  test("the rule is on the whole name, not a prefix", async () => {
+    // `a3-write-gate` defines `self_a`, and `myself` / `thistle`
+    // are ordinary names upstream stores.
+    for (const ordinary of ["self_a", "myself", "this_1", "thistle"]) {
+      await fga.writeRelationConfig(
+        config({ relation: ordinary, directlyAssignable: [{ type: "user" }] }),
+      );
+    }
+  });
+
+  test("a condition named 'self' is still stored", async () => {
+    // `validateNames` walks type definitions and relation keys and
+    // looks at nothing else. v1.18.2 stores this, measured — so a
+    // pass that "unifies" the two name gates is a regression.
+    for (const name of ["self", "this"]) {
+      await fga.writeConditionDefinition({
+        name,
+        expression: "true",
+        parameters: {},
+      });
+    }
+  });
+});
+
+describe("a rewrite may not name its own relation", () => {
+  let fga: TsfgaClient;
+
+  beforeEach(() => {
+    fga = createTsfga(new MockTupleStore());
+  });
+
+  async function refusal(
+    relationConfig: RelationConfig,
+  ): Promise<InvalidRelationConfigError> {
+    try {
+      await fga.writeRelationConfig(relationConfig);
+    } catch (error) {
+      if (error instanceof InvalidRelationConfigError) return error;
+      throw error;
+    }
+    throw new Error("expected a refusal");
+  }
+
+  test("all four positions a computed userset can sit in", async () => {
+    const positions: Array<Partial<RelationConfig>> = [
+      // `viewer: viewer`
+      { computedUserset: "viewer" },
+      // `viewer: [user] or viewer`
+      { directlyAssignable: [{ type: "user" }], impliedBy: ["viewer"] },
+      // `viewer: [user] and viewer`
+      {
+        directlyAssignable: [{ type: "user" }],
+        intersection: [
+          { type: "direct" },
+          { type: "computedUserset", relation: "viewer" },
+        ],
+      },
+      // `viewer: [user] but not viewer`
+      { directlyAssignable: [{ type: "user" }], excludedBy: "viewer" },
+    ];
+    for (const position of positions) {
+      const error = await refusal(config(position));
+      expect(error.cause).toBe("rewrite names its own relation");
+    }
+  });
+
+  /**
+   * The guard the rule exists around.
+   *
+   * `viewer: [user] or viewer from parent` names this relation on
+   * **another** object and is upstream's single most common model
+   * shape — `d4-gcloud`, `d4-oncall`, `d4-market`,
+   * `a5-nested-folders`, `a7-recursion`, `a8-recursion` and
+   * `c3-snowflake` all lean on it. A predicate that reached
+   * `tupleToUserset` would take out roughly 150 assertions and
+   * refuse models the container stores.
+   */
+  test("a self-recursive tuple-to-userset is accepted", async () => {
+    await fga.writeRelationConfig(
+      config({ relation: "parent", directlyAssignable: [{ type: "doc" }] }),
+    );
+    await fga.writeRelationConfig(
+      config({
+        directlyAssignable: [{ type: "user" }],
+        tupleToUserset: [{ tupleset: "parent", computedUserset: "viewer" }],
+      }),
+    );
+  });
+
+  test("so is one reached through an intersection operand", async () => {
+    await fga.writeRelationConfig(
+      config({ relation: "parent", directlyAssignable: [{ type: "doc" }] }),
+    );
+    await fga.writeRelationConfig(
+      config({
+        directlyAssignable: [{ type: "user" }],
+        intersection: [
+          { type: "direct" },
+          {
+            type: "tupleToUserset",
+            tupleset: "parent",
+            computedUserset: "viewer",
+          },
+        ],
+      }),
+    );
+  });
+
+  test("naming a different relation is what these arms are for", async () => {
+    await fga.writeRelationConfig(
+      config({
+        directlyAssignable: [{ type: "user" }],
+        impliedBy: ["editor"],
+        excludedBy: "banned",
+      }),
+    );
+    await fga.writeRelationConfig(
+      config({ relation: "editor", computedUserset: "owner" }),
+    );
+  });
+});
+
 describe("addTuple refuses a tuple that is implicit", () => {
   let store: MockTupleStore;
   let fga: TsfgaClient;

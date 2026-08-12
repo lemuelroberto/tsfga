@@ -10,6 +10,7 @@ import {
   ConditionEvaluationError,
   DepthExceededError,
   RelationConfigNotFoundError,
+  TsfgaError,
 } from "./errors.ts";
 import type { TupleStore } from "./store-interface.ts";
 import type { CheckOptions, ListObjectsRequest } from "./types.ts";
@@ -115,6 +116,40 @@ import type { CheckOptions, ListObjectsRequest } from "./types.ts";
  * determinism choice rather than parity — upstream streams objects
  * in completion order from its pool.
  *
+ * At most `options.listObjectsMaxResults` objects come back
+ * (default 1000, matching `OPENFGA_LIST_OBJECTS_MAX_RESULTS`;
+ * `Infinity` opts out). Upstream truncates silently — `ListObjects`
+ * has no cursor and no field saying the answer was cut — and so
+ * does this. Two things follow, and both are properties upstream
+ * shares:
+ *
+ * - **Which** objects come back above the cap differs between the
+ *   engines. Upstream keeps whatever its worker pool completed
+ *   first; tsfga keeps the first `listObjectsMaxResults` granting
+ *   candidates *in candidate order*. A caller comparing the two
+ *   may compare counts, never membership.
+ * - Reaching the cap **stops the producers**: once the cap is
+ *   reached nothing further is launched, so a candidate past it is
+ *   never resolved and can never raise. The cap therefore masks
+ *   refusals a smaller pool would have surfaced — a call that
+ *   answers is not evidence that every object of the type is
+ *   resolvable, only that the ones reported are.
+ *
+ * Truncation is applied in candidate order, so the answer itself
+ * stays deterministic: when the count of granted candidates reaches
+ * the cap, every one of the first `listObjectsMaxResults` granting
+ * candidates has already been launched (launching is in index
+ * order) and is awaited before the call settles. What is *not*
+ * deterministic across `maxBreadth` settings is how far past the
+ * cap the pool happened to reach, so which of the errors beyond it
+ * — if any — was seen. That is the same masking property named
+ * above, seen from the error side.
+ *
+ * The cap bounds the answer, never the gates. A relation with no
+ * config is still refused, whatever the cap is set to, and a cap of
+ * `1` does not turn a refusal into a one-element list.
+ * `listSubjects` has no upstream counterpart and is uncapped.
+ *
  * Contextual tuples are applied **once, to the whole call**, not
  * per candidate. `runCheck` gives a request carrying them its own
  * memo, because a result resolved over them is not shareable with
@@ -129,6 +164,27 @@ export async function listObjects(
 ): Promise<string[]> {
   const { objectType, relation, subjectType, subjectId, context } = request;
   const subjectRelation = request.subjectRelation;
+  // Validated here rather than in `createCheckScope`, where
+  // `maxDepth` and `maxBreadth` are: this is the only entry point
+  // that reads it, and `CheckOptions` is deliberately validated
+  // where the API reading a field lives (see the table on
+  // `CheckOptions`). Checked before any store read, so an option
+  // the library cannot honour costs no round trip.
+  //
+  // Same predicate as `maxDepth`: an integer >= 1, or Infinity.
+  // Written as a negated comparison so `NaN` is rejected rather
+  // than admitted, and a fraction would truncate to a cap one
+  // object below what it says.
+  const maxResults = options.listObjectsMaxResults ?? 1000;
+  if (
+    !(maxResults >= 1) ||
+    (maxResults !== Number.POSITIVE_INFINITY && !Number.isInteger(maxResults))
+  ) {
+    throw new TsfgaError(
+      "listObjectsMaxResults must be a positive integer or Infinity, " +
+        `got ${maxResults}`,
+    );
+  }
   const contextualTuples = request.contextualTuples ?? [];
   if (contextualTuples.length > 0) {
     await validateContextualTuples(store, contextualTuples);
@@ -156,24 +212,28 @@ export async function listObjects(
   await validateCheckSubject(scope.store, request);
   const candidateIds = await resolutionStore.listCandidateObjectIds(objectType);
 
-  return resolveCandidates(candidateIds, scope.maxBreadth, (objectId) =>
-    runCheck(scope, {
-      objectType,
-      objectId,
-      relation,
-      subjectType,
-      subjectId,
-      subjectRelation,
-      context,
-    }).catch((error: unknown) => {
-      // A candidate the budget could not resolve is dropped, not
-      // propagated -- see the note on this function. Only this
-      // error is dropped here: a droppable condition error is
-      // classified in `resolveCandidates`, beside the hard
-      // failures it has to be ordered against.
-      if (error instanceof DepthExceededError) return false;
-      throw error;
-    }),
+  return resolveCandidates(
+    candidateIds,
+    scope.maxBreadth,
+    maxResults,
+    (objectId) =>
+      runCheck(scope, {
+        objectType,
+        objectId,
+        relation,
+        subjectType,
+        subjectId,
+        subjectRelation,
+        context,
+      }).catch((error: unknown) => {
+        // A candidate the budget could not resolve is dropped, not
+        // propagated -- see the note on this function. Only this
+        // error is dropped here: a droppable condition error is
+        // classified in `resolveCandidates`, beside the hard
+        // failures it has to be ordered against.
+        if (error instanceof DepthExceededError) return false;
+        throw error;
+      }),
   );
 }
 
@@ -200,10 +260,36 @@ export async function listObjects(
  * simply not granted. So which error a caller sees stays
  * independent of completion order — only hard failures are ever
  * reported, and those are ordered by index.
+ *
+ * `maxResults` is the second launch cut-off, beside the failure
+ * one, and it works the same way: once that many candidates have
+ * granted, nothing further is launched, what is in flight is
+ * awaited, and the call settles. It is a cut-off rather than a
+ * filter over a complete walk on purpose — upstream stops its
+ * producers too, so a run that fills the answer early does not pay
+ * for the rest of the pool and cannot raise on a candidate it never
+ * reached.
+ *
+ * The two cut-offs compose without an ordering rule because they
+ * cannot cross: the failure cut-off only ever moves *down* to an
+ * index already launched, and the result cut-off only ever stops
+ * indices not yet launched. A hard failure among the launched
+ * candidates still rejects, capped or not — the cap truncates an
+ * answer, it does not suppress a refusal that was actually
+ * reached.
+ *
+ * Candidates in flight when the cap is reached may push the granted
+ * count past it, so the collected result is truncated in candidate
+ * order on the way out. That truncation is exact rather than
+ * best-effort: when the count reaches the cap, every one of the
+ * first `maxResults` granting candidates is necessarily already
+ * launched, because launching is in index order and every launched
+ * candidate is awaited.
  */
 function resolveCandidates(
   candidateIds: readonly string[],
   maxBreadth: number,
+  maxResults: number,
   run: (objectId: string) => Promise<boolean>,
 ): Promise<string[]> {
   return new Promise((resolve, reject) => {
@@ -211,6 +297,7 @@ function resolveCandidates(
     let next = 0;
     let active = 0;
     let settled = false;
+    let granted = 0;
     // Also the launch cut-off: nothing at or beyond it is started.
     let failedIndex = candidateIds.length;
     let failure: unknown;
@@ -223,13 +310,13 @@ function resolveCandidates(
       }
     };
 
+    // Whether another candidate may be started at all: one is left,
+    // no earlier one has failed, and the answer is not yet full.
+    const canLaunch = () =>
+      next < candidateIds.length && next < failedIndex && granted < maxResults;
+
     const launch = () => {
-      while (
-        !settled &&
-        active < maxBreadth &&
-        next < candidateIds.length &&
-        next < failedIndex
-      ) {
+      while (!settled && active < maxBreadth && canLaunch()) {
         const index = next;
         next++;
         const objectId = candidateIds[index];
@@ -250,6 +337,7 @@ function resolveCandidates(
           (result) => {
             if (settled) return;
             allowed[index] = result;
+            if (result) granted++;
             onCandidateDone();
           },
           (error) => {
@@ -269,7 +357,7 @@ function resolveCandidates(
 
     const onCandidateDone = () => {
       active--;
-      if (next < candidateIds.length && next < failedIndex) {
+      if (canLaunch()) {
         launch();
       } else if (active === 0) {
         settleExhausted();
@@ -282,7 +370,17 @@ function resolveCandidates(
         reject(failure);
         return;
       }
-      resolve(candidateIds.filter((_, index) => allowed[index]));
+      // Truncated in candidate order, not in completion order: the
+      // candidates in flight when the cap was reached may have
+      // pushed the count past it, and dropping the overflow by
+      // arrival time would make the answer depend on the race.
+      const objects: string[] = [];
+      for (const [index, objectId] of candidateIds.entries()) {
+        if (allowed[index] !== true) continue;
+        objects.push(objectId);
+        if (objects.length >= maxResults) break;
+      }
+      resolve(objects);
     };
 
     launch();

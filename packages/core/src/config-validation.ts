@@ -6,7 +6,7 @@ import type { ConditionDefinition, RelationConfig } from "./types.ts";
  * Validate a relation config against the rules OpenFGA's
  * typesystem applies when it validates a model.
  *
- * Eight shapes are refused, each measured against v1.18.2 as an
+ * Nine shapes are refused, each measured against v1.18.2 as an
  * `invalid_authorization_model` upstream and, before this,
  * accepted here — several of them changing an answer rather than
  * merely widening the write surface:
@@ -44,6 +44,12 @@ import type { ConditionDefinition, RelationConfig } from "./types.ts";
  *   directions, and there is no model it corresponds to.
  * - **a relation with no entrypoint**, in the one form a single
  *   config decides — see below.
+ * - **a rewrite on the same object naming the relation it
+ *   defines.** Upstream: `ErrInvalidUsersetRewrite`, in all four
+ *   positions a computed userset can hold. Write-surface only in
+ *   three of them; on the subtract side of an exclusion it made
+ *   the relation answer `false` for a directly granted subject —
+ *   see `selfNamingRewrite` below.
  *
  * ## The stated gap: write order
  *
@@ -98,10 +104,13 @@ import type { ConditionDefinition, RelationConfig } from "./types.ts";
  *
  * ## The names themselves
  *
- * Ahead of all eight, and ahead of every store read, the config's
- * own `objectType` and `relation` are checked for
- * well-formedness. It is the cheapest rule here and the earliest
- * one upstream applies — see `isWellFormedName` below.
+ * Ahead of all of them, and ahead of every store read, the config's
+ * own `objectType` and `relation` are checked twice: for
+ * well-formedness against the proto pattern (`isWellFormedName`),
+ * and against the two names the model reserves
+ * (`RESERVED_KEYWORDS`). They are the cheapest rules here and the
+ * earliest ones upstream applies — `validateNames` runs from
+ * `NewAndValidate` before any relation is validated at all.
  */
 export async function validateRelationConfigWrite(
   store: TupleStore,
@@ -123,8 +132,21 @@ export async function validateRelationConfigWrite(
     refuse("malformed type name", describeName(config.objectType));
   }
 
+  if (RESERVED_KEYWORDS.has(config.objectType)) {
+    refuse("reserved keyword", `type name '${config.objectType}'`);
+  }
+
   if (!isWellFormedName(config.relation, MAX_RELATION_NAME_LENGTH)) {
     refuse("malformed relation name", describeName(config.relation));
+  }
+
+  if (RESERVED_KEYWORDS.has(config.relation)) {
+    refuse("reserved keyword", `relation name '${config.relation}'`);
+  }
+
+  const selfNamed = selfNamingRewrite(config);
+  if (selfNamed !== null) {
+    refuse("rewrite names its own relation", selfNamed);
   }
 
   if (config.intersection !== null && config.intersection.length < 2) {
@@ -289,6 +311,27 @@ const NAME_RESERVED: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * The two names a model may not give a type or a relation.
+ *
+ * `validateNames` refuses both, on both fields, with
+ * `ErrReservedKeywords` — and it runs from `NewAndValidate` before
+ * any relation is validated, so it is the earliest model rule
+ * upstream has. It is also one of the few that is decidable from a
+ * single config, because both premises are the config's own.
+ *
+ * **This is deliberately not applied to `validateConditionWrite`.**
+ * `validateNames` walks type definitions and their relation keys
+ * and looks at nothing else; v1.18.2 stores a condition named
+ * `self` without complaint, measured against the container. A
+ * tidying pass that "unifies" the two name gates would refuse a
+ * definition upstream takes.
+ *
+ * Exact names, not a prefix or a substring: `selfish` and `this_1`
+ * are ordinary and the corpus has their like.
+ */
+const RESERVED_KEYWORDS: ReadonlySet<string> = new Set(["self", "this"]);
+
+/**
  * 254, measured by bisecting model writes against the container:
  * accepted at 254, `type_invalid_pattern` at 255.
  */
@@ -345,6 +388,59 @@ function hasRewrite(config: RelationConfig): boolean {
     config.excludedBy !== null ||
     (config.intersection ?? []).length > 0
   );
+}
+
+/**
+ * Where, if anywhere, a rewrite on this object names the relation
+ * it defines — `viewer: viewer`, `viewer: a or viewer`,
+ * `viewer: a and viewer`, `viewer: a but not viewer`.
+ *
+ * `isUsersetRewriteValid` refuses `computedUserset == relation`
+ * outright and recurses into union children, intersection children
+ * and **both** sides of a difference, so upstream's one rule
+ * reaches every position a `ComputedUserset` node can sit in.
+ * Mapped onto a `RelationConfig` that is exactly four fields:
+ * `computedUserset`, an entry of `impliedBy`, `excludedBy`, and an
+ * `intersection` operand of type `computedUserset`. The returned
+ * string names which, for the error's detail; the cause is the
+ * same one upstream reports for all four.
+ *
+ * ## `tupleToUserset` is not one of them, and that is the rule
+ *
+ * A `TupleToUserset` is its own case in upstream's switch and
+ * carries no self-relation test — `viewer: viewer from parent`
+ * names this relation on **another** object, which is the single
+ * most common shape an OpenFGA model has. Extending this
+ * predicate to `tupleToUserset` would refuse
+ * `d4-gcloud`'s deny policy, `d4-oncall`'s `member from
+ * parent_team`, `d4-market`'s TTU onto a TTU, `a5-nested-folders`,
+ * `a7-recursion`, `a8-recursion` and `c3-snowflake` — every one of
+ * them a model the container stores. The self-recursive TTU that
+ * *is* refused upstream is refused for having no entrypoint, and
+ * only in the closed form `hasNoEntrypoint` below decides.
+ *
+ * ## The one arm with a behaviour behind it
+ *
+ * Three of the four are write-surface only: a rewrite onto its own
+ * relation revisits a node already on the resolution path, the
+ * cycle path resolves it `false`, and the relation answers what
+ * its other arms say. `excludedBy` is different — a cycle on the
+ * **subtract** side denies, so `viewer: [user] but not viewer`
+ * answered `false` for a directly granted subject, on a model
+ * OpenFGA would never have stored. Refusing the config removes the
+ * only way to reach that, so the check path needs no change.
+ */
+function selfNamingRewrite(config: RelationConfig): string | null {
+  const { relation } = config;
+  if (config.computedUserset === relation) return "computedUserset";
+  if ((config.impliedBy ?? []).includes(relation)) return "an impliedBy arm";
+  if (config.excludedBy === relation) return "excludedBy";
+  for (const operand of config.intersection ?? []) {
+    if (operand.type === "computedUserset" && operand.relation === relation) {
+      return "an intersection operand";
+    }
+  }
+  return null;
 }
 
 /**
