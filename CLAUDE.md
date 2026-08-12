@@ -1294,6 +1294,78 @@ scripts/bump.sh <package-dir> [patch|minor|major]  # Bump a version
 Publishing is not a local command — the Release workflow on
 `emfga/tsfga` is the only publish path. See `RELEASING.md`.
 
+### Running tests
+
+**Run the whole suite by committing and pushing to `origin`, and
+letting CI run it. That is how the full suite gets run — not a
+preference between two equal options.** Locally, run only the
+narrow slice you need while iterating.
+
+```bash
+git push origin <branch>
+gh workflow run ci.yml --repo lemuelroberto/tsfga --ref <branch>
+gh run list --repo lemuelroberto/tsfga --branch <branch> --limit 1
+gh run view <id> --repo lemuelroberto/tsfga --json jobs \
+  --jq '.jobs[] | "\(.conclusion)\t\(.name)"'
+```
+
+Push to `origin` only, never `upstream`. `test-bun` provisions
+**its own** Postgres and OpenFGA and runs the full `turbo:test`
+including conformance, plus `check:schema-drift`, so a green
+`test-bun` is the same evidence a local run gives — and better
+evidence than one taken while anything else touches the shared
+containers.
+
+**Why this is the default and not a preference.** There is one
+Postgres and one OpenFGA on this machine, shared by every
+worktree, every agent and every hook. Each conformance file holds
+an open transaction and OpenFGA store creation is global, so two
+concurrent runs block and corrupt each other. That produces
+spurious failures — and spurious *passes*, which are worse. This
+cost real time before the rule existed, and it is why
+`.claude/hooks/quality-checks.sh` deliberately does **not** run
+the suite.
+
+**What to run locally.** Only the narrowest thing that answers
+the question you have right now — iterating through CI would be
+absurd, and running the *whole* suite locally buys nothing CI
+does not give more reliably.
+
+- Core unit tests need no infrastructure at all and are safe to
+  run as often as you like: `bun run turbo:test:core`, or one
+  file with `cd packages/core && bun test <file>`.
+- One conformance file while iterating on it:
+  `cd tests/conformance && bun test <file>.test.ts`.
+- **`bun run build` first** for anything reaching core through
+  `dist/`. The conformance suite does. A per-file run without a
+  build measures a stale `dist/` and will happily confirm a bug
+  you just fixed, or hide one you just wrote.
+- **Only one agent touches the shared containers at a time.** If
+  several are working, the orchestrator says who has the token.
+- **If a failure will not reproduce, do not debug it.** Re-run it
+  first, and check whether something else was testing at the same
+  time.
+
+**Then commit, push, and let CI say whether it works.** A local
+green is a hypothesis; a CI green across the matrix — Node
+22/24/26, Deno, two Bun versions, typecheck, packaging — is the
+measurement. **If local and CI disagree, CI wins.** Type errors
+and packaging breakage that no local run can see are routinely
+caught there.
+
+- A CI failure in `setup-bun`, `setup-deno` or `docker compose
+  up` is **infrastructure, not code**. Re-run the failed jobs
+  (`gh run rerun <id> --failed`) before reading anything into it.
+- `commitlint` is skipped on `workflow_dispatch`, so it will not
+  check commit headers. Hold the 50-character rule yourself.
+- Commit freely on a feature branch to get a CI run; squash the
+  fixups before opening a PR, per "Commit Hygiene Before PR".
+
+The local database is disposable — it holds nothing but test
+fixtures. `bun run infra:down && bun run infra:setup` re-creates
+it and needs no permission; do it whenever the applied migration
+chain does not match the branch you are on.
+
 ### CI Workflow (`.github/workflows/ci.yml`)
 
 Triggers: `pull_request` (main), `workflow_dispatch`.
