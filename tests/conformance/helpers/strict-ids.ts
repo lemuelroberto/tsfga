@@ -1,13 +1,15 @@
-import type {
-  CheckTuples,
-  CheckTuplesQuery,
-  ConditionDefinition,
-  GatedRelationConfig,
-  GatedTuple,
-  RelationConfig,
-  RemoveTupleRequest,
-  Tuple,
-  TupleStore,
+import {
+  type CheckTuples,
+  type CheckTuplesQuery,
+  type ConditionDefinition,
+  type GatedRelationConfig,
+  type GatedTuple,
+  type IdDomain,
+  OPAQUE_IDS,
+  type RelationConfig,
+  type RemoveTupleRequest,
+  type Tuple,
+  type TupleStore,
 } from "@tsfga/core";
 
 /**
@@ -75,6 +77,20 @@ function requireSubject(id: string): void {
  * visible here.
  */
 class StrictIdStore implements TupleStore {
+  /**
+   * Opaque, deliberately — **not** `CANONICAL_UUID_IDS`.
+   *
+   * Declaring the narrow domain would move the refusal into core,
+   * where it becomes a `TsfgaError` and therefore the outcome
+   * "refused", which a conformance assertion is allowed to expect.
+   * A residual slug is not an outcome; it is a defect in the test
+   * file, and it must be impossible to satisfy an expectation
+   * with. So the domain stays opaque, core's gate passes the id
+   * through, and `IdResidueError` — which is not a `TsfgaError` —
+   * is what the file gets.
+   */
+  readonly idDomain: IdDomain = OPAQUE_IDS;
+
   constructor(private readonly inner: TupleStore) {}
 
   findCheckTuples(query: CheckTuplesQuery): Promise<CheckTuples> {

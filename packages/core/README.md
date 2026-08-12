@@ -1053,6 +1053,43 @@ used to mean upsert, and a store that can only upsert cannot
 implement upstream's default; `TsfgaClient.addTuple` turns the
 `false` into `DuplicateTupleError`.
 
+### A store declares which ids it can hold
+
+`TupleStore` has a required `idDomain`. OpenFGA admits any
+non-empty id with no control character and no `#`, `:` or space; a
+store may hold fewer than that, and a store keeping its ids in a
+`uuid` column holds very many fewer.
+
+```ts
+import { OPAQUE_IDS, type TupleStore } from "@tsfga/core";
+
+class MyStore implements TupleStore {
+  readonly idDomain = OPAQUE_IDS;
+  // ...
+}
+```
+
+`OPAQUE_IDS` admits everything and is the right answer for a store
+whose ids are strings — it is one line, and it is what every
+existing adapter needs. `CANONICAL_UUID_IDS` is the other one
+shipped: exactly 8-4-4-4-12 lower-case hexadecimal digits.
+
+There is no default and no absent-means-opaque third state.
+Absence would compile silently for exactly the population that
+most needs to be told, and a store that never says what it can
+hold reports its refusals as a driver error from three layers
+down.
+
+**A declared domain can only narrow, never widen — so there is no
+clamp here, and the absence is deliberate.** Elsewhere a store's
+reply is a hint that core re-applies the model to. This is the one
+place a store says something core takes at its word, and it is
+safe to, because both mistakes fail in the refusing direction: a
+store declaring `OPAQUE_IDS` over narrow columns gets its own
+driver errors back, exactly as it does today, and one declaring
+narrower than its columns refuses requests it could have served.
+Neither grants.
+
 ### The two write methods take a branded argument
 
 `insertTuple` takes a `GatedTuple` and `upsertRelationConfig` a

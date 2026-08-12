@@ -9,7 +9,11 @@
  *   deno run --allow-all tests/smoke/smoke-test.mjs
  */
 
-import { createTsfga, check } from "../../packages/core/dist/index.js";
+import {
+  createTsfga,
+  check,
+  OPAQUE_IDS,
+} from "../../packages/core/dist/index.js";
 
 // Verify exports are functions
 assert(typeof createTsfga === "function", "createTsfga should be a function");
@@ -28,6 +32,11 @@ assert(typeof check === "function", "check should be a function");
 // model there is.
 /** @type {import("../../packages/core/dist/index.js").TupleStore} */
 const mockStore = {
+  // Required, and deliberately with no default: a store that never
+  // says what ids it can hold is one whose refusals arrive as a
+  // driver error from three layers down.
+  idDomain: OPAQUE_IDS,
+
   findCheckTuples: async (query) => ({
     direct:
       query.directRefs?.length === 0

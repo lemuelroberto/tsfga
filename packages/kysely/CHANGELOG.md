@@ -9,6 +9,11 @@ releases may contain breaking changes).
 
 ### Changed
 
+- **`KyselyTupleStore` declares `idDomain`.** `OPAQUE_IDS` for
+  now: `object_id` and `subject_id` are `text` columns, so the
+  store holds anything OpenFGA admits as an id. Requires
+  `@tsfga/core` with `IdDomain` exported.
+
 - **`KyselyTupleStore.insertTuple` and `upsertRelationConfig` take
   the branded `GatedTuple` and `GatedRelationConfig`.** Type-level
   only — nothing changes at runtime — and it is what stops a

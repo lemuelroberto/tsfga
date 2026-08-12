@@ -1,4 +1,4 @@
-import type { TupleStore } from "./store-interface.ts";
+import type { IdDomain, TupleStore } from "./store-interface.ts";
 import type {
   CheckTuples,
   CheckTuplesQuery,
@@ -49,6 +49,11 @@ export class CachingTupleStore implements TupleStore {
   private typeCache = new Map<string, Promise<boolean>>();
 
   constructor(private inner: TupleStore) {}
+
+  /** The wrapped store's; a cache holds no ids of its own. */
+  get idDomain(): IdDomain {
+    return this.inner.idDomain;
+  }
 
   findRelationConfig(
     objectType: string,

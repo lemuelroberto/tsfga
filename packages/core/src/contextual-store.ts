@@ -1,4 +1,4 @@
-import type { TupleStore } from "./store-interface.ts";
+import type { IdDomain, TupleStore } from "./store-interface.ts";
 import type {
   AddTupleRequest,
   CheckTuples,
@@ -33,6 +33,15 @@ export class ContextualTupleStore implements TupleStore {
       conditionName: t.conditionName ?? null,
       conditionContext: t.conditionContext ?? null,
     }));
+  }
+
+  /**
+   * The wrapped store's, forwarded rather than declared. A wrapper
+   * holds no ids of its own; the domain belongs to whatever is
+   * underneath it.
+   */
+  get idDomain(): IdDomain {
+    return this.inner.idDomain;
   }
 
   /**

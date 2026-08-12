@@ -9,6 +9,28 @@ releases may contain breaking changes).
 
 ### Added
 
+- **BREAKING: `TupleStore` declares an `idDomain`.** A required
+  property saying which ids the store is able to hold, with
+  `OPAQUE_IDS` and `CANONICAL_UUID_IDS` exported beside the
+  `IdDomain` type. OpenFGA admits any non-empty id with no control
+  character and no `#`, `:` or space; a store keeping its ids in a
+  `uuid` column holds far fewer, and until now the only place that
+  showed up was a driver error from three layers down.
+
+  For a TypeScript adapter this is one line —
+  `readonly idDomain = OPAQUE_IDS;` — and it is the same
+  behaviour as before. It is a harder break than the branded write
+  parameters beside it: a missing required property is not
+  bivariant, so a third-party adapter genuinely fails to compile
+  rather than merely losing a guarantee. A **JavaScript** consumer
+  gets no signal at build time; its first sign is a runtime
+  `IdDomainError` reading `store declares no id domain`, once the
+  request gate lands.
+
+  `IdDomainError` is exported, extends `TsfgaError`, and carries
+  `position`, `type`, `id`, `domain` and `detail`. Nothing raises
+  it yet.
+
 - **`writeRelationConfig` refuses a rewrite cycle**, with
   `InvalidRelationConfigError` and cause `"rewrite cycle"`.
   `viewer: editor` beside `editor: viewer` was stored and is now

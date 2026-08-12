@@ -8,7 +8,89 @@ import type {
 } from "./types.ts";
 import type { GatedRelationConfig, GatedTuple } from "./write-gate.ts";
 
+/**
+ * Which ids a store is able to hold, declared by the store itself.
+ *
+ * OpenFGA admits any non-empty id with no control character and no
+ * `#`, `:` or space. A store may hold fewer than that — a `uuid`
+ * column holds far fewer — and until this existed the only place
+ * that showed up was a driver error from three layers down, with a
+ * message about a column nobody outside the adapter has heard of.
+ *
+ * A declared domain can only **narrow** what core passes down,
+ * never widen it, so there is no clamp here and none is needed. A
+ * store that declares `OPAQUE_IDS` over narrow columns gets its
+ * own driver errors back, exactly as before; one that declares
+ * narrower than its columns refuses requests it could have served.
+ * Neither direction grants.
+ */
+export interface IdDomain {
+  /** Named in the refusal. A phrase a caller can read, not a code. */
+  readonly name: string;
+  /** `null` when the id is admissible; otherwise why it is not. */
+  defect(id: string): string | null;
+}
+
+/**
+ * Every id `@tsfga/core` itself admits — the default for any store
+ * whose ids are opaque strings, which is what a store that keeps
+ * them in a `text` column has.
+ */
+export const OPAQUE_IDS: IdDomain = {
+  name: "opaque string",
+  defect: () => null,
+};
+
+/**
+ * Exactly 8-4-4-4-12 lower-case hexadecimal digits, hyphenated.
+ *
+ * Deliberately **narrower than PostgreSQL's own `uuid` input
+ * grammar**, which is many-to-one. Measured on PG 18: the
+ * uppercase, hyphenless, braced, braced-hyphenless and odd-hyphen
+ * spellings of one value all store as the same row. Measured on
+ * OpenFGA v1.18.2: those spellings are *distinct* ids — a grant
+ * written with the uppercase spelling answers `true` for uppercase
+ * and `false` for lowercase.
+ *
+ * So a domain admitting more than one spelling would let two ids
+ * upstream holds apart collapse onto one row, and a grant written
+ * for one would answer `true` for the other. That is the only
+ * granting-direction hole this design has, and the absent `i` flag
+ * is what closes it.
+ *
+ * Syntax only. Nothing about the version or the variant nibble is
+ * checked, for two independent reasons: the nil UUID has version
+ * nibble `0` and admitting it as an ordinary subject is the point
+ * of giving the typed wildcard a column of its own, and 471 of the
+ * 579 UUID literals in the conformance corpus carry a variant
+ * nibble RFC 4122 does not define. PostgreSQL checks neither
+ * either. A store's constraint is representational; anything
+ * beyond representation is an opinion upstream does not hold.
+ */
+const CANONICAL_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** The domain a `uuid` column can hold without normalising it. */
+export const CANONICAL_UUID_IDS: IdDomain = {
+  name: "canonical UUID",
+  defect: (id) =>
+    CANONICAL_UUID.test(id)
+      ? null
+      : "not a canonical lower-case hyphenated UUID",
+};
+
 export interface TupleStore {
+  /**
+   * Which ids this store can hold.
+   *
+   * Required, with no absent-means-opaque third state: that state
+   * is what migration 005 existed to delete elsewhere in this
+   * repository, and here it would compile silently for exactly the
+   * population that most needs to be told. A store whose ids are
+   * opaque strings writes `readonly idDomain = OPAQUE_IDS;`.
+   */
+  readonly idDomain: IdDomain;
+
   // === Read ===
 
   /**

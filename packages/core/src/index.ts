@@ -592,6 +592,13 @@ export {
   DepthExceededError,
   DuplicateTupleError,
   formatRestriction,
+  // Raised when the store's declared `idDomain` cannot hold an id
+  // OpenFGA accepts. A capability refusal, not a parity claim --
+  // see `capability-refusals.json`.
+  IdDomainError,
+  // `IdDomainError.position` is a union, exported for the reason
+  // the other cause unions here are.
+  type IdPosition,
   ImplicitTupleError,
   InvalidConditionalTupleError,
   // Raised by `check` and `checkMany` for an object the request
@@ -624,7 +631,16 @@ export {
   type SubjectDefect,
   TsfgaError,
 } from "./errors.ts";
-export type { TupleStore } from "./store-interface.ts";
+export {
+  // A store declares which ids it can hold. Both constants are
+  // exported because both are answers a store author gives:
+  // `OPAQUE_IDS` for a store whose ids are strings, and
+  // `CANONICAL_UUID_IDS` for one keeping them in a `uuid` column.
+  CANONICAL_UUID_IDS,
+  type IdDomain,
+  OPAQUE_IDS,
+  type TupleStore,
+} from "./store-interface.ts";
 export {
   admitsSubjectRef,
   admitsSubjectShape,

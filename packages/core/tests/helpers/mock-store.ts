@@ -1,4 +1,8 @@
-import type { TupleStore } from "../../src/store-interface.ts";
+import {
+  type IdDomain,
+  OPAQUE_IDS,
+  type TupleStore,
+} from "../../src/store-interface.ts";
 import { directSubjectRef, refsAdmit } from "../../src/tuple-validation.ts";
 import type {
   AddTupleRequest,
@@ -16,6 +20,13 @@ import type {
  * Stores tuples, relation configs, and condition definitions in arrays.
  */
 export class MockTupleStore implements TupleStore {
+  /**
+   * Opaque, and overridable per test. The mock keeps its tuples in
+   * an array, so it can hold any string an OpenFGA id can be — a
+   * test about a *narrow* domain assigns its own.
+   */
+  idDomain: IdDomain = OPAQUE_IDS;
+
   tuples: Tuple[] = [];
   relationConfigs: RelationConfig[] = [];
   conditionDefinitions: ConditionDefinition[] = [];

@@ -5,8 +5,10 @@ import {
   type ConditionParameterType,
   type GatedRelationConfig,
   type GatedTuple,
+  type IdDomain,
   type IntersectionOperand,
   InvalidStoredDataError,
+  OPAQUE_IDS,
   type RelationConfig,
   type RemoveTupleRequest,
   type Tuple,
@@ -50,6 +52,13 @@ function isConditionParameterType(
 
 export class KyselyTupleStore implements TupleStore {
   private db: Kysely<DB>;
+
+  /**
+   * Opaque for now. `object_id` and `subject_id` are `text`
+   * columns as of migrations `006` and `007`, so anything OpenFGA
+   * admits as an id this store can hold.
+   */
+  readonly idDomain: IdDomain = OPAQUE_IDS;
 
   /**
    * Takes a `Kysely<DB>` it does not own — including a

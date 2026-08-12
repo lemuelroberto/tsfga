@@ -800,3 +800,54 @@ export class InvalidStoredDataError extends TsfgaError {
     this.name = "InvalidStoredDataError";
   }
 }
+
+/** Which half of a request the id was in. */
+export type IdPosition = "object" | "subject";
+
+/**
+ * An id OpenFGA accepts and the store cannot hold.
+ *
+ * The one refusal in this file that is **not** a parity claim. It
+ * is a capability refusal: the request is well formed by every
+ * upstream rule, and tsfga declines it because the store said it
+ * could not represent it. `packages/core/capability-refusals.json`
+ * carries the inventory entry and the conformance pin, and
+ * `packages/core/README.md` carries the paragraph.
+ *
+ * Its own class rather than a cause on `InvalidObjectError` or
+ * `InvalidSubjectTypeError`: a capability refusal has to be one
+ * greppable thing, and a caller routing around a documented
+ * divergence needs to catch exactly it and nothing near it. It
+ * also spans both halves of the request, which neither of those
+ * classes does.
+ */
+export class IdDomainError extends TsfgaError {
+  readonly position: IdPosition;
+  readonly type: string;
+  readonly id: string;
+  /** The domain's own `name`, so the message reads as a phrase. */
+  readonly domain: string;
+  /** What the domain's `defect` said, verbatim. */
+  readonly detail: string;
+
+  constructor(
+    position: IdPosition,
+    type: string,
+    id: string,
+    domain: string,
+    detail: string,
+    ruleId?: WriteRuleId,
+  ) {
+    super(
+      `The ${position} id '${id}' on '${type}' is outside this store's ` +
+        `id domain (${domain}): ${detail}`,
+      ruleId,
+    );
+    this.name = "IdDomainError";
+    this.position = position;
+    this.type = type;
+    this.id = id;
+    this.domain = domain;
+    this.detail = detail;
+  }
+}
