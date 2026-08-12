@@ -11,6 +11,7 @@ import {
   type CheckOutcome,
   expectConfigsMatchModel,
   expectConformance,
+  expectPinnedDivergence,
   type FixtureRecord,
   recordFixture,
 } from "./helpers/conformance.ts";
@@ -31,29 +32,27 @@ import {
  * conversion and comparison — as opposed to how the value was read
  * out of the context, which `condition-grammar` covers.
  *
- * `packages/core/README.md` states that every integer cell agrees
- * apart from the two `uint` representation rows, "including the
- * arithmetic operators, exact comparison past 2^53, saturation at
- * the int64 bounds, and overflow past them". The cells below are
- * the ones where it does not hold. They fall in three families:
+ * cel-js range-checks binary `+`, `-` and `*` on ints and `-` on
+ * uints, and nothing else, where cel-go checks every arithmetic
+ * and conversion overload. The gap between the two used to run
+ * across seven cells; five of them are closed here and four
+ * remain pinned, and the line between the two groups is not about
+ * how important the cell is — it is about whether the operation
+ * has a *name*.
  *
- * - **overflow that upstream detects and cel-js does not** —
- *   unary negation of int64's minimum, `int64min / -1`,
- *   `int(1e19)`, `double('1e400')`, and duration addition and
- *   subtraction past the int64 nanosecond range. Every one of them
- *   is the granting direction: OpenFGA declines to answer and
- *   tsfga returns a boolean. The binary `+`, `-` and `*` operators
- *   *are* checked by cel-js, which is why they appear here as
- *   controls rather than as gaps.
- * - **overflow cel-js detects and upstream does not** — a `uint`
- *   parameter is carried as CEL's `int`, so its arithmetic is
- *   bounded by int64 rather than uint64 and a product upstream
- *   computes happily is an error here.
- * - **`string()` and `<` on non-numeric types** — cel-js has no
- *   `string(duration)` or `string(timestamp)` overload, and it
- *   orders strings by UTF-16 code unit where Go orders the UTF-8
- *   bytes, so the two disagree on any comparison that crosses
- *   U+FFFF.
+ * cel-js refuses to replace a built-in overload, so the only way
+ * to reach one is to stop handing it the author's expression:
+ * `conditions.ts` renames `int(…)`, `double(…)` and `x.matches(…)`
+ * onto implementations of its own. That works for a named call
+ * and does not work for an operator, because a renamed operator is
+ * type-blind at rewrite time and its replacement would have to
+ * reimplement CEL's arithmetic for every operand type. So
+ * `int(1e19)` and `double('1e400')` are fixed while `-n`,
+ * `n / -1`, duration `±` and string `<` are pinned.
+ *
+ * The `uint` rows moved the other way: a `uint` parameter used to
+ * be carried as CEL's `int`, bounding its arithmetic at int64, and
+ * is now carried as cel-js's `UnsignedInt`.
  */
 
 const uuidMap = new Map<string, string>([
@@ -153,6 +152,15 @@ describe("CEL arithmetic and conversion conformance", () => {
     await destroyDb();
   });
 
+  const request = (relation: string, context: Record<string, unknown>) => ({
+    objectType: "doc_a2",
+    objectId: uuid("doc"),
+    relation,
+    subjectType: "user_a2",
+    subjectId: uuid("alice"),
+    context,
+  });
+
   const check = (
     relation: string,
     context: Record<string, unknown>,
@@ -162,75 +170,128 @@ describe("CEL arithmetic and conversion conformance", () => {
       storeId,
       modelId,
       tsfgaClient,
-      {
-        objectType: "doc_a2",
-        objectId: uuid("doc"),
-        relation,
-        subjectType: "user_a2",
-        subjectId: uuid("alice"),
-        context,
-      },
+      request(relation, context),
       expected,
     );
 
-  describe("GAP-023: overflow upstream detects and cel-js does not", () => {
-    test("GAP-023: negating int64's minimum", async () => {
-      await check("neg_min_a2", { n: INT64_MIN }, "refused");
-    });
+  const pinned = (
+    relation: string,
+    context: Record<string, unknown>,
+    expected: { openfga: CheckOutcome; tsfga: CheckOutcome },
+  ) =>
+    expectPinnedDivergence(
+      storeId,
+      modelId,
+      tsfgaClient,
+      request(relation, context),
+      expected,
+    );
 
-    test("GAP-023: dividing int64's minimum by -1", async () => {
-      await check("div_min_a2", { n: INT64_MIN }, "refused");
-    });
-
-    test("GAP-023: int() of a double past int64", async () => {
+  describe("overflow in a conversion, which is checked", () => {
+    test("int() of a double past int64", async () => {
       await check("int_of_dbl_a2", { x: 1e19 }, "refused");
     });
 
-    test("GAP-023: int() of a double past int64's floor", async () => {
+    test("int() of a double past int64's floor", async () => {
       await check("int_of_dbl_neg_a2", { x: -1e19 }, "refused");
     });
 
-    test("GAP-023: double() of a string past float64", async () => {
+    test("double() of a string past float64", async () => {
       await check("dbl_of_str_a2", { s: "1e400" }, "refused");
-    });
-
-    test("GAP-023: duration addition past the int64 nanoseconds", async () => {
-      await check("dur_plus_a2", { d: "2400000h" }, "refused");
-    });
-
-    test("GAP-023: duration subtraction past it", async () => {
-      await check("dur_minus_a2", { d: "2400000h" }, "refused");
     });
   });
 
-  describe("GAP-024: uint arithmetic is bounded by int64", () => {
-    test("GAP-024: a uint sum past int64 but inside uint64", async () => {
+  /**
+   * The four cells option B cannot reach.
+   *
+   * `int()` and `double()` are *named calls*, so `conditions.ts`
+   * can rename them onto range-checked implementations of its own
+   * — cel-js refuses to replace a built-in overload, and renaming
+   * the call is the way around that. The four below are
+   * **operators**, and a renamed operator is type-blind at rewrite
+   * time: the replacement would have to reimplement CEL's
+   * arithmetic for bigint, double, duration and timestamp alike,
+   * moving semantics tsfga inherits for free into tsfga's own
+   * code where they can drift silently. That was judged a worse
+   * trade than the pin.
+   *
+   * Every one of them is the granting direction — OpenFGA declines
+   * to answer and tsfga returns `true` — which makes these the
+   * least comfortable pins in the suite and the standing argument
+   * for an upstream fix in cel-js.
+   */
+  describe("GAP-023: overflow upstream detects and cel-js does not", () => {
+    test("GAP-023: negating int64's minimum", async () => {
+      await pinned(
+        "neg_min_a2",
+        { n: INT64_MIN },
+        { openfga: "refused", tsfga: true },
+      );
+    });
+
+    test("GAP-023: dividing int64's minimum by -1", async () => {
+      await pinned(
+        "div_min_a2",
+        { n: INT64_MIN },
+        { openfga: "refused", tsfga: true },
+      );
+    });
+
+    test("GAP-023: duration addition past the int64 nanoseconds", async () => {
+      await pinned(
+        "dur_plus_a2",
+        { d: "2400000h" },
+        { openfga: "refused", tsfga: true },
+      );
+    });
+
+    test("GAP-023: duration subtraction past it", async () => {
+      await pinned(
+        "dur_minus_a2",
+        { d: "2400000h" },
+        { openfga: "refused", tsfga: true },
+      );
+    });
+  });
+
+  describe("uint arithmetic is bounded by uint64", () => {
+    test("a uint sum past int64 but inside uint64", async () => {
       await check("uint_add_a2", { n: UINT64_MAX }, true);
     });
 
-    test("GAP-024: a uint product past int64 but inside uint64", async () => {
+    test("a uint product past int64 but inside uint64", async () => {
       await check("uint_mul_a2", { n: 4000000000 }, true);
     });
   });
 
-  describe("GAP-021: string() of a duration or a timestamp", () => {
-    test("GAP-021: string(duration)", async () => {
+  describe("string() of a duration or a timestamp", () => {
+    test("string(duration)", async () => {
       await check("str_of_dur_a2", { d: "1h" }, true);
     });
 
-    test("GAP-021: string(timestamp)", async () => {
+    test("string(timestamp)", async () => {
       await check("str_of_ts_a2", { t: "2026-01-02T00:00:00Z" }, true);
     });
   });
 
+  /**
+   * The other cell option B cannot reach, and the same reason:
+   * `<` is an operator, not a named call.
+   *
+   * Go compares the UTF-8 bytes, so U+1F600 (`F0 9F 98 80`) sorts
+   * after U+FFFD (`EF BF BD`). JavaScript compares UTF-16 code
+   * units, and the high surrogate `D83D` sorts before `FFFD`, so
+   * the two engines answer opposite booleans with no error on
+   * either side. Ordering below U+FFFF agrees, so only a
+   * comparison crossing the surrogate range is affected.
+   */
   describe("GAP-022: string ordering past U+FFFF", () => {
     test("GAP-022: an astral character sorts after U+FFFD", async () => {
-      // Go compares the UTF-8 bytes, so U+1F600 (`F0 9F 98 80`)
-      // sorts after U+FFFD (`EF BF BD`). JavaScript compares UTF-16
-      // code units, and the high surrogate `D83D` sorts before
-      // `FFFD`, so the two engines answer opposite booleans with no
-      // error on either side.
-      await check("str_order_a2", { s: "\u{1F600}" }, false);
+      await pinned(
+        "str_order_a2",
+        { s: "\u{1F600}" },
+        { openfga: false, tsfga: true },
+      );
     });
   });
 

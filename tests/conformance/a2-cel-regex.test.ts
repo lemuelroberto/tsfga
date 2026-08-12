@@ -26,21 +26,31 @@ import {
  * `matches()` is RE2 upstream and a JavaScript `RegExp` here.
  *
  * The two regex dialects are not a superset of one another, so the
- * divergence runs in both directions and in three different
- * flavours, all reachable from a single condition
- * `s.matches(r)` whose pattern arrives in the request context:
+ * divergence ran in both directions and in three different
+ * flavours, all reachable from a single condition `s.matches(r)`
+ * whose pattern arrives in the request context:
  *
  * - a pattern RE2 compiles and JavaScript rejects — `(?i)`,
- *   `(?U)`, `(?P<name>…)` — makes tsfga refuse a check OpenFGA
+ *   `(?U)`, `(?P<name>…)` — made tsfga refuse a check OpenFGA
  *   answers `true`. An outage, not a leak.
  * - a pattern both compile but read differently — `[[:alpha:]]`,
  *   `\pL`, `\p{L}` (a JS `RegExp` without the `u` flag reads the
- *   last two as a literal `p`) — makes tsfga answer **`false`
- *   where OpenFGA answers `true`**, silently. Nothing errors; the
- *   grant simply disappears.
+ *   last two as a literal `p`) — made tsfga answer **`false`
+ *   where OpenFGA answers `true`**, silently. Nothing errored; the
+ *   grant simply disappeared.
  * - a pattern JavaScript compiles and RE2 refuses — a lookahead,
- *   a backreference — makes tsfga **grant** where OpenFGA refuses
+ *   a backreference — made tsfga **grant** where OpenFGA refuses
  *   to answer at all. That is the granting direction.
+ *
+ * `conditions.ts` closes all three by translating the pattern
+ * before it reaches a `RegExp`: the inline flags become JavaScript
+ * flags (`(?U)` by inverting every quantifier), `(?P<x>` becomes
+ * `(?<x>`, the POSIX classes and `\pL` become their JavaScript
+ * spellings under the `u` flag, and the constructs RE2 does not
+ * accept are refused rather than run. No RE2 engine is involved:
+ * a native binding would break the Node, Deno and smoke matrix.
+ * So the cells below are conformance assertions, and the names
+ * keep their `GAP-020` prefix only so the issue stays findable.
  *
  * A constant pattern is a different matter: OpenFGA compiles the
  * program while validating the model write, so `s.matches('a(?=b)')`

@@ -3,10 +3,7 @@ import { createTsfga, type TsfgaClient } from "@tsfga/core";
 import type { DB } from "@tsfga/kysely";
 import { KyselyTupleStore } from "@tsfga/kysely";
 import type { Kysely } from "kysely";
-import {
-  expectConformance,
-  expectPinnedDivergence,
-} from "./helpers/conformance.ts";
+import { expectConformance } from "./helpers/conformance.ts";
 import {
   beginTransaction,
   destroyDb,
@@ -20,18 +17,25 @@ import {
 } from "./helpers/openfga.ts";
 
 /**
- * The two `uint` cells cel-js cannot express.
+ * The three `uint` cells that used to be a divergence.
  *
- * cel-js has no `uint`. An `int` and a `uint` parameter both reach
- * CEL as a `bigint`, which is CEL's `int`, so a type test and a
- * bare `u`-suffixed literal cannot agree with upstream.
- * `Environment.registerType` makes a real `uint` reachable in
- * principle, so this is a judgement about cost rather than a
- * limit -- which is exactly why it needs pinning: a judgement can
- * be revisited, and an unpinned divergence silently becomes two.
+ * A `uint` parameter used to reach CEL as a `bigint`, which is
+ * CEL's `int`, so a type test and a bare `u`-suffixed literal
+ * could not agree with upstream and the arithmetic was bounded by
+ * int64 rather than uint64. cel-js does have a `uint` — its
+ * `UnsignedInt`, reachable through `uint()` — and the coercion now
+ * carries one, which closed all four cells at once: these two and
+ * the two `GAP-024` rows in `a2-cel-numeric.test.ts`.
  *
- * `packages/core/README.md` documents these under "Known
- * divergence: uint" and claims they are pinned. This is that pin.
+ * The one thing the carrier cost is `int(n)` on a `uint`, for
+ * which cel-js has no overload. `conditions.ts` registers one and
+ * rewrites the call onto it, so the trade is a fix rather than a
+ * swap; the assertion for it lives in
+ * `packages/core/tests/conditions.test.ts`.
+ *
+ * The file keeps its name and its cells so the history stays
+ * legible: these are the exact three requests the pin used to
+ * cover.
  */
 
 const uuidMap = new Map<string, string>([
@@ -118,32 +122,29 @@ describe("uint Divergence", () => {
     context: { n: "7" },
   });
 
-  test("type(n) == uint is true upstream and false here", async () => {
-    await expectPinnedDivergence(
+  test("the value's CEL type is uint", async () => {
+    await expectConformance(
       storeId,
       modelId,
       tsfgaClient,
       request("typed"),
-      {
-        openfga: true,
-        tsfga: false,
-      },
+      true,
     );
   });
 
-  test("a bare u-suffixed literal finds no overload here", async () => {
-    await expectPinnedDivergence(
+  test("a bare u-suffixed literal finds its overload", async () => {
+    await expectConformance(
       storeId,
       modelId,
       tsfgaClient,
       request("suffixed"),
-      { openfga: true, tsfga: "refused" },
+      true,
     );
   });
 
   /**
-   * The control, and the reason the divergence is narrow rather
-   * than "uint is broken": an explicit conversion agrees.
+   * The cell that already agreed under the old carrier, and the
+   * reason the divergence was narrow rather than "uint is broken".
    */
   test("an explicit uint() conversion agrees", async () => {
     await expectConformance(

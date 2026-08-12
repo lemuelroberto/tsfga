@@ -1,4 +1,8 @@
-import { type ParseResult, parse } from "@marcbachmann/cel-js";
+import {
+  type ASTNode,
+  Environment,
+  type ParseResult,
+} from "@marcbachmann/cel-js";
 import {
   ConditionCompileError,
   ConditionEvaluationError,
@@ -10,6 +14,632 @@ import type {
   ConditionParameterType,
   Tuple,
 } from "./types.ts";
+
+/**
+ * The one CEL environment every expression is parsed in.
+ *
+ * `unlistedVariablesAreDyn` reproduces cel-js's module-level
+ * `parse()` exactly — that is the single option its global
+ * environment is built with — so introducing an environment of our
+ * own changes nothing on its own. What it buys is
+ * `registerFunction`, which is the only way to reach the overloads
+ * cel-js does not ship and the only way to route an expression at
+ * a tsfga-owned implementation.
+ *
+ * cel-js refuses to *replace* a built-in overload: registering
+ * `string.matches(string): bool` or `int(double): int` raises
+ * "overlaps with existing overload", and there is no option that
+ * disables one. So the overloads registered here fall in two
+ * groups:
+ *
+ * - **absent upstream of us** — `string(duration)` and
+ *   `string(timestamp)` occupy no existing signature and simply
+ *   register (issue 021).
+ * - **tsfga-owned names** — `tsfga_int`, `tsfga_double` and
+ *   `string.tsfga_re2_matches` cannot be written in a condition,
+ *   because `compileCondition` is what puts them there: it parses
+ *   the author's expression, rewrites `int(…)`, `double(…)` and
+ *   `x.matches(…)` onto these names, and parses the result. See
+ *   `rewriteCalls`.
+ */
+const env = new Environment({ unlistedVariablesAreDyn: true });
+
+/**
+ * Format a duration the way cel-go's `string(duration)` does:
+ * total seconds with an `s` suffix, trailing fractional zeros
+ * trimmed — `3600s`, `1.5s`, `-90s`.
+ *
+ * cel-go spells this `FormatFloat(d.Seconds(), 'f', -1, 64)`,
+ * which is a float64 round trip. This works on the exact
+ * nanosecond count instead, which agrees with it everywhere a
+ * duration is representable and does not fall into JavaScript's
+ * exponential notation, where Go's `'f'` never does.
+ */
+function formatCelDuration(totalNanos: bigint): string {
+  const negative = totalNanos < 0n;
+  const magnitude = negative ? -totalNanos : totalNanos;
+  const whole = magnitude / 1_000_000_000n;
+  const fraction = magnitude % 1_000_000_000n;
+  let text = whole.toString();
+  if (fraction !== 0n) {
+    text += `.${fraction.toString().padStart(9, "0").replace(/0+$/, "")}`;
+  }
+  return `${negative ? "-" : ""}${text}s`;
+}
+
+/**
+ * Format a timestamp the way cel-go's `string(timestamp)` does:
+ * `time.RFC3339Nano`, which is RFC 3339 in UTC with the trailing
+ * zeros of the fractional second removed and the point dropped
+ * with them.
+ *
+ * A JS `Date` carries milliseconds, so agreement holds only at
+ * millisecond resolution — the same boundary the sub-millisecond
+ * timestamp divergence already draws.
+ */
+function formatCelTimestamp(value: Date): string {
+  return value
+    .toISOString()
+    .replace(/\.(\d*?)0*Z$/, (_match, digits: string) =>
+      digits.length > 0 ? `.${digits}Z` : "Z",
+    );
+}
+
+/**
+ * A `bigint` field of a cel-js carrier object.
+ *
+ * Neither `UnsignedInt` nor `Duration` is exported from the
+ * package root, so neither class is in reach for an `instanceof`.
+ * What guarantees the shape is the overload signature — a handler
+ * registered for `uint` is only ever called with a `uint` — so
+ * this reads the field and refuses rather than asserting.
+ */
+function carriedField(value: unknown, field: string): bigint {
+  if (typeof value === "object" && value !== null) {
+    const read: unknown = Reflect.get(value, field);
+    if (typeof read === "bigint") return read;
+    if (typeof read === "number" && Number.isInteger(read)) return BigInt(read);
+  }
+  throw new Error(`expected a value carrying '${field}'`);
+}
+
+env.registerFunction(
+  "string(google.protobuf.Duration): string",
+  (value: unknown) =>
+    formatCelDuration(
+      carriedField(value, "seconds") * 1_000_000_000n +
+        carriedField(value, "nanos"),
+    ),
+);
+env.registerFunction(
+  "string(google.protobuf.Timestamp): string",
+  (value: Date) => formatCelTimestamp(value),
+);
+
+/**
+ * `int()`, with the range checks cel-go applies and cel-js does
+ * not (issue 023), plus the `int(uint)` overload cel-js has never
+ * had — which the `uint` carrier below makes load-bearing (issue
+ * 024).
+ *
+ * The `int(string)` and `int(int)` rows reproduce cel-js's own
+ * behaviour rather than improving on it: this replaces the
+ * function wholesale, so anything not restated here would be lost.
+ */
+env.registerFunction("tsfga_int(int): int", (value: bigint) => value);
+env.registerFunction("tsfga_int(uint): int", (value: unknown) => {
+  const parsed = carriedField(value, "value");
+  if (parsed > INT64_MAX) {
+    throw new Error("int() type error: integer overflow");
+  }
+  return parsed;
+});
+env.registerFunction("tsfga_int(double): int", (value: number) => {
+  if (!Number.isFinite(value)) {
+    throw new Error("int() type error: integer overflow");
+  }
+  const truncated = BigInt(Math.trunc(value));
+  if (truncated < INT64_MIN || truncated > INT64_MAX) {
+    throw new Error("int() type error: integer overflow");
+  }
+  return truncated;
+});
+env.registerFunction("tsfga_int(string): int", (value: string) => {
+  if (value !== value.trim() || value.length > 20 || value.includes("0x")) {
+    throw new Error("int() type error: cannot convert to int");
+  }
+  let parsed: bigint;
+  try {
+    parsed = BigInt(value);
+  } catch {
+    throw new Error("int() type error: cannot convert to int");
+  }
+  if (parsed < INT64_MIN || parsed > INT64_MAX) {
+    throw new Error("int() type error: cannot convert to int");
+  }
+  return parsed;
+});
+
+/** A string Go's `ParseFloat` reads as a zero rather than as an
+ *  underflow. Anything else that lands on zero left the float64
+ *  range from below, which upstream reports as a range error. */
+const DOUBLE_ZERO = /^[+-]?0*\.?0*([eE][+-]?\d+)?$/;
+
+/**
+ * `double()`, with the range check cel-go applies (issue 023).
+ *
+ * Go's `strconv.ParseFloat` returns `ErrRange` for a magnitude
+ * outside float64 — in both directions — where `Number()` answers
+ * `Infinity` and `0`. It does read the named infinities, so those
+ * stay.
+ */
+env.registerFunction("tsfga_double(double): double", (value: number) => value);
+env.registerFunction("tsfga_double(int): double", (value: bigint) =>
+  Number(value),
+);
+env.registerFunction("tsfga_double(uint): double", (value: unknown) =>
+  Number(carriedField(value, "value")),
+);
+env.registerFunction("tsfga_double(string): double", (value: string) => {
+  if (value.length === 0 || value !== value.trim()) {
+    throw new Error("double() type error: cannot convert to double");
+  }
+  switch (value.toLowerCase()) {
+    case "inf":
+    case "+inf":
+    case "infinity":
+    case "+infinity":
+      return Number.POSITIVE_INFINITY;
+    case "-inf":
+    case "-infinity":
+      return Number.NEGATIVE_INFINITY;
+    case "nan":
+      return Number.NaN;
+    default:
+      break;
+  }
+  const parsed = Number(value);
+  if (Number.isNaN(parsed)) {
+    throw new Error("double() type error: cannot convert to double");
+  }
+  if (!Number.isFinite(parsed) || (parsed === 0 && !DOUBLE_ZERO.test(value))) {
+    throw new Error("double() type error: value out of range");
+  }
+  return parsed;
+});
+
+env.registerFunction(
+  "string.tsfga_re2_matches(string): bool",
+  (value: string, pattern: string) => compileRe2(pattern).test(value),
+);
+
+/**
+ * What a POSIX bracket class stands for, as RE2 defines it.
+ *
+ * A JavaScript `RegExp` reads `[[:alpha:]]` as a class of the
+ * characters `[:alph`, which matches nothing an author meant and
+ * errors nowhere — the silent half of issue 020.
+ */
+const POSIX_CLASSES: Readonly<Record<string, string>> = {
+  alnum: "a-zA-Z0-9",
+  alpha: "a-zA-Z",
+  ascii: "\\x00-\\x7F",
+  blank: " \\t",
+  cntrl: "\\x00-\\x1F\\x7F",
+  digit: "0-9",
+  graph: "\\x21-\\x7E",
+  lower: "a-z",
+  print: "\\x20-\\x7E",
+  punct: "!-\\/:-@\\[-`{-~",
+  space: "\\t\\n\\v\\f\\r ",
+  upper: "A-Z",
+  word: "0-9A-Za-z_",
+  xdigit: "0-9A-Fa-f",
+};
+
+/** Leading inline flag groups: `(?i)`, `(?is)`, `(?U)`. */
+const LEADING_FLAGS = /^\(\?([imsU]+)\)/;
+
+/** `{2}`, `{2,}`, `{2,5}` — a repetition rather than a literal. */
+const REPETITION = /^\{\d+(,\d*)?\}/;
+
+/** `[:alpha:]` and its negated form, inside a bracket expression. */
+const POSIX_CLASS = /^\[:(\^?)([a-z]+):\]/;
+
+function refusePattern(pattern: string, reason: string): never {
+  throw new Error(`error parsing regexp: ${reason}: \`${pattern}\``);
+}
+
+interface TranslatedPattern {
+  source: string;
+  flags: string;
+  /** Whether the translation depends on the `u` flag's meaning. */
+  needsUnicode: boolean;
+}
+
+/**
+ * Rewrite an RE2 pattern as the nearest JavaScript one, or refuse.
+ *
+ * The two dialects are not a superset of one another, so this runs
+ * in both directions:
+ *
+ * - RE2 spellings JavaScript cannot compile — the inline flags
+ *   `(?i)` `(?s)` `(?m)` `(?U)` and the `(?P<name>` group — become
+ *   flags and `(?<name>`. `(?U)` inverts every quantifier's
+ *   greediness, which is what the flag means.
+ * - spellings both compile and read differently — the POSIX
+ *   classes, and `\pL` / `\p{L}`, which a `RegExp` without the `u`
+ *   flag reads as a literal `p` — become their JavaScript
+ *   equivalents. The expansion and the `u` flag land together
+ *   because neither is right on its own.
+ * - spellings JavaScript accepts and RE2 refuses — lookahead,
+ *   lookbehind and backreferences — are refused here, turning what
+ *   was a silent grant into the refusal upstream gives.
+ *
+ * Everything else passes through untouched.
+ */
+function translateRe2Pattern(pattern: string): TranslatedPattern {
+  let flags = "";
+  let ungreedy = false;
+  let index = 0;
+
+  for (;;) {
+    const leading = LEADING_FLAGS.exec(pattern.slice(index));
+    if (!leading) break;
+    for (const flag of leading[1] ?? "") {
+      if (flag === "U") ungreedy = true;
+      else if (!flags.includes(flag)) flags += flag;
+    }
+    index += leading[0].length;
+  }
+
+  let source = "";
+  let needsUnicode = false;
+
+  /** Flip the quantifier just emitted, for `(?U)`. */
+  const flipGreediness = () => {
+    if (!ungreedy) return;
+    if (pattern[index] === "?") index += 1;
+    else source += "?";
+  };
+
+  /** A `\x` escape, in or out of a bracket expression. */
+  const takeEscape = (inClass: boolean) => {
+    const next = pattern[index + 1];
+    if (next === undefined) refusePattern(pattern, "trailing backslash");
+    if (!inClass && next >= "1" && next <= "9") {
+      refusePattern(pattern, "invalid or unsupported Perl syntax");
+    }
+    if (next === "p" || next === "P") {
+      needsUnicode = true;
+      const after = pattern[index + 2];
+      if (after !== undefined && after !== "{") {
+        // `\pL` is RE2's one-letter spelling of `\p{L}`.
+        source += `\\${next}{${after}}`;
+        index += 3;
+        return;
+      }
+    }
+    source += pattern.slice(index, index + 2);
+    index += 2;
+  };
+
+  const takeClass = () => {
+    source += "[";
+    index += 1;
+    if (pattern[index] === "^") {
+      source += "^";
+      index += 1;
+    }
+    if (pattern[index] === "]") {
+      source += "\\]";
+      index += 1;
+    }
+    while (index < pattern.length && pattern[index] !== "]") {
+      const char = pattern[index];
+      if (char === "\\") {
+        takeEscape(true);
+      } else if (char === "[") {
+        const posix = POSIX_CLASS.exec(pattern.slice(index));
+        if (!posix) {
+          // A bare `[` is a literal inside a class in RE2 and an
+          // error under the `u` flag, so it is escaped.
+          source += "\\[";
+          index += 1;
+          continue;
+        }
+        if (posix[1] === "^") {
+          refusePattern(pattern, "unsupported negated POSIX class");
+        }
+        const expansion = POSIX_CLASSES[posix[2] ?? ""];
+        if (expansion === undefined) {
+          refusePattern(pattern, "invalid character class range");
+        }
+        source += expansion;
+        index += posix[0].length;
+      } else {
+        source += char;
+        index += 1;
+      }
+    }
+    if (index >= pattern.length) {
+      refusePattern(pattern, "missing closing ]");
+    }
+    source += "]";
+    index += 1;
+    flipGreediness();
+  };
+
+  const takeGroup = () => {
+    if (!pattern.startsWith("(?", index)) {
+      source += "(";
+      index += 1;
+      return;
+    }
+    if (pattern.startsWith("(?P<", index)) {
+      source += "(?<";
+      index += 4;
+      return;
+    }
+    if (pattern.startsWith("(?:", index)) {
+      source += "(?:";
+      index += 3;
+      return;
+    }
+    if (
+      pattern.startsWith("(?=", index) ||
+      pattern.startsWith("(?!", index) ||
+      pattern.startsWith("(?<=", index) ||
+      pattern.startsWith("(?<!", index) ||
+      pattern.startsWith("(?P=", index)
+    ) {
+      // Valid JavaScript, invalid RE2. Refusing is what upstream
+      // answers, and is the whole point of the granting direction.
+      refusePattern(pattern, "invalid or unsupported Perl syntax");
+    }
+    if (pattern.startsWith("(?<", index)) {
+      source += "(?<";
+      index += 3;
+      return;
+    }
+    // A flag group that is not at the very start applies to the
+    // rest of its own group in RE2 and to the whole pattern in
+    // JavaScript, and a scoped `(?i:…)` has no portable spelling.
+    // Refusing is loud; translating would be quietly wrong.
+    refusePattern(pattern, "unsupported inline group");
+  };
+
+  while (index < pattern.length) {
+    const char = pattern[index];
+    if (char === "\\") {
+      takeEscape(false);
+      flipGreediness();
+      continue;
+    }
+    if (char === "[") {
+      takeClass();
+      continue;
+    }
+    if (char === "(") {
+      takeGroup();
+      continue;
+    }
+    if (char === "*" || char === "+" || char === "?") {
+      source += char;
+      index += 1;
+      flipGreediness();
+      continue;
+    }
+    if (char === "{") {
+      const repetition = REPETITION.exec(pattern.slice(index));
+      if (repetition) {
+        source += repetition[0];
+        index += repetition[0].length;
+        flipGreediness();
+        continue;
+      }
+    }
+    source += char;
+    index += 1;
+    if (char === ")") flipGreediness();
+  }
+
+  return { source, flags, needsUnicode };
+}
+
+/**
+ * Compiled patterns, keyed by the RE2 source the author wrote.
+ *
+ * Bounded for the same reason `exprCache` is: the pattern usually
+ * arrives in the request context, so nothing about a caller's
+ * lifetime releases it.
+ */
+const regexCache = new Map<string, RegExp>();
+const REGEX_CACHE_MAX_ENTRIES = 1000;
+
+function compileRe2(pattern: string): RegExp {
+  const cached = regexCache.get(pattern);
+  if (cached) {
+    regexCache.delete(pattern);
+    regexCache.set(pattern, cached);
+    return cached;
+  }
+
+  const translated = translateRe2Pattern(pattern);
+  let compiled: RegExp;
+  try {
+    compiled = new RegExp(translated.source, `${translated.flags}u`);
+  } catch (error) {
+    // The `u` flag is stricter than RE2 in a few places a pattern
+    // may legitimately land in. Retrying without it is safe only
+    // when the translation did not depend on what `u` means — a
+    // `\p{L}` compiled without `u` is a literal `p`, which is the
+    // silent wrong answer this whole path exists to close.
+    if (translated.needsUnicode) {
+      throw new Error(`error parsing regexp: \`${pattern}\``, { cause: error });
+    }
+    try {
+      compiled = new RegExp(translated.source, translated.flags);
+    } catch (fallbackError) {
+      throw new Error(`error parsing regexp: \`${pattern}\``, {
+        cause: fallbackError,
+      });
+    }
+  }
+
+  if (regexCache.size >= REGEX_CACHE_MAX_ENTRIES) {
+    const oldest = regexCache.keys().next();
+    if (!oldest.done) regexCache.delete(oldest.value);
+  }
+  regexCache.set(pattern, compiled);
+  return compiled;
+}
+
+/** Calls whose name is replaced, and what it is replaced with. */
+const CALL_REWRITES: ReadonlyMap<string, string> = new Map([
+  ["int", "tsfga_int"],
+  ["double", "tsfga_double"],
+]);
+
+/** Receiver calls — `s.matches(r)` — under the same rule. */
+const RECEIVER_REWRITES: ReadonlyMap<string, string> = new Map([
+  ["matches", "tsfga_re2_matches"],
+]);
+
+/** One name replaced, as a half-open range of the source text. */
+interface Splice {
+  start: number;
+  end: number;
+  text: string;
+}
+
+/**
+ * Find every call this module owns an implementation for.
+ *
+ * The rewrite is a **source-text splice**, not an AST edit: only
+ * the function's name moves, every other byte of the author's
+ * expression survives untouched, and nothing depends on cel-js's
+ * serializer round-tripping a literal the way it was written.
+ */
+function collectSplices(node: ASTNode, source: string, out: Splice[]): void {
+  switch (node.op) {
+    case "value":
+    case "id":
+      return;
+
+    case ".":
+    case ".?":
+      collectSplices(node.args[0], source, out);
+      return;
+
+    case "!_":
+    case "-_":
+      collectSplices(node.args, source, out);
+      return;
+
+    case "[]":
+    case "[?]":
+    case "||":
+    case "&&":
+    case "==":
+    case "!=":
+    case "in":
+    case "+":
+    case "-":
+    case "*":
+    case "/":
+    case "%":
+    case "<":
+    case "<=":
+    case ">":
+    case ">=":
+      collectSplices(node.args[0], source, out);
+      collectSplices(node.args[1], source, out);
+      return;
+
+    case "?:":
+      collectSplices(node.args[0], source, out);
+      collectSplices(node.args[1], source, out);
+      collectSplices(node.args[2], source, out);
+      return;
+
+    case "list":
+      for (const item of node.args) collectSplices(item, source, out);
+      return;
+
+    case "map":
+      for (const [key, value] of node.args) {
+        collectSplices(key, source, out);
+        collectSplices(value, source, out);
+      }
+      return;
+
+    case "call": {
+      const [name, args] = node.args;
+      const replacement = CALL_REWRITES.get(name);
+      // A `call` node starts at its own name, so the name is the
+      // first `name.length` bytes of the node.
+      if (
+        replacement !== undefined &&
+        args.length === 1 &&
+        source.startsWith(name, node.range.start)
+      ) {
+        out.push({
+          start: node.range.start,
+          end: node.range.start + name.length,
+          text: replacement,
+        });
+      }
+      for (const argument of args) collectSplices(argument, source, out);
+      return;
+    }
+
+    case "rcall": {
+      const [name, receiver, args] = node.args;
+      const replacement = RECEIVER_REWRITES.get(name);
+      if (replacement !== undefined && args.length === 1) {
+        // An `rcall` node starts at its receiver, so the name is
+        // found after it — behind a `.` and nothing else. Anything
+        // in between that is not whitespace means the source is
+        // not shaped the way this assumes, and the call is left
+        // alone rather than spliced blind.
+        const start = source.indexOf(name, receiver.range.end);
+        if (start !== -1) {
+          const between = source.slice(receiver.range.end, start);
+          if (/^\s*\.\s*$/.test(between)) {
+            out.push({ start, end: start + name.length, text: replacement });
+          }
+        }
+      }
+      collectSplices(receiver, source, out);
+      for (const argument of args) collectSplices(argument, source, out);
+      return;
+    }
+
+    default:
+      return;
+  }
+}
+
+/**
+ * The author's expression with every rewritten call renamed, or
+ * the expression itself when there is nothing to rename.
+ */
+function rewriteCalls(expression: string, ast: ASTNode): string {
+  const splices: Splice[] = [];
+  collectSplices(ast, expression, splices);
+  if (splices.length === 0) return expression;
+
+  splices.sort((a, b) => b.start - a.start);
+  let rewritten = expression;
+  for (const splice of splices) {
+    rewritten =
+      rewritten.slice(0, splice.start) +
+      splice.text +
+      rewritten.slice(splice.end);
+  }
+  return rewritten;
+}
 
 /**
  * Cache compiled CEL expressions keyed by the expression source
@@ -65,7 +695,9 @@ export function compileCondition(
   }
   let compiled: ParseResult;
   try {
-    compiled = parse(expression);
+    compiled = env.parse(expression);
+    const rewritten = rewriteCalls(expression, compiled.ast);
+    if (rewritten !== expression) compiled = env.parse(rewritten);
   } catch (error) {
     throw new ConditionCompileError(conditionName, error);
   }
@@ -78,7 +710,19 @@ export function compileCondition(
 }
 
 /** Pre-compiled coercion helper for duration strings */
-const coerceDuration = parse("duration(val)");
+const coerceDuration = env.parse("duration(val)");
+
+/**
+ * Pre-compiled carrier for `uint` context values.
+ *
+ * cel-js's `UnsignedInt` is not exported from the package root, so
+ * `uint()` is how an instance is reached. Carrying a `uint` as
+ * CEL's `int` instead — which is what this file used to do — made
+ * its arithmetic overflow at int64 rather than uint64, made
+ * `type(n) == uint` false, and left a bare `u`-suffixed literal
+ * with no matching overload.
+ */
+const coerceUint = env.parse("uint(val)");
 
 /**
  * Read a context value as its declared parameter type, or say why
@@ -499,7 +1143,8 @@ function coerceValue(
         }
         refuse(`an ${paramType} value`);
       }
-      return saturate(parsed, signed ? INT64_MIN : 0n);
+      const saturated = saturate(parsed, signed ? INT64_MIN : 0n);
+      return signed ? saturated : coerceUint({ val: saturated });
     }
 
     case "double": {

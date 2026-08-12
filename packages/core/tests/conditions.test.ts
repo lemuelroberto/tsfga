@@ -383,7 +383,27 @@ describe("integer parameters are read as bigint", () => {
     // the result afterwards for being negative. So a magnitude
     // past int64 clamps to int64's ceiling and
     // `n == 18446744073709551615u` is `false` upstream.
-    expect(uint("99999999999999999999999")).toBe(9223372036854775807n);
+    //
+    // The clamped value is carried as CEL's `uint` rather than its
+    // `int`, so it is cel-js's `UnsignedInt` rather than a bare
+    // `bigint` — the carrier is what makes `type(n) == uint` and a
+    // bare `u`-suffixed literal agree with upstream, and what
+    // bounds the arithmetic at uint64 instead of int64.
+    expect(`${uint("99999999999999999999999")}`).toBe("9223372036854775807");
+  });
+
+  test("a uint is carried as CEL's uint, not as its int", async () => {
+    // The distinction is invisible to `==` in JavaScript and
+    // decisive inside CEL, so it is asserted through an
+    // expression rather than on the coerced value.
+    const store = new MockTupleStore();
+    store.conditionDefinitions.push({
+      name: "carrier",
+      expression: "type(n) == uint && n + 1u == 8u && int(n) == 7",
+      parameters: { n: "uint" },
+    });
+    const tuple = makeTuple({ conditionName: "carrier" });
+    expect(await evaluateTupleCondition(store, tuple, { n: "7" })).toBe(true);
   });
 
   describe("the numeric grammar refuses what BigInt would accept", () => {
@@ -745,5 +765,327 @@ describe("the compiled expression cache is bounded", () => {
       compileCondition("probe", `overflow_${i} == ${i}`);
     }
     expect(hasCompiledExpression(first)).toBe(false);
+  });
+});
+
+/**
+ * `matches()` is RE2 upstream and a JavaScript `RegExp` here, and
+ * the two dialects are not a superset of one another.
+ *
+ * cel-js refuses to replace its own `string.matches` overload, so
+ * `compileCondition` renames the call onto one of ours and that
+ * one translates the pattern first. The conformance assertions
+ * live in `tests/conformance/a2-cel-regex.test.ts`; these are the
+ * unit-level rows, including the ones no model in the suite
+ * reaches.
+ */
+describe("matches() reads its pattern as RE2, not as a RegExp", () => {
+  const matches = async (
+    subject: string,
+    pattern: string,
+  ): Promise<boolean> => {
+    const store = new MockTupleStore();
+    store.conditionDefinitions.push({
+      name: "re",
+      expression: "s.matches(r)",
+      parameters: { s: "string", r: "string" },
+    });
+    return evaluateTupleCondition(store, makeTuple({ conditionName: "re" }), {
+      s: subject,
+      r: pattern,
+    });
+  };
+
+  describe("patterns both dialects share pass through", () => {
+    for (const [subject, pattern, expected] of [
+      ["abc", "^a.c$", true],
+      ["abc", "b", true],
+      ["abc", "^z", false],
+      ["a b", "\\ba\\b", true],
+      ["abc", "^[a-c]+$", true],
+      ["a.c", "^a\\.c$", true],
+      ["aaa", "^a{3}$", true],
+      ["xy", "^(?:x)y$", true],
+    ] as const) {
+      const name = `${JSON.stringify(pattern)} on ${subject}`;
+      test(name, async () => {
+        expect(await matches(subject, pattern)).toBe(expected);
+      });
+    }
+  });
+
+  describe("RE2 spellings a RegExp cannot compile", () => {
+    test("a leading inline flag becomes a RegExp flag", async () => {
+      expect(await matches("ABC", "(?i)abc")).toBe(true);
+      expect(await matches("a\nb", "(?s)a.b")).toBe(true);
+      expect(await matches("a\nb", "(?m)^b$")).toBe(true);
+    });
+
+    test("combined flags are read together", async () => {
+      expect(await matches("A\nB", "(?is)a.b")).toBe(true);
+    });
+
+    test("an ungreedy flag inverts every quantifier", async () => {
+      // `(?U)` is what RE2 spells and JavaScript has no flag for,
+      // so every quantifier is flipped instead. `matches` is a
+      // predicate and a `RegExp` backtracks, so greediness cannot
+      // change the answer -- what these assert is that each
+      // quantifier form survives the flip and still compiles.
+      expect(await matches("abc", "(?U)a.+")).toBe(true);
+      expect(await matches("abc", "(?U)^a.+c$")).toBe(true);
+      expect(await matches("abc", "(?U)^a.{1,2}c$")).toBe(true);
+      expect(await matches("abbc", "(?U)^ab*?c$")).toBe(true);
+      expect(await matches("ac", "(?U)^ab?c$")).toBe(true);
+      expect(await matches("abc", "(?U)^z.+")).toBe(false);
+    });
+
+    test("an RE2-spelled named group becomes a JavaScript one", async () => {
+      expect(await matches("abc", "(?P<x>a)b")).toBe(true);
+    });
+  });
+
+  describe("spellings both compile and read differently", () => {
+    test("a POSIX class expands", async () => {
+      expect(await matches("abc", "^[[:alpha:]]+$")).toBe(true);
+      expect(await matches("a1", "^[[:alnum:]]+$")).toBe(true);
+      expect(await matches("a1", "^[[:digit:]]+$")).toBe(false);
+      expect(await matches("a_1", "^[[:word:]]+$")).toBe(true);
+      expect(await matches("a-b", "^[[:alpha:]-]+$")).toBe(true);
+    });
+
+    test("a unicode class needs the u flag to be one", async () => {
+      expect(await matches("ab", "^\\pL+$")).toBe(true);
+      expect(await matches("ab", "^\\p{L}+$")).toBe(true);
+      expect(await matches("12", "^\\p{L}+$")).toBe(false);
+      expect(await matches("12", "^\\p{Nd}+$")).toBe(true);
+    });
+  });
+
+  describe("spellings RE2 refuses are refused here", () => {
+    for (const pattern of [
+      "a(?=b)",
+      "a(?!b)",
+      "(?<=a)b",
+      "(?<!a)b",
+      "(a)\\1",
+      "(?P<x>a)(?P=x)",
+      "a(?i)b",
+      "(?i:a)b",
+    ]) {
+      test(`${JSON.stringify(pattern)} is an evaluation error`, async () => {
+        await expect(matches("ab", pattern)).rejects.toBeInstanceOf(
+          ConditionEvaluationError,
+        );
+      });
+    }
+
+    test("a negated POSIX class is refused rather than guessed", async () => {
+      await expect(matches("abc", "[[:^alpha:]]")).rejects.toBeInstanceOf(
+        ConditionEvaluationError,
+      );
+    });
+
+    test("a pattern neither dialect compiles is still an error", async () => {
+      await expect(matches("abc", "a(")).rejects.toBeInstanceOf(
+        ConditionEvaluationError,
+      );
+    });
+  });
+});
+
+/**
+ * The overloads cel-js does not ship, and the range checks it does
+ * not apply.
+ *
+ * `string(duration)` and `string(timestamp)` are absent rather
+ * than occupied, so they register directly. `int()` and `double()`
+ * are occupied, so the call is renamed onto a checked
+ * implementation — which is also where `int(uint)` comes from,
+ * since a `uint` parameter is carried as CEL's `uint` and cel-js
+ * has no such overload.
+ */
+describe("conversions agree with cel-go", () => {
+  const answer = async (
+    expression: string,
+    parameters: Record<string, ConditionParameterType>,
+    context: Record<string, unknown>,
+  ): Promise<boolean> => {
+    const store = new MockTupleStore();
+    store.conditionDefinitions.push({
+      name: "convert",
+      expression,
+      parameters,
+    });
+    return evaluateTupleCondition(
+      store,
+      makeTuple({ conditionName: "convert" }),
+      context,
+    );
+  };
+
+  describe("string() of a duration", () => {
+    for (const [written, formatted] of [
+      ["1h", "3600s"],
+      ["1.5s", "1.5s"],
+      ["-90s", "-90s"],
+      ["0", "0s"],
+      ["100ns", "0.0000001s"],
+      ["2h45m", "9900s"],
+    ] as const) {
+      test(`${written} formats as ${formatted}`, async () => {
+        expect(
+          await answer(
+            `string(d) == '${formatted}'`,
+            { d: "duration" },
+            {
+              d: written,
+            },
+          ),
+        ).toBe(true);
+      });
+    }
+  });
+
+  describe("string() of a timestamp", () => {
+    for (const [written, formatted] of [
+      ["2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z"],
+      ["2026-01-02T00:00:00.500Z", "2026-01-02T00:00:00.5Z"],
+      ["2026-01-02T01:00:00+01:00", "2026-01-02T00:00:00Z"],
+    ] as const) {
+      test(`${written} formats as ${formatted}`, async () => {
+        expect(
+          await answer(
+            `string(t) == '${formatted}'`,
+            { t: "timestamp" },
+            {
+              t: written,
+            },
+          ),
+        ).toBe(true);
+      });
+    }
+  });
+
+  describe("int() is range-checked", () => {
+    test("a double inside int64 converts", async () => {
+      expect(await answer("int(x) == 7", { x: "double" }, { x: 7.9 })).toBe(
+        true,
+      );
+      expect(await answer("int(x) == -7", { x: "double" }, { x: -7.9 })).toBe(
+        true,
+      );
+    });
+
+    for (const value of [1e19, -1e19]) {
+      test(`${value} overflows rather than answering`, async () => {
+        await expect(
+          answer("int(x) > 0", { x: "double" }, { x: value }),
+        ).rejects.toBeInstanceOf(ConditionEvaluationError);
+      });
+    }
+
+    test("a uint converts, which cel-js has no overload for", async () => {
+      expect(await answer("int(n) == 7", { n: "uint" }, { n: "7" })).toBe(true);
+    });
+
+    test("an int and a numeric string still convert", async () => {
+      expect(await answer("int(n) == 7", { n: "int" }, { n: "7" })).toBe(true);
+      expect(await answer("int(s) == 7", { s: "string" }, { s: "7" })).toBe(
+        true,
+      );
+      await expect(
+        answer("int(s) > 0", { s: "string" }, { s: "abc" }),
+      ).rejects.toBeInstanceOf(ConditionEvaluationError);
+    });
+  });
+
+  describe("double() is range-checked", () => {
+    test("a string inside float64 converts", async () => {
+      expect(
+        await answer("double(s) == 1.5", { s: "string" }, { s: "1.5" }),
+      ).toBe(true);
+    });
+
+    for (const value of ["1e400", "-1e400", "1e-400"]) {
+      test(`${value} leaves the range rather than answering`, async () => {
+        await expect(
+          answer("double(s) > 0.0", { s: "string" }, { s: value }),
+        ).rejects.toBeInstanceOf(ConditionEvaluationError);
+      });
+    }
+
+    test("the named infinities still read", async () => {
+      expect(
+        await answer("double(s) > 0.0", { s: "string" }, { s: "Inf" }),
+      ).toBe(true);
+      expect(
+        await answer("double(s) < 0.0", { s: "string" }, { s: "-inf" }),
+      ).toBe(true);
+    });
+
+    test("an int and a uint convert", async () => {
+      expect(await answer("double(n) == 7.0", { n: "int" }, { n: "7" })).toBe(
+        true,
+      );
+      expect(await answer("double(n) == 7.0", { n: "uint" }, { n: "7" })).toBe(
+        true,
+      );
+    });
+  });
+
+  /**
+   * The rewrite is a source-text splice, so anything it gets wrong
+   * shows up as a changed expression rather than a wrong answer.
+   * These are the shapes where a splice could land in the wrong
+   * place: several calls in one expression, a call nested in
+   * another, a string literal that happens to spell one, and a
+   * field whose name is one.
+   */
+  describe("the rewrite touches only the call it means to", () => {
+    test("several rewritten calls in one expression", async () => {
+      expect(
+        await answer(
+          "int(x) == 1 && double(s) == 2.0 && t.matches('^a')",
+          { x: "double", s: "string", t: "string" },
+          { x: 1.5, s: "2", t: "abc" },
+        ),
+      ).toBe(true);
+    });
+
+    test("a rewritten call nested in another", async () => {
+      expect(
+        await answer("int(double(s)) == 2", { s: "string" }, { s: "2.5" }),
+      ).toBe(true);
+    });
+
+    test("a string literal spelling a rewritten call", async () => {
+      expect(
+        await answer(
+          "s == 'int(x)' && int(1.0) == 1",
+          { s: "string" },
+          {
+            s: "int(x)",
+          },
+        ),
+      ).toBe(true);
+    });
+
+    test("a map key named like a rewritten call", async () => {
+      expect(
+        await answer(
+          "m['int'] == 'double'",
+          { m: "map<string>" },
+          {
+            m: { int: "double" },
+          },
+        ),
+      ).toBe(true);
+    });
+
+    test("an expression with nothing to rewrite is untouched", async () => {
+      expect(
+        await answer("s.startsWith('a')", { s: "string" }, { s: "abc" }),
+      ).toBe(true);
+    });
   });
 });
