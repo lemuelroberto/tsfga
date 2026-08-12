@@ -11,6 +11,7 @@ import type { TupleStore } from "./store-interface.ts";
 import type {
   AddTupleRequest,
   RelationConfig,
+  RemoveTupleRequest,
   TypeRestriction,
 } from "./types.ts";
 import type { WriteRuleId } from "./write-rules.ts";
@@ -879,4 +880,212 @@ export async function validateTupleWrite(
   }
 
   enforceContextSize();
+}
+
+/**
+ * `IsValidObject` — a whole `type:id` string with exactly one
+ * `:`, not at index 0, a non-empty id, no `#`, no space and no
+ * control character (`pkg/tuple/tuple.go:417-438`).
+ *
+ * Written over the rendered string rather than over the two
+ * fields, because that is what upstream walks: it is what makes
+ * `user:a:b` and `:alice` refusals, and both of those are shapes
+ * tsfga can render out of a well-formed-looking pair of fields.
+ */
+function isValidObjectString(value: string): boolean {
+  let state = 0;
+  let idLength = 0;
+  let index = 0;
+  for (const char of value) {
+    if (hasControlChar(char)) return false;
+    if (char === "#" || char === " ") return false;
+    if (char === ":") {
+      if (state > 0 || index === 0) return false;
+      state = 1;
+    } else {
+      idLength += state;
+    }
+    index += 1;
+  }
+  return idLength > 0;
+}
+
+/**
+ * `IsValidUserset` — `type:id#relation`
+ * (`pkg/tuple/tuple.go:476-508`).
+ *
+ * The `*` arm is the one that matters here: a `*` is admitted
+ * only before the `:`, so `user:*#member` fails this and
+ * `IsValidObject` both, which is how upstream refuses the issue
+ * 040 shape on a delete without running any model rule.
+ */
+function isValidUsersetString(value: string): boolean {
+  let state = 0;
+  let idLength = 0;
+  let relationLength = 0;
+  let index = 0;
+  for (const char of value) {
+    if (hasControlChar(char)) return false;
+    if (char === ":") {
+      if (state > 0 || index === 0) return false;
+      state = 1;
+    } else if (char === "#") {
+      if (state > 1 || idLength === 0) return false;
+      state = 2;
+    } else if (char === " ") {
+      return false;
+    } else if (char === "*") {
+      if (state > 0) return false;
+    } else if (state === 1) {
+      idLength += 1;
+    } else if (state === 2) {
+      relationLength += 1;
+    }
+    index += 1;
+  }
+  return relationLength > 0;
+}
+
+/**
+ * `IsValidUser` — the union upstream applies to the `user` field
+ * of a delete (`pkg/tuple/tuple.go:511-513`).
+ *
+ * Deliberately **not** `requestSubjectDefect`. The union admits
+ * anything the three predicates admit, so `user:a#b` passes as a
+ * userset where the write path's `IsValidUserID` on the id alone
+ * would refuse the `#`. The delete path is not the write path
+ * narrowed; it is a different predicate.
+ */
+function isValidUserString(value: string): boolean {
+  return (
+    value === "*" ||
+    isWellFormedId(value, SUBJECT_ID_RESERVED) ||
+    isValidObjectString(value) ||
+    isValidUsersetString(value)
+  );
+}
+
+/**
+ * `TupleKey.relation`'s protovalidate pattern, `^[^:#@\s]{1,50}$`.
+ *
+ * Applied only to a non-empty relation. protovalidate patterns do
+ * not run on an empty field, which is why an empty relation on a
+ * delete falls through to "does not exist" rather than being
+ * refused — measured, and asserted in the fixture.
+ */
+const DELETE_RELATION_RESERVED: readonly string[] = [
+  ":",
+  "#",
+  "@",
+  " ",
+  "\t",
+  "\n",
+  "\f",
+  "\r",
+];
+const DELETE_RELATION_MAX_LENGTH = 50;
+
+/**
+ * Validate a delete the way upstream validates one — which is
+ * **not** the way it validates a write.
+ *
+ * `pkg/server/commands/write.go:169-178` is the entire delete
+ * validation loop: one `IsValidUser` call and a `TODO`. There is
+ * no model validation on a delete at all. An undefined relation,
+ * an undefined type, a subject type the relation does not admit —
+ * every one of them falls through to "the tuple does not exist",
+ * measured on nine probes against v1.18.2 including one across a
+ * model change that dropped both the relation and the type. That
+ * is what makes a bad model change recoverable: the rows written
+ * under the old model can still be deleted under the new one.
+ *
+ * Everything else here is protovalidate on the rendered fields,
+ * which the API applies before the command runs.
+ *
+ * So this reads no store and consults no relation config. Reusing
+ * the write gate would refuse deletes upstream performs, and
+ * would make a model change a trap.
+ *
+ * @throws InvalidSubjectTypeError when the rendered subject fails
+ *   `IsValidUser` or the 512-byte bound. `allowed` is `[]`: the
+ *   restrictions were never consulted, because there are none to
+ *   consult on this path.
+ * @throws InvalidObjectError when the rendered object fails the
+ *   `^[^\s]{2,256}$` bound.
+ */
+export function validateTupleDelete(request: RemoveTupleRequest): void {
+  const subject =
+    request.subjectRelation === null || request.subjectRelation === undefined
+      ? `${request.subjectType}:${request.subjectId}`
+      : `${request.subjectType}:${request.subjectId}#${request.subjectRelation}`;
+  const shape = subjectShape(
+    request.subjectType,
+    request.subjectId,
+    request.subjectRelation,
+  );
+
+  if (!isValidUserString(subject)) {
+    throw new InvalidSubjectTypeError(
+      shape,
+      request.objectType,
+      request.relation,
+      [],
+      "malformed subject",
+      "the 'user' field is malformed",
+      "DELETE-SUBJECT-MALFORMED",
+    );
+  }
+
+  const bytes = utf8Length(subject);
+  if (bytes > WRITE_SUBJECT_BYTE_LIMIT) {
+    throw new InvalidSubjectTypeError(
+      shape,
+      request.objectType,
+      request.relation,
+      [],
+      "malformed subject",
+      `${bytes} bytes exceeds ${WRITE_SUBJECT_BYTE_LIMIT}`,
+      "DELETE-SUBJECT-TOO-LONG",
+    );
+  }
+
+  // `^[^\s]{2,256}$` on the rendered object. Only the whitespace
+  // class and the bounds -- `:`, `#`, `@` and a control character
+  // are all legal in an object id on a delete, and every one of
+  // them is a shape the write path refuses.
+  const object = `${request.objectType}:${request.objectId}`;
+  const runes = [...object];
+  if (runes.length < 2 || runes.length > WRITE_OBJECT_RUNE_LIMIT) {
+    throw new InvalidObjectError(
+      "object too long",
+      request.objectType,
+      request.objectId,
+      `${runes.length} characters is outside 2..${WRITE_OBJECT_RUNE_LIMIT}`,
+      "DELETE-OBJECT-MALFORMED",
+    );
+  }
+  if (runes.some((char) => /\s/.test(char))) {
+    throw new InvalidObjectError(
+      "malformed object id",
+      request.objectType,
+      request.objectId,
+      "an object may hold no whitespace",
+      "DELETE-OBJECT-MALFORMED",
+    );
+  }
+
+  if (request.relation.length === 0) return;
+  const relation = [...request.relation];
+  if (
+    relation.length > DELETE_RELATION_MAX_LENGTH ||
+    relation.some((char) => DELETE_RELATION_RESERVED.includes(char))
+  ) {
+    throw new InvalidObjectError(
+      "malformed object id",
+      request.objectType,
+      request.objectId,
+      `relation '${request.relation}' does not match ^[^:#@\\s]{1,50}$`,
+      "DELETE-RELATION-MALFORMED",
+    );
+  }
 }

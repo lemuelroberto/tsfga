@@ -7,6 +7,7 @@ import {
   type CheckRequest,
   formatRestriction,
   type RelationConfig,
+  type RemoveTupleRequest,
   type TsfgaClient,
   TsfgaError,
   type TypeRestriction,
@@ -15,6 +16,7 @@ import {
 import {
   type FgaContextualTuple,
   fgaCheck,
+  fgaDeleteOutcome,
   fgaListObjects,
   fgaWriteModelOutcome,
   fgaWriteOutcome,
@@ -870,4 +872,59 @@ function modelRestrictions(modelPath: string): Map<string, Set<string>> {
     }
   }
   return restrictions;
+}
+
+/**
+ * What a delete may do.
+ *
+ * `"missing"` is the outcome the delete gate exists to keep
+ * separate from `"refused"`. Upstream refuses a *malformed*
+ * delete at the request boundary and reports a *nonexistent* one
+ * from inside the command, and it runs **no model validation** on
+ * a delete at all — an undefined relation, an undefined type or a
+ * subject type the relation does not admit all fall through to
+ * `"missing"`. A gate that reused the write validators would
+ * report `"refused"` for every one of those, and a model change
+ * that dropped a relation would strand the rows written under it.
+ */
+export type DeleteOutcome = "accepted" | "refused" | "missing";
+
+/**
+ * Assert that tsfga and OpenFGA treat the same delete the same
+ * way, and that they do what the test expected.
+ *
+ * Sequential rather than raced, unlike every other helper here:
+ * both engines are being asked to delete the *same* row, so
+ * running them in parallel would have each racing the other's
+ * effect on its own store. They do not share a store, but the
+ * fixture's rows are written to both, and a test asserting
+ * `"accepted"` then `"missing"` on a replay depends on the order.
+ */
+export async function expectDeleteConformance(
+  storeId: string,
+  authorizationModelId: string,
+  tsfgaClient: TsfgaClient,
+  tuple: RemoveTupleRequest,
+  expected: DeleteOutcome,
+): Promise<void> {
+  const openFgaOutcome = await fgaDeleteOutcome(storeId, authorizationModelId, {
+    objectType: tuple.objectType,
+    objectId: tuple.objectId,
+    relation: tuple.relation,
+    subjectType: tuple.subjectType,
+    subjectId: tuple.subjectId,
+    subjectRelation: tuple.subjectRelation ?? null,
+  });
+
+  let tsfgaOutcome: DeleteOutcome;
+  try {
+    const removed = await tsfgaClient.removeTuple(tuple);
+    tsfgaOutcome = removed ? "accepted" : "missing";
+  } catch (error: unknown) {
+    if (!(error instanceof TsfgaError)) throw error;
+    tsfgaOutcome = "refused";
+  }
+
+  expect(tsfgaOutcome).toBe(openFgaOutcome);
+  expect(tsfgaOutcome).toBe(expected);
 }

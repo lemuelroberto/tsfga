@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { CAPABILITY_RULE_IDS, UPSTREAM_RULE_IDS } from "@tsfga/core";
+import { CAPABILITY_RULE_IDS, UPSTREAM_RULE_IDS } from "../src/write-rules.ts";
 
 /**
  * The two refusal lists, checked for the properties a reader of

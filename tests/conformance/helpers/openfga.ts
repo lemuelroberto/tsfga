@@ -422,3 +422,68 @@ export async function fgaWriteTuplesRaw(
   const client = createClient(storeId);
   await client.writeTuples(tuples, { authorizationModelId });
 }
+
+/**
+ * Delete one tuple, and report whether OpenFGA took the request
+ * at all.
+ *
+ * Two outcomes rather than three, and the distinction is the
+ * point: `"refused"` is a `validation_error` on the request's own
+ * shape, and `"missing"` is
+ * `write_failed_due_to_invalid_input` — the request was
+ * well-formed and the row was not there. Upstream reaches them
+ * from different places (protovalidate and `IsValidUser` at the
+ * boundary, the missing-row check inside `Execute` afterwards),
+ * and a delete that is both malformed *and* nonexistent must
+ * report the first.
+ */
+export async function fgaDeleteOutcome(
+  storeId: string,
+  authorizationModelId: string,
+  tuple: FgaWriteTuple,
+): Promise<"accepted" | "refused" | "missing"> {
+  const client = createClient(storeId);
+  // `!== null` rather than truthiness, unlike `writeOneTuple`
+  // above: an **empty** subject relation is one of the shapes
+  // under test, and it is a different wire string from an absent
+  // one. `user:alice#` fails `IsValidUser`; `user:alice` does not.
+  const user =
+    tuple.subjectRelation === null || tuple.subjectRelation === undefined
+      ? `${tuple.subjectType}:${tuple.subjectId}`
+      : `${tuple.subjectType}:${tuple.subjectId}#${tuple.subjectRelation}`;
+  try {
+    await client.deleteTuples(
+      [
+        {
+          user,
+          relation: tuple.relation,
+          object: `${tuple.objectType}:${tuple.objectId}`,
+        },
+      ],
+      { authorizationModelId },
+    );
+    return "accepted";
+  } catch (error) {
+    const refusal = refusalOf(error);
+    if (!refusal) throw error;
+    return refusal.code === "write_failed_due_to_invalid_input"
+      ? "missing"
+      : "refused";
+  }
+}
+
+/**
+ * Write a model given as JSON and return its id.
+ *
+ * `fgaWriteModel` reads a DSL file; this takes the request
+ * directly, for a suite whose models are shapes the DSL cannot
+ * express or whose point is the model changing under a fixture.
+ */
+export async function fgaWriteModelJson(
+  storeId: string,
+  model: WriteAuthorizationModelRequest,
+): Promise<string> {
+  const client = createClient(storeId);
+  const response = await client.writeAuthorizationModel(model);
+  return response.authorization_model_id;
+}

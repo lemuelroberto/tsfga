@@ -54,8 +54,8 @@
     "dispositions": {
       "n/a": 51,
       "pinned": 4,
-      "claimed": 35,
-      "claimed-partial": 7,
+      "claimed": 36,
+      "claimed-partial": 6,
       "open": 1
     }
   },
@@ -66,7 +66,8 @@
       "constraint": "<= 512 UTF-8 bytes",
       "disposition": "claimed",
       "rules": [
-        "TUPLE-SUBJECT-MALFORMED"
+        "TUPLE-SUBJECT-MALFORMED",
+        "DELETE-SUBJECT-TOO-LONG"
       ],
       "test": "packages/core/tests/tuple-validation.test.ts:the `user` field is bounded at 512 bytes"
     },
@@ -76,7 +77,8 @@
       "disposition": "claimed",
       "rules": [
         "TUPLE-OBJECT-MALFORMED",
-        "TUPLE-OBJECT-TOO-LONG"
+        "TUPLE-OBJECT-TOO-LONG",
+        "DELETE-OBJECT-MALFORMED"
       ],
       "test": "packages/core/tests/tuple-validation.test.ts:the `object` field is bounded at 256 code points"
     },
@@ -115,6 +117,16 @@
         "CONDITION-PARAMETER-NAME-MALFORMED"
       ],
       "test": "packages/core/tests/config-validation.test.ts:every parameter key runs the same rule"
+    },
+    {
+      "field": "TupleKey.relation",
+      "constraint": "^[^:#@\\s]{1,50}$",
+      "disposition": "claimed",
+      "rules": [
+        "DELETE-RELATION-MALFORMED"
+      ],
+      "test": "tests/conformance/e1-delete-gate.test.ts:a relation holding a space",
+      "note": "Applied only to a non-empty relation: protovalidate patterns do not run on an empty field, so an empty relation on a delete falls through to 'does not exist'."
     }
   ],
   "causes": [
@@ -804,12 +816,12 @@
       "sites": [
         "pkg/server/commands/write.go:174"
       ],
-      "disposition": "claimed-partial",
+      "disposition": "claimed",
       "rules": [
-        "TUPLE-SUBJECT-MALFORMED"
+        "TUPLE-SUBJECT-MALFORMED",
+        "DELETE-SUBJECT-MALFORMED"
       ],
-      "test": "packages/core/tests/tuple-validation.test.ts:the refusal is discriminated as a malformed subject",
-      "gap": "the write path applies it; the delete path applies nothing at all, which is finding 501."
+      "test": "tests/conformance/e1-delete-gate.test.ts:a subject holding a space"
     },
     {
       "package": "commands",

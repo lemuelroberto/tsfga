@@ -24,6 +24,7 @@ import {
   directSubjectRef,
   isSelfDefining,
   validateRequestContext,
+  validateTupleDelete,
   validateTupleWrite,
 } from "./tuple-validation.ts";
 import type {
@@ -351,6 +352,13 @@ export function createTsfga(
     },
 
     removeTuple(request: RemoveTupleRequest): Promise<boolean> {
+      // Upstream's delete validation, which is *not* its write
+      // validation: `IsValidUser` on the rendered subject plus the
+      // three proto bounds, and no model validation at all. An
+      // undefined relation or type falls through to "does not
+      // exist", which is what makes a bad model change
+      // recoverable.
+      validateTupleDelete(request);
       return store.deleteTuple(request);
     },
 
@@ -594,6 +602,7 @@ export {
   subjectShape,
   type TupleWriteValidationOptions,
   validateRequestContext,
+  validateTupleDelete,
   validateTupleWrite,
 } from "./tuple-validation.ts";
 export type {

@@ -913,3 +913,124 @@ describe("two defects at once report the earlier rule", () => {
     );
   });
 });
+
+/**
+ * The delete gate, which is not the write gate narrowed.
+ *
+ * Upstream validates a delete with one `IsValidUser` call over
+ * the rendered subject plus the protobuf field bounds, and runs
+ * **no** model validation: it reads no config, so an undefined
+ * relation, an undefined type and an unadmitted subject type all
+ * fall through to "the tuple does not exist".
+ *
+ * Pinned two-sided in `tests/conformance/e1-delete-gate.test.ts`,
+ * where the fall-through half is asserted against the container.
+ * Here: which rule fires, and that the gate reads nothing.
+ */
+describe("removeTuple validates as upstream validates a delete", () => {
+  let store: MockTupleStore;
+  let fga: TsfgaClient;
+
+  beforeEach(() => {
+    store = new MockTupleStore();
+    seed(store);
+    fga = createTsfga(store);
+  });
+
+  const target = (overrides: Record<string, unknown>) => ({
+    objectType: "doc",
+    objectId: "1",
+    relation: "both",
+    subjectType: "user",
+    subjectId: "alice",
+    ...overrides,
+  });
+
+  /** The rule that refused, or the store's answer. */
+  async function ruleFor(request: Parameters<typeof fga.removeTuple>[0]) {
+    try {
+      const removed = await fga.removeTuple(request);
+      return removed ? "accepted" : "missing";
+    } catch (error) {
+      if (!(error instanceof TsfgaError)) throw error;
+      return error.ruleId ?? "unnamed";
+    }
+  }
+
+  test("a malformed subject is refused", async () => {
+    expect(await ruleFor(target({ subjectId: "al ice" }))).toBe(
+      "DELETE-SUBJECT-MALFORMED",
+    );
+  });
+
+  test("a wildcard carrying a subject relation is refused", async () => {
+    expect(
+      await ruleFor(target({ subjectId: "*", subjectRelation: "member" })),
+    ).toBe("DELETE-SUBJECT-MALFORMED");
+  });
+
+  test("the rendered subject is bounded at 512 bytes", async () => {
+    expect(await ruleFor(target({ subjectId: "a".repeat(507) }))).toBe(
+      "missing",
+    );
+    expect(await ruleFor(target({ subjectId: "a".repeat(508) }))).toBe(
+      "DELETE-SUBJECT-TOO-LONG",
+    );
+  });
+
+  test("the rendered object is bounded at 256 code points", async () => {
+    expect(
+      await ruleFor(
+        target({ objectType: "t".repeat(219), objectId: "o".repeat(36) }),
+      ),
+    ).toBe("missing");
+    expect(
+      await ruleFor(
+        target({ objectType: "t".repeat(220), objectId: "o".repeat(36) }),
+      ),
+    ).toBe("DELETE-OBJECT-MALFORMED");
+  });
+
+  test("a relation past the pattern is refused", async () => {
+    expect(await ruleFor(target({ relation: "v".repeat(51) }))).toBe(
+      "DELETE-RELATION-MALFORMED",
+    );
+    expect(await ruleFor(target({ relation: "vie wer" }))).toBe(
+      "DELETE-RELATION-MALFORMED",
+    );
+  });
+
+  test("an empty relation is not matched against the pattern", async () => {
+    expect(await ruleFor(target({ relation: "" }))).toBe("missing");
+  });
+
+  test("a userset subject id is legal here and not on a write", async () => {
+    // `IsValidUser` is a union, and `user:a#b` satisfies its
+    // userset arm. The write path runs `IsValidUserID` on the id
+    // alone and refuses the `#`.
+    expect(await ruleFor(target({ subjectId: "a#b" }))).toBe("missing");
+  });
+
+  test("a malformed subject beats a missing row", async () => {
+    expect(
+      await ruleFor(
+        target({
+          objectType: "nosuchtype",
+          relation: "nosuchrel",
+          subjectId: "al ice",
+        }),
+      ),
+    ).toBe("DELETE-SUBJECT-MALFORMED");
+  });
+
+  test("the gate reads nothing at all", async () => {
+    // No relation config, no condition definition. Upstream's
+    // delete validation is `IsValidUser` and a `TODO`; a gate that
+    // read the model would refuse deletes upstream performs and
+    // would make a dropped relation unrecoverable.
+    const before = store.calls.length;
+    await ruleFor(target({ relation: "nosuchrel" }));
+    const methods = store.calls.slice(before).map((each) => each.method);
+    expect(methods.join(",")).toBe("deleteTuple");
+  });
+});
