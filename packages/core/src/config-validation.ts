@@ -1,6 +1,6 @@
 import { InvalidRelationConfigError } from "./errors.ts";
 import type { TupleStore } from "./store-interface.ts";
-import type { RelationConfig } from "./types.ts";
+import type { ConditionDefinition, RelationConfig } from "./types.ts";
 
 /**
  * Validate a relation config against the rules OpenFGA's
@@ -196,8 +196,68 @@ export async function validateRelationConfigWrite(
 }
 
 /**
- * The characters neither a type name nor a relation name may
- * hold, measured against v1.18.2 rather than read off a Go file.
+ * Validate a condition definition's **names** against the rules
+ * OpenFGA applies to a model write.
+ *
+ * Two fields, one predicate. `Condition.name` and every key of
+ * `Condition.parameters` carry the proto pattern
+ * `^[^:#@\s]{1,50}$` — the same character class and the same bound
+ * as a relation name, on a different field. Measured on v1.18.2,
+ * which reports the pattern verbatim: `invalid Condition.Name` for
+ * the first and `invalid Condition.Parameters[…]` for the second.
+ *
+ * Both are refused *before* the expression is compiled. A
+ * condition stored under a name upstream refuses is one no
+ * `directly_related_user_types` entry of an acceptable model could
+ * ever name, so the model tsfga holds is one OpenFGA would not
+ * store — the same defect issue 283 closed on a config's own
+ * names, reached through the other write path.
+ *
+ * A parameter name is the one place the model's name class and
+ * CEL's identifier grammar disagree: CEL cannot *reference* a
+ * parameter named `bad:p`, so the expression would fail to
+ * resolve, but the model gate refuses the key before that ever
+ * matters — which is why the rule is on the key and not on the
+ * expression.
+ *
+ * Nothing else here is checked. The expression is
+ * `compileCondition`'s, and the parameter *types* are the type
+ * union's.
+ */
+export function validateConditionWrite(condition: ConditionDefinition): void {
+  const refuse = (
+    cause: ConstructorParameters<typeof InvalidRelationConfigError>[0],
+    detail: string,
+  ): never => {
+    throw new InvalidRelationConfigError(
+      cause,
+      null,
+      null,
+      detail,
+      condition.name,
+    );
+  };
+
+  if (!isWellFormedName(condition.name, MAX_RELATION_NAME_LENGTH)) {
+    refuse("malformed condition name", describeName(condition.name));
+  }
+
+  // A different loop, and every key runs it: upstream's message
+  // names the offending key, so the detail does too.
+  for (const parameter of Object.keys(condition.parameters ?? {})) {
+    if (!isWellFormedName(parameter, MAX_RELATION_NAME_LENGTH)) {
+      refuse(
+        "malformed condition parameter name",
+        `${describeName(parameter)} in '${parameter}'`,
+      );
+    }
+  }
+}
+
+/**
+ * The characters no name in a model may hold — a type's, a
+ * relation's, a condition's, or a condition parameter's — measured
+ * against v1.18.2 rather than read off a Go file.
  *
  * The model write path is guarded by protobuf field patterns, not
  * by the typesystem and not by `pkg/tuple`'s `IsValidRelation`:
@@ -239,6 +299,11 @@ const MAX_TYPE_NAME_LENGTH = 254;
  * Note the code is plural — there is no `relation_invalid_pattern`
  * and no `*_invalid_length` on either field, because the bound
  * lives in the pattern.
+ *
+ * The same bound carries `Condition.name` and every key of
+ * `Condition.parameters` — one constant for three fields, because
+ * upstream spells the one pattern on all three rather than because
+ * they happen to agree.
  */
 const MAX_RELATION_NAME_LENGTH = 50;
 

@@ -4,7 +4,7 @@ import {
   InvalidRelationConfigError,
 } from "../src/errors.ts";
 import { createTsfga, type TsfgaClient } from "../src/index.ts";
-import type { RelationConfig } from "../src/types.ts";
+import type { ConditionDefinition, RelationConfig } from "../src/types.ts";
 import { MockTupleStore } from "./helpers/mock-store.ts";
 
 /**
@@ -236,5 +236,129 @@ describe("addTuple refuses a tuple that is implicit", () => {
         contextualTuples: [selfTuple],
       }),
     ).toBe(true);
+  });
+});
+
+/**
+ * The name gate on the *other* write path.
+ *
+ * A relation config's own names were gated first; a condition
+ * definition carries two more name fields under the same proto
+ * pattern, `^[^:#@\s]{1,50}$` — its own name and every key of its
+ * parameters. Both bounds are pinned two-sided against the
+ * container in `tests/conformance/c2-names.test.ts`. Here: the
+ * error class and its cause, which the conformance suite cannot
+ * see, and the acceptances a rule one character too wide loses.
+ */
+describe("writeConditionDefinition gates both name fields", () => {
+  let fga: TsfgaClient;
+
+  beforeEach(() => {
+    fga = createTsfga(new MockTupleStore());
+  });
+
+  function definition(name: string, parameter = "p"): ConditionDefinition {
+    return { name, expression: "true", parameters: { [parameter]: "string" } };
+  }
+
+  async function refusal(
+    condition: ConditionDefinition,
+  ): Promise<InvalidRelationConfigError> {
+    try {
+      await fga.writeConditionDefinition(condition);
+    } catch (error) {
+      if (error instanceof InvalidRelationConfigError) return error;
+      throw error;
+    }
+    throw new Error("expected a refusal");
+  }
+
+  test("a condition name holding a reserved character", async () => {
+    for (const bad of ["bad:name", "bad#name", "bad@name", "bad name"]) {
+      const error = await refusal(definition(bad));
+      expect(error.cause).toBe("malformed condition name");
+      // No object type and no relation to blame, so the message
+      // names the condition instead.
+      expect(error.objectType).toBeNull();
+      expect(error.conditionName).toBe(bad);
+    }
+  });
+
+  test("an empty condition name", async () => {
+    const error = await refusal(definition(""));
+    expect(error.cause).toBe("malformed condition name");
+  });
+
+  test("the bound is 50, and it counts code points", async () => {
+    await fga.writeConditionDefinition(definition("c".repeat(50)));
+    expect((await refusal(definition("c".repeat(51)))).cause).toBe(
+      "malformed condition name",
+    );
+    // 50 astral code points are 100 UTF-16 units and 200 bytes.
+    // Neither is the measure: a Go quantifier counts runes.
+    await fga.writeConditionDefinition(definition("\u{1F600}".repeat(50)));
+    expect((await refusal(definition("\u{1F600}".repeat(51)))).cause).toBe(
+      "malformed condition name",
+    );
+  });
+
+  test("a control character outside Go's five is accepted", async () => {
+    // `\s` is `[\t\n\f\r ]` and nothing wider. Reusing the tuple
+    // path's control-character rule here would refuse names
+    // upstream stores.
+    const accepted = ["\u000B", "\u0001", "\u007F", "\u0085", "\u00A0"];
+    for (const ok of accepted) {
+      await fga.writeConditionDefinition(definition(`c${ok}n`));
+    }
+  });
+
+  test("every parameter key runs the same rule", async () => {
+    const error = await refusal(definition("ok", "bad:p"));
+    expect(error.cause).toBe("malformed condition parameter name");
+    // The offending key, as upstream's `Condition.Parameters[…]`
+    // names it.
+    expect(error.message).toContain("bad:p");
+    expect((await refusal(definition("ok", "p".repeat(51)))).cause).toBe(
+      "malformed condition parameter name",
+    );
+    await fga.writeConditionDefinition(definition("ok", "p".repeat(50)));
+  });
+
+  test("the names are checked before the expression", async () => {
+    // Both are defects, and upstream refuses on the name whatever
+    // the expression says, so an uncompilable expression must not
+    // decide which error the caller sees.
+    const error = await refusal({
+      name: "bad:name",
+      expression: "((",
+      parameters: {},
+    });
+    expect(error.cause).toBe("malformed condition name");
+  });
+
+  test("the control: an ordinary definition is stored", async () => {
+    await fga.writeConditionDefinition(definition("weekday_only", "grantee"));
+  });
+});
+
+describe("createTsfga validates writeContextByteLimit", () => {
+  test("a nonsense limit is refused at construction", () => {
+    // The fourth option, held to the rule the other three are.
+    // `NaN` is the one that matters: it compares false against
+    // every context size, so a caller who was setting a bound
+    // silently removed it.
+    for (const writeContextByteLimit of [Number.NaN, -1, 2.5]) {
+      expect(() =>
+        createTsfga(new MockTupleStore(), { writeContextByteLimit }),
+      ).toThrow();
+    }
+  });
+
+  test("zero and Infinity are limits, and both are taken", () => {
+    // Non-negative, not positive: `0` refuses every conditioned
+    // write, which is coherent where a `maxDepth` of `0` is not.
+    for (const writeContextByteLimit of [0, Number.POSITIVE_INFINITY]) {
+      createTsfga(new MockTupleStore(), { writeContextByteLimit });
+    }
   });
 });

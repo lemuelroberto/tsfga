@@ -1,11 +1,15 @@
 import { check } from "./check.ts";
 import { type CheckOutcome, checkMany } from "./check-many.ts";
 import { compileCondition, evaluateTupleCondition } from "./conditions.ts";
-import { validateRelationConfigWrite } from "./config-validation.ts";
+import {
+  validateConditionWrite,
+  validateRelationConfigWrite,
+} from "./config-validation.ts";
 import {
   DuplicateTupleError,
   ImplicitTupleError,
   RelationConfigNotFoundError,
+  TsfgaError,
 } from "./errors.ts";
 import { listObjects } from "./list-objects.ts";
 import type { TupleStore } from "./store-interface.ts";
@@ -192,6 +196,12 @@ export interface TsfgaClient {
   /**
    * Define a named CEL condition.
    *
+   * @throws InvalidRelationConfigError for a name upstream's model
+   *   write refuses — the condition's own (`malformed condition
+   *   name`) or any of its parameters' (`malformed condition
+   *   parameter name`). Both carry the proto pattern
+   *   `^[^:#@\s]{1,50}$`, the one a relation name carries, and both
+   *   are checked before the expression is compiled.
    * @throws ConditionCompileError when the expression does not
    *   compile. OpenFGA refuses the model write that carries such
    *   an expression, rather than deferring the failure to the
@@ -205,6 +215,35 @@ export function createTsfga(
   store: TupleStore,
   options?: CheckOptions,
 ): TsfgaClient {
+  const writeContextByteLimit =
+    options?.writeContextByteLimit ?? DEFAULT_WRITE_CONTEXT_BYTE_LIMIT;
+  // The fourth of the four options, held to the same rule as the
+  // three `createCheckScope` and `checkMany` guard: the negated
+  // comparison rejects `NaN`, which `< 0` misses, and a fraction
+  // would admit one byte more than it says.
+  //
+  // **Non-negative**, where the other three are positive: `0` is a
+  // coherent limit — it refuses every conditioned write — where a
+  // `maxDepth` of `0` is a budget no check can run inside. A
+  // negative limit refuses every conditioned write too, but says so
+  // by accident, and `NaN` accepts every one of them, silently
+  // removing the bound from a caller who was setting one.
+  //
+  // Checked at construction rather than at the write it bounds:
+  // the option is inert until an `addTuple` carrying a condition
+  // context, so a caller who mistyped it could otherwise hold a
+  // client for the whole of a request before hearing about it.
+  if (
+    !(writeContextByteLimit >= 0) ||
+    (writeContextByteLimit !== Number.POSITIVE_INFINITY &&
+      !Number.isInteger(writeContextByteLimit))
+  ) {
+    throw new TsfgaError(
+      "writeContextByteLimit must be a non-negative integer or " +
+        `Infinity, got ${writeContextByteLimit}`,
+    );
+  }
+
   return {
     async check(request: CheckRequest): Promise<boolean> {
       // Before any store read, as upstream validates it before it
@@ -263,8 +302,7 @@ export function createTsfga(
         );
       }
       await validateTupleWrite(store, request, {
-        contextByteLimit:
-          options?.writeContextByteLimit ?? DEFAULT_WRITE_CONTEXT_BYTE_LIMIT,
+        contextByteLimit: writeContextByteLimit,
       });
       const inserted = await store.insertTuple(request);
       // Upstream's `on_duplicate` defaults to `error`, and the
@@ -401,6 +439,12 @@ export function createTsfga(
     async writeConditionDefinition(
       condition: ConditionDefinition,
     ): Promise<void> {
+      // The names first, and before the expression: upstream's
+      // model write refuses the condition on its own name or on a
+      // parameter key regardless of what the expression says, and
+      // an expression that happens not to compile would otherwise
+      // decide which of the two errors a caller sees.
+      validateConditionWrite(condition);
       // Compiled here, not at the first check that reads it. An
       // expression that does not parse was accepted at three
       // points — this write, every tuple write beneath it, and
@@ -420,7 +464,10 @@ export function createTsfga(
 export { check } from "./check.ts";
 export { type CheckOutcome, checkMany } from "./check-many.ts";
 export { coerceContext, evaluateTupleCondition } from "./conditions.ts";
-export { validateRelationConfigWrite } from "./config-validation.ts";
+export {
+  validateConditionWrite,
+  validateRelationConfigWrite,
+} from "./config-validation.ts";
 export { ContextualTupleStore } from "./contextual-store.ts";
 export {
   type ConditionalTupleCause,
