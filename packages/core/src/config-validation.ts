@@ -95,6 +95,13 @@ import type { RelationConfig } from "./types.ts";
  * premise. It does mean conditions must be defined before the
  * configs that name them, which is the order upstream's atomic
  * model write imposes anyway.
+ *
+ * ## The names themselves
+ *
+ * Ahead of all eight, and ahead of every store read, the config's
+ * own `objectType` and `relation` are checked for
+ * well-formedness. It is the cheapest rule here and the earliest
+ * one upstream applies — see `isWellFormedName` below.
  */
 export async function validateRelationConfigWrite(
   store: TupleStore,
@@ -111,6 +118,14 @@ export async function validateRelationConfigWrite(
       detail,
     );
   };
+
+  if (!isWellFormedName(config.objectType, MAX_TYPE_NAME_LENGTH)) {
+    refuse("malformed type name", describeName(config.objectType));
+  }
+
+  if (!isWellFormedName(config.relation, MAX_RELATION_NAME_LENGTH)) {
+    refuse("malformed relation name", describeName(config.relation));
+  }
 
   if (config.intersection !== null && config.intersection.length < 2) {
     refuse(
@@ -178,6 +193,82 @@ export async function validateRelationConfigWrite(
   if (await hasNoEntrypoint(store, config)) {
     refuse("relation has no entrypoint");
   }
+}
+
+/**
+ * The characters neither a type name nor a relation name may
+ * hold, measured against v1.18.2 rather than read off a Go file.
+ *
+ * The model write path is guarded by protobuf field patterns, not
+ * by the typesystem and not by `pkg/tuple`'s `IsValidRelation`:
+ * `^[^:#@\s]{1,254}$` on `TypeDefinition.Type` and
+ * `^[^:#@\s]{1,50}$` on each key of `TypeDefinition.Relations`.
+ * Both classes are identical, so this is one predicate under two
+ * bounds rather than two predicates — including `@`, which
+ * `IsValidRelation` refuses and which the type pattern refuses
+ * too.
+ *
+ * `\s` is Go's, so it is exactly `[\t\n\f\r ]` — five characters,
+ * not the Unicode space property. Probed: a vertical tab (U+000B),
+ * a no-break space (U+00A0), U+2028 and an ideographic space are
+ * all **accepted** by both fields, and so is every other control
+ * character outside that set (U+0001, U+007F, U+0085 measured).
+ * This deliberately does not reuse `tuple-validation.ts`'s
+ * control-character rule: that one is the tuple write path's, and
+ * applying it here would refuse names upstream stores.
+ */
+const NAME_RESERVED: ReadonlySet<string> = new Set([
+  ":",
+  "#",
+  "@",
+  " ",
+  "\t",
+  "\n",
+  "\f",
+  "\r",
+]);
+
+/**
+ * 254, measured by bisecting model writes against the container:
+ * accepted at 254, `type_invalid_pattern` at 255.
+ */
+const MAX_TYPE_NAME_LENGTH = 254;
+
+/**
+ * 50, bisected the same way; 51 is `relations_invalid_pattern`.
+ * Note the code is plural — there is no `relation_invalid_pattern`
+ * and no `*_invalid_length` on either field, because the bound
+ * lives in the pattern.
+ */
+const MAX_RELATION_NAME_LENGTH = 50;
+
+/**
+ * Whether a name is one the model can carry.
+ *
+ * The bound counts **code points**, as a Go regexp quantifier
+ * does: a 254-character name of `é` is accepted at 508 bytes, and
+ * 254 astral code points are accepted at 508 UTF-16 units. So
+ * neither `Buffer.byteLength` nor `String.length` is the measure —
+ * hence the spread.
+ */
+function isWellFormedName(name: string, maxLength: number): boolean {
+  const codePoints = [...name];
+  if (codePoints.length === 0) return false;
+  if (codePoints.length > maxLength) return false;
+  return !codePoints.some((char) => NAME_RESERVED.has(char));
+}
+
+/** Why the name was refused, for the error's `detail`. */
+function describeName(name: string): string {
+  const codePoints = [...name];
+  if (codePoints.length === 0) return "empty";
+  const offending = codePoints.find((char) => NAME_RESERVED.has(char));
+  if (offending !== undefined) {
+    const code = offending.codePointAt(0) ?? 0;
+    const hex = code.toString(16).toUpperCase().padStart(4, "0");
+    return `reserved character U+${hex}`;
+  }
+  return `${codePoints.length} characters`;
 }
 
 /** Whether the config rewrites at all, in any of the five arms. */
