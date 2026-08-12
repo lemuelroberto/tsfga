@@ -12,6 +12,7 @@ import {
   type CheckOutcome,
   expectConfigsMatchModel,
   expectConformance,
+  expectToleratedNondeterminism,
   type FixtureRecord,
   recordFixture,
 } from "./helpers/conformance.ts";
@@ -324,8 +325,18 @@ describe("a1: wildcards", () => {
     // The same row shape at the *root* node refuses on both engines
     // (see "a conditioned wildcard" above), and the same shape
     // without the wildcard refuses on both a hop down (see below).
-    // Only the conditioned wildcard behind a dispatch diverges.
-    await check(on("w5", "via_team", "alice"), "refused");
+    // Only the conditioned wildcard behind a dispatch answers two
+    // ways, and only on upstream: alone this file measures `false`
+    // every run, inside the full suite it measures a refusal. See
+    // `expectToleratedNondeterminism` for why that is tolerated
+    // rather than pinned.
+    await expectToleratedNondeterminism(
+      storeId,
+      authorizationModelId,
+      tsfgaClient,
+      on("w5", "via_team", "alice"),
+      { tsfga: "refused", openfga: [false, "refused"] },
+    );
   });
 
   test("a conditioned wildcard one hop down, with context", async () => {

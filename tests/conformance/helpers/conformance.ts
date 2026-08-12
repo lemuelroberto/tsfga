@@ -90,6 +90,71 @@ export async function expectPinnedDivergence(
 }
 
 /**
+ * Assert tsfga's answer exactly, and accept any one of a stated
+ * set of answers from OpenFGA.
+ *
+ * **For a shape where upstream is nondeterministic — nothing
+ * else.** The one call this exists for is issue 003, a condition
+ * error behind a dispatch onto a wildcard-only relation.
+ * Upstream's answer there is load-dependent: run
+ * `a1-wildcard.test.ts` alone and OpenFGA answers `false` every
+ * time; run it inside the full suite and it refuses, agreeing
+ * with tsfga. The suspected cause is a race in
+ * `internal/graph/weight_two_resolver.go` between the tuple
+ * stream and the stashed condition error, so which answer comes
+ * back is a function of how busy the container is, not of the
+ * model. tsfga's `refused` never moves.
+ *
+ * Tolerating is correct *here* because the alternatives are all
+ * worse: `expectConformance` fails on whichever load the suite
+ * happens to run under, and `expectPinnedDivergence` pins one
+ * half of a coin flip — a pin that flaps is worse than no pin,
+ * because it trains everyone to re-run the suite instead of
+ * reading it. Deleting the assertion would lose the only
+ * coverage in the suite of that shape.
+ *
+ * **Do not reach for this because a divergence is inconvenient.**
+ * A divergence that is stable, however unwelcome, is
+ * `expectPinnedDivergence` with a README paragraph beside it; a
+ * divergence tsfga can close is a bug to fix. This helper is only
+ * for a shape measured to answer two ways *on the same input and
+ * the same build*, and it buys nothing on tsfga's side: tsfga's
+ * outcome is one value and is asserted as strictly as anywhere
+ * else. The tolerance is on OpenFGA's side, and only over the
+ * answers named here.
+ *
+ * Refuses to pass on a single tolerated answer. One entry is not
+ * nondeterminism — it is an `expectConformance` or an
+ * `expectPinnedDivergence`, and should be written as one.
+ */
+export async function expectToleratedNondeterminism(
+  storeId: string,
+  authorizationModelId: string,
+  tsfgaClient: TsfgaClient,
+  params: CheckRequest,
+  expected: { tsfga: CheckOutcome; openfga: readonly CheckOutcome[] },
+): Promise<void> {
+  const tolerated = [...new Set(expected.openfga)].map(String).sort();
+  expect(tolerated.length > 1).toBe(true);
+
+  const [tsfgaResult, openFgaResult] = await runBoth(
+    storeId,
+    authorizationModelId,
+    tsfgaClient,
+    params,
+  );
+
+  expect(tsfgaResult).toBe(expected.tsfga);
+
+  const seen = String(openFgaResult);
+  expect(
+    tolerated.includes(seen)
+      ? "tolerated"
+      : `OpenFGA answered ${seen}; tolerated: ${tolerated.join(", ")}`,
+  ).toBe("tolerated");
+}
+
+/**
  * A tuple as OpenFGA's contextual-tuple field spells it.
  *
  * The condition travels with it. See `FgaContextualTuple` for why
