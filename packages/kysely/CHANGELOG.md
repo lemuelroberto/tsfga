@@ -9,6 +9,17 @@ releases may contain breaking changes).
 
 ### Changed
 
+- **`KyselyTupleStore.insertTuple` and `upsertRelationConfig` take
+  the branded `GatedTuple` and `GatedRelationConfig`.** Type-level
+  only — nothing changes at runtime — and it is what stops a
+  seeding or backfill script holding the exported store from
+  writing a row `addTuple` refuses. Requires `@tsfga/core` with
+  those types exported.
+
+## Unreleased
+
+### Changed
+
 - **BREAKING: `KyselyTupleStore.insertTuple` no longer updates an
   existing row.** It returns `true` when a row was inserted and
   `false` when the natural key already existed, leaving the stored

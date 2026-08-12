@@ -1053,6 +1053,37 @@ used to mean upsert, and a store that can only upsert cannot
 implement upstream's default; `TsfgaClient.addTuple` turns the
 `false` into `DuplicateTupleError`.
 
+### The two write methods take a branded argument
+
+`insertTuple` takes a `GatedTuple` and `upsertRelationConfig` a
+`GatedRelationConfig`. Both are `AddTupleRequest` and
+`RelationConfig` with a phantom property no value carries, minted
+inside this package only after the corresponding validator has
+run. An adapter declares the branded types on its own methods —
+both are exported — and is otherwise unaffected: the brand erases
+at emit, so nothing changes at runtime.
+
+The point is the *caller*. `KyselyTupleStore` is exported with a
+public `insertTuple`, so a seeding script or a backfill could
+write a row `addTuple` refuses. That is not hypothetical: two such
+rows produce `check → true` for a permission no OpenFGA store can
+represent, and it compiled against the published package.
+
+This is the read-side rule pointed the other way. A store's reply
+is a hint and `clampToQuery` re-applies the model to it; a store's
+*input* is likewise not where the model is decided, and the
+compiler is what says so, because there is nothing to check at the
+sink — the value's shape is fine, and what makes it legal is that
+it went through the validator.
+
+**Two limits, both real.** TypeScript's method parameters are
+bivariant, so a third-party store declaring the unbranded
+parameter still satisfies `TupleStore`; the compiler will never
+demand the brand of an adapter author. And a brand is not a lock:
+it erases at emit, so plain JavaScript is unaffected and anyone
+writing `as` gets what they asked for. What closes is the
+accidental path, which is the one that was measured.
+
 Slots are exact. `direct` is the tuple for this subject with no
 subject relation, `wildcard` the one for `subjectType:*` likewise,
 and every row in `usersets` has a subject relation. A minimal

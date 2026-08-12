@@ -17,6 +17,7 @@ import {
   getDb,
   rollbackTransaction,
 } from "./helpers/db.ts";
+import { ungatedConfig, ungatedTuple } from "./helpers/ungated.ts";
 
 /**
  * The adapter's *narrowing*, which core cannot check for it.
@@ -59,14 +60,16 @@ describe("findCheckTuples narrowing", () => {
   });
 
   async function seedDirect(conditionName: string | null): Promise<void> {
-    await store.insertTuple({
-      objectType: "doc_c4k",
-      objectId: uuidDoc,
-      relation: "viewer",
-      subjectType: "user_c4k",
-      subjectId: uuidAlice,
-      conditionName,
-    });
+    await store.insertTuple(
+      ungatedTuple({
+        objectType: "doc_c4k",
+        objectId: uuidDoc,
+        relation: "viewer",
+        subjectType: "user_c4k",
+        subjectId: uuidAlice,
+        conditionName,
+      }),
+    );
   }
 
   function read(refs: readonly TypeRestriction[] | null) {
@@ -142,23 +145,27 @@ describe("findCheckTuples narrowing", () => {
 
   describe("userset refs", () => {
     beforeEach(async () => {
-      await store.insertTuple({
-        objectType: "doc_c4k",
-        objectId: uuidDoc,
-        relation: "viewer",
-        subjectType: "team_c4k",
-        subjectId: uuidTeam,
-        subjectRelation: "member",
-      });
-      await store.insertTuple({
-        objectType: "doc_c4k",
-        objectId: uuidDoc,
-        relation: "viewer",
-        subjectType: "team_c4k",
-        subjectId: uuidTeam,
-        subjectRelation: "owner",
-        conditionName: "weekday",
-      });
+      await store.insertTuple(
+        ungatedTuple({
+          objectType: "doc_c4k",
+          objectId: uuidDoc,
+          relation: "viewer",
+          subjectType: "team_c4k",
+          subjectId: uuidTeam,
+          subjectRelation: "member",
+        }),
+      );
+      await store.insertTuple(
+        ungatedTuple({
+          objectType: "doc_c4k",
+          objectId: uuidDoc,
+          relation: "viewer",
+          subjectType: "team_c4k",
+          subjectId: uuidTeam,
+          subjectRelation: "owner",
+          conditionName: "weekday",
+        }),
+      );
     });
 
     function readUsersets(refs: readonly TypeRestriction[] | null) {
@@ -225,20 +232,22 @@ describe("hasTypeDefinition containment", () => {
   beforeEach(async () => {
     await rollbackTransaction(db);
     await beginTransaction(db);
-    await store.upsertRelationConfig({
-      objectType: "doc_c4k",
-      relation: "viewer",
-      directlyAssignable: [
-        { type: "user_c4k" },
-        { type: "group_c4k", relation: "member_c4k" },
-        { type: "robot_c4k", condition: "weekday_c4k" },
-      ],
-      impliedBy: null,
-      computedUserset: null,
-      tupleToUserset: null,
-      excludedBy: null,
-      intersection: null,
-    });
+    await store.upsertRelationConfig(
+      ungatedConfig({
+        objectType: "doc_c4k",
+        relation: "viewer",
+        directlyAssignable: [
+          { type: "user_c4k" },
+          { type: "group_c4k", relation: "member_c4k" },
+          { type: "robot_c4k", condition: "weekday_c4k" },
+        ],
+        impliedBy: null,
+        computedUserset: null,
+        tupleToUserset: null,
+        excludedBy: null,
+        intersection: null,
+      }),
+    );
   });
 
   afterEach(async () => {

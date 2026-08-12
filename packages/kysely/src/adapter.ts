@@ -1,9 +1,10 @@
 import {
-  type AddTupleRequest,
   type CheckTuples,
   type CheckTuplesQuery,
   type ConditionDefinition,
   type ConditionParameterType,
+  type GatedRelationConfig,
+  type GatedTuple,
   type IntersectionOperand,
   InvalidStoredDataError,
   type RelationConfig,
@@ -296,7 +297,7 @@ export class KyselyTupleStore implements TupleStore {
    * is `0` exactly when the conflict fired, which is the signal
    * `addTuple` turns into a `DuplicateTupleError`.
    */
-  async insertTuple(tuple: AddTupleRequest): Promise<boolean> {
+  async insertTuple(tuple: GatedTuple): Promise<boolean> {
     const condCtx = tuple.conditionContext
       ? JSON.stringify(tuple.conditionContext)
       : null;
@@ -373,7 +374,7 @@ export class KyselyTupleStore implements TupleStore {
     return rows.map((r) => r.object_id);
   }
 
-  async upsertRelationConfig(config: RelationConfig): Promise<void> {
+  async upsertRelationConfig(config: GatedRelationConfig): Promise<void> {
     const ttuJson = config.tupleToUserset
       ? JSON.stringify(config.tupleToUserset)
       : null;

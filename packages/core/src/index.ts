@@ -37,6 +37,7 @@ import type {
   RelationConfig,
   RemoveTupleRequest,
 } from "./types.ts";
+import { parseRelationConfigWrite, parseTupleWrite } from "./write-gate.ts";
 
 /**
  * What `listSubjects` takes beyond the object and relation.
@@ -344,7 +345,7 @@ export function createTsfga(
       await validateTupleWrite(store, request, {
         contextByteLimit: writeContextByteLimit,
       });
-      const inserted = await store.insertTuple(request);
+      const inserted = await store.insertTuple(parseTupleWrite(request));
       // Upstream's `on_duplicate` defaults to `error`, and the
       // natural key excludes the condition, so re-granting an edge
       // *under a condition* is a duplicate rather than an edit. It
@@ -531,7 +532,7 @@ export function createTsfga(
 
     async writeRelationConfig(config: RelationConfig): Promise<void> {
       await validateRelationConfigWrite(store, config);
-      await store.upsertRelationConfig(config);
+      await store.upsertRelationConfig(parseRelationConfigWrite(config));
     },
 
     deleteRelationConfig(
@@ -653,6 +654,14 @@ export type {
   Tuple,
   TypeRestriction,
 } from "./types.ts";
+export type {
+  // The brand *types* are exported and the mints are not. An
+  // adapter has to be able to name `GatedTuple` to declare its
+  // own method; nobody outside this package needs to be able to
+  // produce one.
+  GatedRelationConfig,
+  GatedTuple,
+} from "./write-gate.ts";
 export {
   CAPABILITY_RULE_IDS,
   type CapabilityRuleId,

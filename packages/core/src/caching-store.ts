@@ -1,6 +1,5 @@
 import type { TupleStore } from "./store-interface.ts";
 import type {
-  AddTupleRequest,
   CheckTuples,
   CheckTuplesQuery,
   ConditionDefinition,
@@ -8,6 +7,7 @@ import type {
   RemoveTupleRequest,
   Tuple,
 } from "./types.ts";
+import type { GatedRelationConfig, GatedTuple } from "./write-gate.ts";
 
 /**
  * Wraps a TupleStore, memoizing relation configs and condition
@@ -119,7 +119,7 @@ export class CachingTupleStore implements TupleStore {
     return this.inner.findTuplesByRelation(objectType, objectId, relation);
   }
 
-  insertTuple(tuple: AddTupleRequest): Promise<boolean> {
+  insertTuple(tuple: GatedTuple): Promise<boolean> {
     return this.inner.insertTuple(tuple);
   }
 
@@ -137,7 +137,7 @@ export class CachingTupleStore implements TupleStore {
   // type only the deleted config mentioned. The invalidation is
   // per-key nowhere because the key set is not derivable from the
   // write alone.
-  upsertRelationConfig(config: RelationConfig): Promise<void> {
+  upsertRelationConfig(config: GatedRelationConfig): Promise<void> {
     this.configCache.get(config.objectType)?.delete(config.relation);
     this.typeCache.clear();
     return this.inner.upsertRelationConfig(config);

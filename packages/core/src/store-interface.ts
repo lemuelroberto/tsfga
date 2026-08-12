@@ -1,5 +1,4 @@
 import type {
-  AddTupleRequest,
   CheckTuples,
   CheckTuplesQuery,
   ConditionDefinition,
@@ -7,6 +6,7 @@ import type {
   RemoveTupleRequest,
   Tuple,
 } from "./types.ts";
+import type { GatedRelationConfig, GatedTuple } from "./write-gate.ts";
 
 export interface TupleStore {
   // === Read ===
@@ -136,7 +136,7 @@ export interface TupleStore {
    * widening direction as readily as the narrowing one, and
    * reported nothing.
    */
-  insertTuple(tuple: AddTupleRequest): Promise<boolean>;
+  insertTuple(tuple: GatedTuple): Promise<boolean>;
 
   /** Delete a tuple by natural key */
   deleteTuple(tuple: RemoveTupleRequest): Promise<boolean>;
@@ -158,7 +158,7 @@ export interface TupleStore {
   // === Config management ===
 
   /** Insert or update a relation config */
-  upsertRelationConfig(config: RelationConfig): Promise<void>;
+  upsertRelationConfig(config: GatedRelationConfig): Promise<void>;
 
   /** Delete a relation config */
   deleteRelationConfig(objectType: string, relation: string): Promise<boolean>;

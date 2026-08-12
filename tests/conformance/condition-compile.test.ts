@@ -18,6 +18,7 @@ import {
   rollbackTransaction,
 } from "./helpers/db.ts";
 import { fgaCreateStore, fgaWriteModelOutcome } from "./helpers/openfga.ts";
+import { ungatedConfig, ungatedTuple } from "./helpers/ungated.ts";
 
 /**
  * A condition expression that does not compile is refused where it
@@ -173,25 +174,29 @@ describe("Condition Compilation Conformance", () => {
       expression: "x +",
       parameters: { x: "int" },
     });
-    await store.upsertRelationConfig({
-      objectType: "doc",
-      relation: "viewer",
-      directlyAssignable: [{ type: "user", condition: "gate_stored" }],
-      impliedBy: null,
-      computedUserset: null,
-      tupleToUserset: null,
-      excludedBy: null,
-      intersection: null,
-    });
-    await store.insertTuple({
-      objectType: "doc",
-      objectId: "00000000-0000-4000-ce00-000000000001",
-      relation: "viewer",
-      subjectType: "user",
-      subjectId: "00000000-0000-4000-ce00-000000000002",
-      conditionName: "gate_stored",
-      conditionContext: { x: 1 },
-    });
+    await store.upsertRelationConfig(
+      ungatedConfig({
+        objectType: "doc",
+        relation: "viewer",
+        directlyAssignable: [{ type: "user", condition: "gate_stored" }],
+        impliedBy: null,
+        computedUserset: null,
+        tupleToUserset: null,
+        excludedBy: null,
+        intersection: null,
+      }),
+    );
+    await store.insertTuple(
+      ungatedTuple({
+        objectType: "doc",
+        objectId: "00000000-0000-4000-ce00-000000000001",
+        relation: "viewer",
+        subjectType: "user",
+        subjectId: "00000000-0000-4000-ce00-000000000002",
+        conditionName: "gate_stored",
+        conditionContext: { x: 1 },
+      }),
+    );
 
     const failure = tsfgaClient.check({
       objectType: "doc",

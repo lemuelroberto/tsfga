@@ -723,7 +723,11 @@ and the validation helpers a store author needs —
 re-exports the two write-rule namespaces — `UPSTREAM_RULE_IDS`,
 `CAPABILITY_RULE_IDS` and the `WriteRuleId`, `UpstreamRuleId` and
 `CapabilityRuleId` types — which name what `TsfgaError.ruleId`
-carries. `KyselyTupleStore` is exported from `@tsfga/kysely`.
+carries — and the two write brands, `GatedTuple` and
+`GatedRelationConfig`. The **mints** are deliberately not
+exported: an exported mint would let any consumer spell
+`store.insertTuple(parseTupleWrite(raw))` and be back where they
+started. `KyselyTupleStore` is exported from `@tsfga/kysely`.
 
 **Every write rule names itself, and the ids are not an order.**
 `packages/core/src/write-rules.ts` holds two id namespaces:
@@ -1511,7 +1515,14 @@ history when interactive rebase is not available.
   schema validation.
 - **No `as` type assertions in production code.** Use control-flow
   narrowing (guards, early returns, local const captures) instead.
-  The only acceptable `as` usage is `as const` for literal types.
+  The only acceptable `as` usage is `as const` for literal types,
+  and the **two mints in `packages/core/src/write-gate.ts`**.
+  Those two are the security boundary itself: a brand is a phantom
+  property no value carries, so minting one is an assertion by
+  construction — that is what makes it a boundary rather than a
+  shape. Two, and no more. A third means something other than the
+  two write validators is minting, and the gate has become a
+  convention.
 - **No loose equality (`==` / `!=`).** Always use strict equality
   (`===` / `!==`). For nullish checks, use explicit
   `=== null || === undefined` or `??` / `?.` operators.

@@ -9,6 +9,7 @@ import type {
   Tuple,
   TypeRestriction,
 } from "./types.ts";
+import type { GatedRelationConfig, GatedTuple } from "./write-gate.ts";
 
 /**
  * Wraps a TupleStore, overlaying contextual tuples on read operations.
@@ -177,7 +178,7 @@ export class ContextualTupleStore implements TupleStore {
     return this.inner.hasTypeDefinition(type);
   }
 
-  insertTuple(tuple: AddTupleRequest): Promise<boolean> {
+  insertTuple(tuple: GatedTuple): Promise<boolean> {
     return this.inner.insertTuple(tuple);
   }
 
@@ -209,7 +210,7 @@ export class ContextualTupleStore implements TupleStore {
     return extra.length === 0 ? stored : [...stored, ...extra];
   }
 
-  upsertRelationConfig(config: RelationConfig): Promise<void> {
+  upsertRelationConfig(config: GatedRelationConfig): Promise<void> {
     return this.inner.upsertRelationConfig(config);
   }
 

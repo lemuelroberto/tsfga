@@ -72,6 +72,17 @@ releases may contain breaking changes).
 
 ### Added
 
+- **`GatedTuple` and `GatedRelationConfig`.**
+  `TupleStore.insertTuple` and `TupleStore.upsertRelationConfig`
+  now take a branded argument, minted inside `@tsfga/core` only
+  after the write validation has run, so a caller holding an
+  exported store cannot write past `addTuple` and
+  `writeRelationConfig`. Both types are exported; the mints are
+  not. An adapter updates its two method signatures and is
+  otherwise unaffected — brands erase at emit. The bivariance
+  limit is documented rather than papered over: a store declaring
+  the unbranded parameter still satisfies the interface.
+
 - **`MissingTupleError`**, the twin of `DuplicateTupleError`,
   carrying the same fields and named for upstream's `on_missing`
   as that one is named for `on_duplicate`.
