@@ -119,7 +119,7 @@ describe("listObjects result-cap conformance", () => {
         })),
       );
     }
-  }, 120_000);
+  });
 
   afterAll(async () => {
     await rollbackTransaction(db);
@@ -163,7 +163,7 @@ describe("listObjects result-cap conformance", () => {
     });
     expect(tsfgaObjects.every((id) => KNOWN.has(id))).toBe(true);
     expect(tsfgaObjects).toHaveLength(MAX_RESULTS);
-  }, 120_000);
+  });
 
   test("the relation configs say what the model says", () => {
     expectConfigsMatchModel("./d3-limits/model.dsl", fixture, {

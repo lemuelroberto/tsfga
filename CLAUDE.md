@@ -1173,8 +1173,21 @@ has native TypeScript support). Tests run via:
 
 The shims cover: `describe`, `test`, `beforeEach`, `afterEach`,
 `beforeAll`, `afterAll`, and `expect()` with matchers `toBe`, `toBeNull`,
-`toEqual`, `toHaveLength`, `toBeTruthy`, `toBeInstanceOf`, `not.toBeNull`,
-`not.toBe`, and `rejects.toBeInstanceOf`.
+`toEqual`, `toHaveLength`, `toBeTruthy`, `toBeUndefined`,
+`toBeGreaterThan`, `toBeInstanceOf`, `not.toBeNull`, `not.toBe`, and
+`rejects.toBeInstanceOf`.
+
+**The list is the contract, and Bun will not tell you when you leave
+it.** A matcher Bun has and the Node shim does not passes locally and
+fails only on `turbo:test:node` — in CI, on three Node versions at
+once. Adding one is a two-line change; reaching for one without adding
+it is a green local run that is not green.
+
+**`beforeAll` takes no timeout argument.** Bun accepts
+`beforeAll(fn, ms)` from 1.3 and the CI matrix still runs 1.2.23,
+where it is a hard error before any test executes. Set a slow
+package's budget in its `bunfig.toml` `[test] timeout` instead —
+`tests/conformance` already does.
 
 ### Workflow Commands
 
