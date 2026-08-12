@@ -83,6 +83,27 @@ function declareRelations(store: MockTupleStore, ...names: string[]): void {
   }
 }
 
+/**
+ * Define the types a fixture names as subjects, without declaring
+ * the relation the test is about.
+ *
+ * A type is defined by the restrictions that name it, so a fixture
+ * with no relation config at all — or one whose restrictions name
+ * only other types — defines no `user` either, and `check` now
+ * refuses the *subject* before reaching the gate under test. That
+ * ordering is upstream's: `ValidateUser` runs ahead of
+ * `ValidateObject` and `ValidateRelation`
+ * (`internal/validation/validation.go:18-32`). One config on a type
+ * nothing else mentions carries `makeConfig`'s whole restriction
+ * list and puts every subject type back, without adding a relation
+ * to the model under test.
+ */
+function declareSubjectTypes(store: MockTupleStore): void {
+  store.relationConfigs.push(
+    makeConfig({ objectType: "subject_types", relation: "declared" }),
+  );
+}
+
 describe("check algorithm", () => {
   let store: MockTupleStore;
 
@@ -1900,6 +1921,9 @@ describe("check algorithm", () => {
     };
 
     beforeEach(() => {
+      // The model has to define `user` for the test to be about the
+      // relation gate at all — the subject gate is checked first.
+      declareSubjectTypes(store);
       store.tuples.push(
         makeTuple({
           objectType: "doc",
@@ -2287,6 +2311,7 @@ describe("check algorithm", () => {
 
   describe("Contextual tuple validation", () => {
     test("throws when relation config is missing", async () => {
+      declareSubjectTypes(store);
       await expect(
         check(store, {
           objectType: "doc",
@@ -2421,6 +2446,152 @@ describe("check algorithm", () => {
           ],
         }),
       ).rejects.toBeInstanceOf(InvalidSubjectTypeError);
+    });
+  });
+
+  /**
+   * Upstream's `ValidateUser` refuses a `user` whose type the model
+   * does not define, before any resolution runs. tsfga read such a
+   * type as one no row mentions, so every read missed and the
+   * answer was `false` — a misspelled type indistinguishable from a
+   * real denial.
+   */
+  describe("An undefined subject type", () => {
+    beforeEach(() => {
+      store.relationConfigs.push(
+        makeConfig({
+          objectType: "doc",
+          relation: "viewer",
+          directlyAssignable: [{ type: "user" }, { type: "team" }],
+        }),
+      );
+      store.tuples.push(
+        makeTuple({
+          objectType: "doc",
+          objectId: "1",
+          relation: "viewer",
+          subjectType: "user",
+          subjectId: "alice",
+        }),
+      );
+    });
+
+    test("is refused rather than answered", async () => {
+      await expect(
+        check(store, {
+          objectType: "doc",
+          objectId: "1",
+          relation: "viewer",
+          subjectType: "no_such_type",
+          subjectId: "alice",
+        }),
+      ).rejects.toBeInstanceOf(InvalidSubjectTypeError);
+    });
+
+    test("names the cause, and no allow-list", async () => {
+      // `allowed` is empty because the restrictions were never
+      // consulted — the refusal is decided ahead of them.
+      const error = await check(store, {
+        objectType: "doc",
+        objectId: "1",
+        relation: "viewer",
+        subjectType: "no_such_type",
+        subjectId: "alice",
+      }).catch((raised: unknown) => raised);
+      expect(error).toBeInstanceOf(InvalidSubjectTypeError);
+      if (error instanceof InvalidSubjectTypeError) {
+        expect(error.cause).toBe("undefined subject type");
+        expect(error.allowed).toEqual([]);
+      }
+    });
+
+    test("is decided before the subject relation is resolved", async () => {
+      // Upstream reports the type first, and the order is
+      // observable: a userset subject of an undefined type is
+      // refused for its type, not for its relation.
+      const error = await check(store, {
+        objectType: "doc",
+        objectId: "1",
+        relation: "viewer",
+        subjectType: "no_such_type",
+        subjectId: "writers",
+        subjectRelation: "member",
+      }).catch((raised: unknown) => raised);
+      expect(error).toBeInstanceOf(InvalidSubjectTypeError);
+    });
+
+    test("listObjects inherits the same refusal", async () => {
+      await expect(
+        createTsfga(store).listObjects({
+          objectType: "doc",
+          relation: "viewer",
+          subjectType: "no_such_type",
+          subjectId: "alice",
+        }),
+      ).rejects.toBeInstanceOf(InvalidSubjectTypeError);
+    });
+
+    test("a defined type the relation does not admit still answers", async () => {
+      // The boundary the gate must not cross: `team` is defined —
+      // `doc.viewer` names it — and a `team` subject with no row
+      // simply does not hold. Definedness, not admissibility.
+      expect(
+        await check(store, {
+          objectType: "doc",
+          objectId: "1",
+          relation: "viewer",
+          subjectType: "team",
+          subjectId: "writers",
+        }),
+      ).toBe(false);
+    });
+
+    test("a type with no relations of its own is defined", async () => {
+      // `user` has no relation config anywhere in this fixture. It
+      // is defined by the restriction that admits it, and that is
+      // the half of the rule the whole corpus depends on.
+      expect(store.relationConfigs.some((c) => c.objectType === "user")).toBe(
+        false,
+      );
+      expect(
+        await check(store, {
+          objectType: "doc",
+          objectId: "1",
+          relation: "viewer",
+          subjectType: "user",
+          subjectId: "alice",
+        }),
+      ).toBe(true);
+    });
+
+    test("the store is asked about a type once per call", async () => {
+      // The gate runs per check, and `listObjects` runs one check
+      // per candidate. Without the scope's cache a thousand
+      // candidates would be a thousand identical reads.
+      store.tuples.push(
+        makeTuple({
+          objectType: "doc",
+          objectId: "2",
+          relation: "viewer",
+          subjectType: "user",
+          subjectId: "alice",
+        }),
+        makeTuple({
+          objectType: "doc",
+          objectId: "3",
+          relation: "viewer",
+          subjectType: "user",
+          subjectId: "alice",
+        }),
+      );
+      store.resetCounts();
+      await createTsfga(store).listObjects({
+        objectType: "doc",
+        relation: "viewer",
+        subjectType: "user",
+        subjectId: "alice",
+      });
+      expect(store.counts.hasTypeDefinition).toBe(1);
     });
   });
 
@@ -3155,6 +3326,10 @@ describe("reachability prune", () => {
   // nothing, so the node's own resolution raises as it always did.
   test("an unresolvable rewrite leaves the answer open", async () => {
     const store = new MockTupleStore();
+    // `viewer` admits only `bot`, so nothing else here defines the
+    // subject's type and the refusal under test would be preempted
+    // by the subject gate.
+    declareSubjectTypes(store);
     store.relationConfigs.push(
       makeConfig({
         objectType: "doc",
@@ -3195,6 +3370,15 @@ describe("reachability prune", () => {
         objectType: "folder",
         relation: "viewer",
         directlyAssignable: [{ type: "user" }],
+      }),
+      // `robot` is checked below as a subject the walk prunes. It
+      // has to be a type the model *defines* for that to be what
+      // the second assertion measures: an undefined one is refused
+      // instead, one gate earlier.
+      makeConfig({
+        objectType: "shed",
+        relation: "keeps",
+        directlyAssignable: [{ type: "robot" }],
       }),
     );
     store.tuples.push(

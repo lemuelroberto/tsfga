@@ -41,6 +41,12 @@ export class CachingTupleStore implements TupleStore {
     string,
     Promise<ConditionDefinition | null>
   >();
+  /**
+   * Type definitions, keyed by type name. The subject-type gate
+   * runs once per check, so a `listObjects` over a thousand
+   * candidates would otherwise issue a thousand identical reads.
+   */
+  private typeCache = new Map<string, Promise<boolean>>();
 
   constructor(private inner: TupleStore) {}
 
@@ -68,6 +74,16 @@ export class CachingTupleStore implements TupleStore {
       cached = this.inner.findConditionDefinition(name);
       this.conditionCache.set(name, cached);
       this.evictOnRejection(cached, this.conditionCache, name);
+    }
+    return cached;
+  }
+
+  hasTypeDefinition(type: string): Promise<boolean> {
+    let cached = this.typeCache.get(type);
+    if (!cached) {
+      cached = this.inner.hasTypeDefinition(type);
+      this.typeCache.set(type, cached);
+      this.evictOnRejection(cached, this.typeCache, type);
     }
     return cached;
   }
@@ -115,13 +131,21 @@ export class CachingTupleStore implements TupleStore {
     return this.inner.listCandidateObjectIds(objectType);
   }
 
+  // Both config writes clear the *whole* type cache rather than one
+  // entry: a config defines its own object type and every type its
+  // `directlyAssignable` names, and deleting one can undefine a
+  // type only the deleted config mentioned. The invalidation is
+  // per-key nowhere because the key set is not derivable from the
+  // write alone.
   upsertRelationConfig(config: RelationConfig): Promise<void> {
     this.configCache.get(config.objectType)?.delete(config.relation);
+    this.typeCache.clear();
     return this.inner.upsertRelationConfig(config);
   }
 
   deleteRelationConfig(objectType: string, relation: string): Promise<boolean> {
     this.configCache.get(objectType)?.delete(relation);
+    this.typeCache.clear();
     return this.inner.deleteRelationConfig(objectType, relation);
   }
 

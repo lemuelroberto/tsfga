@@ -139,6 +139,16 @@ export class ContextualTupleStore implements TupleStore {
     return this.inner.findConditionDefinition(name);
   }
 
+  /**
+   * Delegated, with nothing overlaid: a contextual tuple cannot
+   * define a type. They are validated against the relation configs
+   * that already exist, so one naming an undefined type is refused
+   * before it is ever read.
+   */
+  hasTypeDefinition(type: string): Promise<boolean> {
+    return this.inner.hasTypeDefinition(type);
+  }
+
   insertTuple(tuple: AddTupleRequest): Promise<boolean> {
     return this.inner.insertTuple(tuple);
   }

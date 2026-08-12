@@ -602,11 +602,18 @@ interface SubjectRequest {
  * — it is indistinguishable from a real one — so the shapes below
  * raise.
  *
- * The subject relation is also required to be **defined**. Probed
- * against v1.18.2: a check for `group:eng#nonexistent` is refused
- * with `relation 'group#nonexistent' not found`, and so is one for
- * a type the model does not define; a single config lookup covers
- * both, since a type with no relations has no config either.
+ * The subject **type** and, when one is given, the subject
+ * **relation** are both required to be defined. Probed against
+ * v1.18.2: a check for `group:eng#nonexistent` is refused with
+ * `relation 'group#nonexistent' not found`, and one naming a type
+ * the model does not define is refused with `type 'x' not found`.
+ * The type is asked about first, because upstream reports it first
+ * and a userset subject of an undefined type shows the difference.
+ *
+ * The type question needs `hasTypeDefinition`: a relation-config
+ * lookup cannot answer it, since a type with no relations of its
+ * own — the shape of nearly every subject type there is — has no
+ * config at all and is defined by the restrictions that admit it.
  *
  * `allowed` is empty on the error rather than the relation's
  * restriction list: nothing has read a relation config at this
@@ -644,17 +651,42 @@ export async function validateCheckSubject(
     refuse("a subject id may not contain ':' or '#'");
   }
 
-  if (subjectRelation === null) return;
+  if (subjectRelation !== null) {
+    if (subjectRelation === "") {
+      refuse("a subject relation may not be empty");
+    }
+    // `team:*#member` is not a userset, not a wildcard and not a
+    // concrete subject — the check-path half of the same rule the
+    // write path applies in `validateTupleWrite`.
+    if (request.subjectId === "*") {
+      refuse("a wildcard subject has no subject relation");
+    }
+  }
 
-  if (subjectRelation === "") {
-    refuse("a subject relation may not be empty");
+  // The type itself must be one the model defines. Upstream reports
+  // it here and nowhere else: `ValidateUser` runs `IsValidUser`
+  // first (every refusal above), then `TypeNotFoundError` on the
+  // `user` field's type, and only then resolves a userset's
+  // relation — an order that is observable, since a userset subject
+  // of an undefined type is refused for its *type*.
+  //
+  // Without it an undefined type was simply a type no row mentions,
+  // so every read missed and the answer was a plain `false` — a
+  // misspelled type reading exactly like a real denial. The
+  // ordinary "this relation does not admit that type" refusal is a
+  // different thing and keeps its own, causeless, error.
+  if (!(await store.hasTypeDefinition(request.subjectType))) {
+    throw new InvalidSubjectTypeError(
+      shape,
+      request.objectType,
+      request.relation,
+      [],
+      "undefined subject type",
+      `the model defines no type '${request.subjectType}'`,
+    );
   }
-  // `team:*#member` is not a userset, not a wildcard and not a
-  // concrete subject — the check-path half of the same rule the
-  // write path applies in `validateTupleWrite`.
-  if (request.subjectId === "*") {
-    refuse("a wildcard subject has no subject relation");
-  }
+
+  if (subjectRelation === null) return;
 
   const config = await store.findRelationConfig(
     request.subjectType,
@@ -1415,6 +1447,13 @@ async function checkBase(
       } catch (error) {
         // Held, not raised: whether it becomes the answer depends
         // on what the sibling rows do, which is not known yet.
+        //
+        // A userset row does not name the request subject — the
+        // subject reaches it, if at all, through the object it
+        // points at — so `listObjects` may defer it. See
+        // `onSubjectRow`. The `selfTuple` row, which *is* the
+        // subject, is answered above and never reaches here.
+        markScanReadError(error);
         stashError(usersetStash, error);
         return DENIED;
       }
@@ -1700,6 +1739,9 @@ async function resolveTupleset(
         satisfied.push(tuple);
       }
     } catch (error) {
+      // A tupleset row names the linked object, not the request
+      // subject, so `listObjects` may defer it — `onSubjectRow`.
+      markScanReadError(error);
       stashError(stash, error);
     }
   }
@@ -1733,6 +1775,54 @@ interface ErrorStash {
 /** Keep the first error only, so the raised one is deterministic. */
 function stashError(stash: ErrorStash, error: unknown): void {
   if (!stash.error) stash.error = { cause: error };
+}
+
+/**
+ * Condition errors raised on a read that does **not** name the
+ * request subject — a userset scan, a tupleset scan.
+ *
+ * A `WeakSet` rather than a field because the error classes live in
+ * `errors.ts` and this is not a property of the error, it is a
+ * property of the read that produced it: the same
+ * `ConditionEvaluationError` message can come from either side.
+ * Entries die with the error object.
+ */
+const scanReadConditionErrors = new WeakSet<object>();
+
+/** Record that this error came from a scan read, not a subject row. */
+function markScanReadError(error: unknown): void {
+  if (typeof error === "object" && error !== null) {
+    scanReadConditionErrors.add(error);
+  }
+}
+
+/**
+ * Whether a check error was raised while reading a row that names
+ * the **request subject** — `findCheckTuples`' direct row, its
+ * `subjectType:*` wildcard row, and the userset row that *is* the
+ * subject.
+ *
+ * `listObjects` needs the distinction and cannot see it: an error
+ * carries a condition name and a cause and nothing about the read
+ * behind it. Upstream reverse-expands from the subject and its
+ * first query is exactly "rows whose subject is this subject on
+ * this relation", so it always evaluates those conditions — an
+ * error on one of them is one upstream raises too, and the call
+ * must abort. An error on any other read is one upstream may never
+ * have materialised, and deferring it is the approximation
+ * `listObjects` makes.
+ *
+ * **True is the abort side and true is the default.** Only the scan
+ * sites in this module mark themselves, so an error from anywhere
+ * else — an adapter, a future read, an error class nobody
+ * considered — keeps today's behaviour of aborting the call.
+ */
+export function onSubjectRow(error: unknown): boolean {
+  return !(
+    typeof error === "object" &&
+    error !== null &&
+    scanReadConditionErrors.has(error)
+  );
 }
 
 /**

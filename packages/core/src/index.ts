@@ -324,6 +324,11 @@ export {
   InvalidSubjectTypeError,
   type RelationConfigDefect,
   RelationConfigNotFoundError,
+  // `InvalidSubjectTypeError.cause` is a union rather than one
+  // literal, so a caller switching on it needs the name — the same
+  // reason `ConditionalTupleCause` and `RelationConfigDefect` are
+  // exported beside it.
+  type SubjectDefect,
   TsfgaError,
 } from "./errors.ts";
 export type { TupleStore } from "./store-interface.ts";

@@ -171,6 +171,23 @@ export class MockTupleStore implements TupleStore {
     return this.conditionDefinitions.find((c) => c.name === name) ?? null;
   }
 
+  /**
+   * A type is defined when a config names it as its object type or
+   * when any config's `directlyAssignable` admits it — the second
+   * half being what makes a relationless `user` a defined type.
+   * Tuples say nothing: a row can outlive the config that admitted
+   * it, and a store full of rows for a type the model dropped must
+   * not report that type as defined.
+   */
+  async hasTypeDefinition(type: string): Promise<boolean> {
+    this.tally("hasTypeDefinition", type);
+    return this.relationConfigs.some(
+      (c) =>
+        c.objectType === type ||
+        c.directlyAssignable.some((r) => r.type === type),
+    );
+  }
+
   async insertTuple(tuple: AddTupleRequest): Promise<boolean> {
     this.tally("insertTuple");
     const idx = this.tuples.findIndex(

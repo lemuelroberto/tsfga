@@ -105,6 +105,68 @@ describe("KyselyTupleStore", () => {
       expect(config).toBeNull();
     });
 
+    /**
+     * The subject gate's read. Both arms matter: a type with
+     * relations of its own is defined by its configs, and a type
+     * with none — the shape of nearly every subject type there is —
+     * only by the restrictions that admit it.
+     */
+    describe("hasTypeDefinition", () => {
+      beforeEach(async () => {
+        await store.upsertRelationConfig({
+          objectType: "workspace",
+          relation: "member",
+          directlyAssignable: [
+            { type: "user" },
+            { type: "robot", wildcard: true },
+            { type: "team", relation: "member" },
+            { type: "vendor", condition: "weekday_only" },
+          ],
+          impliedBy: null,
+          computedUserset: null,
+          tupleToUserset: null,
+          excludedBy: null,
+          intersection: null,
+        });
+      });
+
+      test("a type with a relation config of its own", async () => {
+        expect(await store.hasTypeDefinition("workspace")).toBe(true);
+      });
+
+      test("a type only a restriction names", async () => {
+        expect(await store.hasTypeDefinition("user")).toBe(true);
+      });
+
+      test("every restriction shape counts, not just the bare one", async () => {
+        // The containment probe is `[{"type": t}]`, which every
+        // restriction naming `t` contains — wildcard, userset and
+        // conditioned alike.
+        expect(await store.hasTypeDefinition("robot")).toBe(true);
+        expect(await store.hasTypeDefinition("team")).toBe(true);
+        expect(await store.hasTypeDefinition("vendor")).toBe(true);
+      });
+
+      test("a type nothing names", async () => {
+        expect(await store.hasTypeDefinition("no_such_type")).toBe(false);
+      });
+
+      test("a type only a stored tuple names", async () => {
+        // Rows say nothing about the model: one can outlive the
+        // config that admitted it, and a dropped type must not look
+        // defined for as long as its rows survive.
+        await store.insertTuple({
+          objectType: "workspace",
+          objectId: uuid1,
+          relation: "member",
+          subjectType: "ghost",
+          subjectId: uuid2,
+        });
+
+        expect(await store.hasTypeDefinition("ghost")).toBe(false);
+      });
+    });
+
     test("upsertRelationConfig updates existing", async () => {
       await store.upsertRelationConfig({
         objectType: "workspace",

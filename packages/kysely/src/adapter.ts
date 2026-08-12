@@ -240,6 +240,48 @@ export class KyselyTupleStore implements TupleStore {
   }
 
   /**
+   * Whether any relation config defines this type.
+   *
+   * Two arms, one scan: the type is an object type of some config,
+   * or some config's `directly_assignable` admits it. The second
+   * arm is a jsonb containment probe — `[{"type": "user"}]` is
+   * contained by `[{"type": "user", "wildcard": true}]` and by
+   * every other restriction shape naming that type, so a single
+   * `@>` covers direct, wildcard, userset and conditioned
+   * restrictions alike.
+   *
+   * `tsfga.tuples` is deliberately not consulted: a row can outlive
+   * the config that admitted it, and reading definedness off the
+   * data would make a dropped type look defined for exactly as long
+   * as its rows survive.
+   *
+   * No index is added for it. `tsfga.relation_configs` holds one
+   * row per relation of the model — hundreds at most — and the
+   * scope's caching store asks once per type per call, so the
+   * sequential scan an `EXPLAIN` shows is cheaper than a GIN index
+   * to maintain on every config write.
+   */
+  async hasTypeDefinition(type: string): Promise<boolean> {
+    const row = await this.db
+      .selectFrom("tsfga.relation_configs")
+      .select("id")
+      .where((eb) =>
+        eb.or([
+          eb("object_type", "=", type),
+          eb(
+            "directly_assignable",
+            "@>",
+            sql<Json>`${JSON.stringify([{ type }])}::jsonb`,
+          ),
+        ]),
+      )
+      .limit(1)
+      .executeTakeFirst();
+
+    return row !== undefined;
+  }
+
+  /**
    * Insert a tuple, reporting whether it was new.
    *
    * `doNothing()` rather than `doUpdateSet()`: the natural key

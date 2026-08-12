@@ -66,6 +66,38 @@ export interface TupleStore {
   /** Get a condition definition by name */
   findConditionDefinition(name: string): Promise<ConditionDefinition | null>;
 
+  /**
+   * Whether the model defines this type at all.
+   *
+   * A type is defined when some relation config names it as its
+   * `objectType`, **or** when some config's `directlyAssignable`
+   * names it as a `TypeRestriction` type. The second half is not an
+   * optimisation: a type with no relations of its own — upstream's
+   * `type user` — has no relation config anywhere, and is defined
+   * only by the restrictions that admit it. Answering the first
+   * half alone refuses every check whose subject is such a type,
+   * which is most of them.
+   *
+   * Asked once per check, before any of it is resolved: a subject
+   * naming a type the model does not define is refused rather than
+   * answered `false`, which is upstream's `ValidateUser`
+   * (`internal/validation/validation.go:362`). The scope's caching
+   * store memoises it per type, so a `listObjects` or `checkMany`
+   * call pays for one type once.
+   *
+   * Deliberately narrow. `listDefinedTypes()` is the shape a
+   * whole-model validator will want and it puts a table scan on the
+   * check path; this answers the only question the check path asks,
+   * and the broad read can be added beside it when there is a
+   * caller for it.
+   *
+   * The two wrong answers are not symmetric. `true` for an
+   * undefined type loses one refusal; `false` for a defined type
+   * refuses checks the model admits, across the board. A store that
+   * cannot decide should answer `true`.
+   */
+  hasTypeDefinition(type: string): Promise<boolean>;
+
   // === Write ===
 
   /**

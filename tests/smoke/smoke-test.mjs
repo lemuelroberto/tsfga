@@ -57,6 +57,9 @@ const mockStore = {
     intersection: null,
   }),
   findConditionDefinition: async () => null,
+  // `true` is the interface's answer for a store that cannot
+  // decide, which is what this stub is.
+  hasTypeDefinition: async () => true,
   insertTuple: async () => true,
   deleteTuple: async () => false,
   listCandidateObjectIds: async () => [],

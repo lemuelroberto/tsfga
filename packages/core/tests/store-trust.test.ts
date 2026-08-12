@@ -99,6 +99,17 @@ describe("a store cannot widen what the model admits", () => {
   function checkWith(config: Partial<RelationConfig>) {
     store.relationConfigs.push(
       makeConfig({ objectType: "doc", relation: "viewer", ...config }),
+      // `user` is a defined type of this model even where
+      // `doc.viewer` refuses it: definedness comes from the configs
+      // that name a type, and a relation admitting only `team`
+      // names none. Without this the subject is refused one gate
+      // earlier and the clamp under test never runs — the check
+      // must reach the store and *then* discard the row.
+      makeConfig({
+        objectType: "subject_types",
+        relation: "declared",
+        directlyAssignable: [{ type: "user" }],
+      }),
     );
     return check(store, request);
   }

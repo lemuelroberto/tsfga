@@ -13,6 +13,7 @@ import {
 } from "./b1-corpus.ts";
 import {
   expectConfigsMatchModel,
+  expectPinnedDivergence,
   type FixtureRecord,
   recordFixture,
 } from "./helpers/conformance.ts";
@@ -605,15 +606,10 @@ const STAGES: Stage[] = [
         subjectId: u("usersets_userset_to_computed_wild/utcw_valid"),
         expected: true,
       },
-      {
-        name: "usersets_userset_to_computed_wild/invalid_user_type",
-        objectType: UU,
-        objectId: u("usersets_userset_to_computed_wild/utcw_1"),
-        relation: "userset_to_computed_wild",
-        subjectType: TT,
-        subjectId: u("usersets_userset_to_computed_wild/utcw_invalid"),
-        expected: false,
-      },
+      // `usersets_userset_to_computed_wild/invalid_user_type` is
+      // not here. It is the one case in this corpus tsfga does not
+      // answer, and it is pinned as a divergence at the bottom of
+      // this file rather than transcribed.
       {
         name: "usersets_userset_to_computed_wild/invalid_object",
         objectType: UU,
@@ -1274,6 +1270,52 @@ describe("B1 userset corpus — the direct userset arms", () => {
   });
 
   runStages(STAGES, () => corpus);
+
+  /**
+   * Upstream's `usersets_userset_to_computed_wild/invalid_user_type`,
+   * transcribed as a **pinned divergence** instead of as a case.
+   *
+   * The subject's type is `ttus_b1a`, which the model declares
+   * (`b1-userset-matrix/model.dsl:47`) with no relations, and which
+   * no other type's restriction names. Upstream reads the model
+   * document, sees the type definition, and answers `false`. tsfga
+   * stores a model as relation configs and nothing else, so a type
+   * with no config of its own and no restriction naming it leaves
+   * **no record in the store at all** — `hasTypeDefinition` cannot
+   * see it, and the subject gate added for issue 261 refuses a
+   * check upstream answers.
+   *
+   * This cell comes from upstream's own corpus, so pinning it is a
+   * knowing divergence from an upstream expectation rather than a
+   * tsfga preference. It is kept because both directions of the
+   * trade deny rather than grant, and the shape it costs — a model
+   * declaring a type nothing else in it references, checked as a
+   * subject — is far rarer than the shape it buys: a misspelled or
+   * since-removed subject type answering a plain `false` that is
+   * indistinguishable from a real denial.
+   *
+   * It closes when tsfga records a model as a document rather than
+   * as per-relation configs, which is where `listDefinedTypes()`
+   * will sit. Round-3 work; until then this test is the one place
+   * the residual is visible.
+   */
+  test("ISSUE-261: a declared type no restriction names is refused", async () => {
+    const store = corpus.stores.get("usersets_userset_to_computed_wild");
+    if (!store) throw new Error("No store for the stage");
+    await expectPinnedDivergence(
+      store.storeId,
+      store.authorizationModelId,
+      corpus.tsfgaClient,
+      {
+        objectType: UU,
+        objectId: u("usersets_userset_to_computed_wild/utcw_1"),
+        relation: "userset_to_computed_wild",
+        subjectType: TT,
+        subjectId: u("usersets_userset_to_computed_wild/utcw_invalid"),
+      },
+      { openfga: false, tsfga: "refused" },
+    );
+  });
 
   test("the configs say what the model says", () => {
     expectConfigsMatchModel("./b1-userset-matrix/model.dsl", fixture, {
