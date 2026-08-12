@@ -90,6 +90,7 @@ tsfga/
 │       │       ├── 003-drop-unused-indexes.ts
 │       │       ├── 004-drop-metadata-columns.ts
 │       │       ├── 005-type-restrictions.ts
+│       │       ├── 006-wildcard-subject.ts
 │       │       └── index.ts         migrationProvider (subpath export)
 │       ├── tests/
 │       │   ├── kysely-adapter.test.ts
@@ -313,8 +314,23 @@ filtered in core for the same reason.
 There is no `listDirectSubjects`: it was a strict subset of
 `findTuplesByRelation`, which `listSubjects` now reads through.
 
+**A store declares which ids it can hold**, and this is the one
+place core takes a store at its word. `idDomain` is required —
+`OPAQUE_IDS` for a store whose ids are strings,
+`CANONICAL_UUID_IDS` for one keeping them in a `uuid` column — and
+core refuses an id outside it with `IdDomainError` at the request
+boundary. There is no clamp because a declaration can only narrow:
+declaring too wide gets the driver's own error back, declaring too
+narrow refuses requests the store could have served, and neither
+grants.
+
 ```typescript
 export interface TupleStore {
+  /** Which ids this store can hold. Required: absent-means-opaque
+   *  would compile silently for the population that most needs to
+   *  be told. */
+  readonly idDomain: IdDomain;
+
   // === Read ===
 
   /**
@@ -523,8 +539,17 @@ decision is per read, not per node.
 ## Error Types (`packages/core/src/errors.ts`)
 
 Every error the library raises on the check and write paths
-extends `TsfgaError`. (The Kysely adapter still surfaces the
-driver's own error for a malformed id — a known, scoped gap.)
+extends `TsfgaError`, with no exception left: the malformed id
+that used to reach the Kysely driver is refused by
+`validateIdDomain` before any query.
+
+One of them is **not a parity claim**. `IdDomainError` refuses an
+id OpenFGA accepts, because the store said it cannot hold it, and
+it carries a rule id from `CAPABILITY_RULE_IDS` with an entry in
+`packages/core/capability-refusals.json` rather than a cause in
+the upstream inventory. It runs after every upstream rule about
+the request's own strings and before the first rule about the
+model, so a malformed id still reports the portable refusal.
 
 | Class | Raised when |
 |---|---|
@@ -541,7 +566,8 @@ driver's own error for a malformed id — a known, scoped gap.)
 | `DuplicateTupleError` | `addTuple` is given an edge already stored -- upstream's `on_duplicate` default |
 | `InvalidObjectError` | the object half of a request or a write is one no row may carry |
 | `DepthExceededError` | the recursion budget is exhausted |
-| `InvalidStoredDataError` | a JSON column holds a shape the adapter cannot read |
+| `InvalidStoredDataError` | a JSON column, or the `subject_id`/`subject_wildcard` pair, holds a shape the adapter cannot read |
+| `IdDomainError` | the id is one the store's declared `idDomain` cannot hold — the only **capability refusal** in this table |
 
 **`InvalidSubjectTypeError` does not name the allow-list.** The
 message names the offending subject and the relation, as OpenFGA
@@ -577,6 +603,16 @@ removes the unreachable `metadata` column from `tsfga.tuples` and
 single `directly_assignable` (jsonb, NOT NULL) holding structured
 type restrictions. Uses Kysely's DDL schema builder API where
 possible; raw `sql` only for indexes the builder cannot express.
+
+`006-wildcard-subject` gives the typed wildcard a column of its
+own — `subject_wildcard boolean`, with `subject_id` NULL on those
+rows — so no id value is reserved, and recreates
+`idx_tuples_unique` with `NULLS NOT DISTINCT` (PostgreSQL 15
+floor). It carries **no type change**: the two migrations that
+widened the id columns to `text` were deleted rather than
+superseded, so `001`'s `uuid NOT NULL` is what a database has.
+Its `down` refuses rather than merging a nil-UUID subject back
+into the wildcard's slot.
 
 `005` is destructive and deliberately not data-preserving: no
 honest conversion exists, and a guessed one would invent a model
@@ -669,10 +705,25 @@ A `Transaction<DB>` is a subtype of `Kysely<DB>`, so a store — and
 a whole client — can be scoped to a transaction with no extra API.
 `withoutPlugins()` preserves that.
 
-**UUID mapping:** The DB stores `object_id` and `subject_id` as `uuid`. The
-`TupleStore` interface uses `string`. The adapter handles conversion in both
-directions. Callers pass UUID-formatted strings
-(e.g., `"550e8400-e29b-41d4-a716-446655440000"`).
+**UUID mapping:** The DB stores `object_id` and `subject_id` as
+`uuid`, so `KyselyTupleStore` declares `CANONICAL_UUID_IDS` and
+core refuses every other id at the request boundary. The domain is
+**narrower than PostgreSQL's own `uuid` input grammar**, which is
+many-to-one: five spellings of one value store as one row and are
+five distinct ids upstream, so admitting more than the canonical
+lower-case hyphenated spelling would let a grant written for one
+answer `true` for another. Syntax only — no version or variant
+nibble — because the nil UUID must stay an ordinary id.
+
+`user:alice` is an ordinary subject upstream and this adapter
+refuses it, permanently. That is a documented design limit, pinned
+in `tests/conformance/b6-id-domain.test.ts` and `c2-ids.test.ts`.
+
+**The typed wildcard is not an id.** `subject_wildcard boolean`
+carries the shape and `subject_id` is NULL on those rows, so no id
+value is reserved. `@tsfga/core` still spells it `subjectId: "*"`;
+the adapter maps it in both directions and validates the pair on
+read.
 
 **DML pattern:** Always use Kysely's type-safe query builder for adapter
 methods. Use `onConflict().expression(sql`...`)` (without outer parens) for
