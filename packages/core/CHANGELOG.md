@@ -44,8 +44,59 @@ releases may contain breaking changes).
   rest. `docs/cel-js/` carries every measurement, the retired
   suites, and what a future cel-js fork would have to fix.
 
-- The RE2 pattern translator, the AST source-splice, and the
-  `tsfga_re2_matches` overloads are unreachable as of this change.
+- **BREAKING: the CEL compatibility layer is retired.** Every
+  overload `conditions.ts` registered on the evaluating
+  environment is deleted, with the RE2 pattern translator and the
+  AST source-splicer that routed calls onto them — about 1500
+  lines. tsfga's condition dialect is now exactly
+  `@marcbachmann/cel-js`'s, and `CLAUDE.md`'s *CEL is bounded by
+  cel-js* says why it stays that way. Nothing is registered on the
+  evaluating environment any more.
+
+  **Read the granting direction first**, because it is the half a
+  consumer cannot detect. Four conversions that used to be
+  range-checked here are not any more, and cel-js does not check
+  them: `int(x)` on `±1e19` and `double(s)` on `"±1e400"` now
+  answer `true` where OpenFGA refuses the check with `integer
+  overflow` / `type conversion error`. If a condition of yours
+  guards on a magnitude near the int64 or float64 bounds, it is
+  now a grant rather than an error.
+
+  **What stops answering**, which is the loud half. Five overloads
+  cel-go declares and cel-js does not were supplied here and are
+  gone: `int(uint)`, `int(duration)`, `int(timestamp)`,
+  `string(duration)` and `string(timestamp)`. The definition still
+  *writes* — refusing it would refuse a model upstream accepts —
+  and every check that evaluates the call raises
+  `ConditionEvaluationError`. They short-circuit like any cel-js
+  expression, so `int(d) > 3600 || role == 'admin'` still answers.
+
+  **One divergence closes in tsfga's favour:** `double('1e-400')`
+  underflows to zero in Go and upstream answers `true`. The
+  deleted overload classed a string landing on zero as a range
+  error and refused it, so the comment in the source asserting
+  upstream reports a range error there was wrong against the live
+  container. Both engines answer `true` now.
+
+  **One new granting cell is created rather than removed**, and it
+  is a write-moment one. The kept write-time type gate was
+  calibrated against the splicer's output; reading the author's
+  own spelling instead, it would have refused all five overloads
+  above *at write* — more refusing than bare cel-js, the dialect
+  this retreats to, and refusing models OpenFGA stores. So a
+  verdict of the form `found no matching overload for 'f(T)'` is
+  now no verdict. cel-js reports a call **neither** engine
+  overloads the same way, so `int(b)` on a `bool`, `duration(i)`
+  on an `int` and `b.size()` on a `bool` are definitions tsfga
+  stores and OpenFGA refuses the model for. The check refuses on
+  both sides, so nothing grants on one. Operator verdicts
+  (`no such overload: int != string`) and undeclared references
+  are unaffected, which is where all three cells the gate exists
+  to close live.
+
+  Every row above is pinned two-sided in `tests/conformance/`, and
+  `packages/core/README.md` now has exactly one CEL section
+  carrying the whole table.
 
 ### Changed
 
@@ -165,15 +216,23 @@ OpenFGA — but a consumer relying on the old answers will see it.
 
 ### Documentation
 
+- **`packages/core/README.md` has exactly one CEL section.** Four
+  scattered ones — "Write-time condition validation", "`uint`
+  (closed)", "Known divergence: unchecked CEL operators" and
+  "Known divergence: sub-millisecond timestamps" — are folded into
+  `## Conditions`, which opens with `matches()` being unsupported
+  and what to write instead, and carries the whole measured
+  divergence table grouped by direction with granting first. The
+  paragraph claiming compilation is parse-only is deleted: it had
+  been stale since the write-time type gate landed.
 - **The `uint` divergence is closed and its section rewritten.**
   The representation trade it described was taken: both its cells
   now agree.
 - **The claim that integer overflow agrees was false and is
   corrected.** cel-js range-checks binary `+`, `-` and `*` on ints
-  and `-` on uints, and nothing else; four operations upstream
-  checks and cel-js does not are now pinned two-sided under
-  "Known divergence: unchecked CEL operators", together with the
-  UTF-16 string-ordering cell.
+  and `-` on uints, and nothing else; every operation upstream
+  checks and cel-js does not is now pinned two-sided, together
+  with the UTF-16 string-ordering cell.
 - The depth-boundary divergence gains its `listObjects`
   amplification, and `listObjects` past the budget is documented
   as a divergence of its own.

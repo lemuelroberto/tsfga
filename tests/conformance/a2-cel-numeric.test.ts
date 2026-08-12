@@ -34,21 +34,31 @@ import {
  *
  * cel-js range-checks binary `+`, `-` and `*` on ints and `-` on
  * uints, and nothing else, where cel-go checks every arithmetic
- * and conversion overload. The gap between the two used to run
- * across seven cells; five of them are closed here and four
- * remain pinned, and the line between the two groups is not about
- * how important the cell is — it is about whether the operation
- * has a *name*.
+ * and conversion overload. Every cell of that gap is now pinned.
  *
- * cel-js refuses to replace a built-in overload, so the only way
- * to reach one is to stop handing it the author's expression:
- * `conditions.ts` renames `int(…)`, `double(…)` and `x.matches(…)`
- * onto implementations of its own. That works for a named call
- * and does not work for an operator, because a renamed operator is
- * type-blind at rewrite time and its replacement would have to
- * reimplement CEL's arithmetic for every operand type. So
- * `int(1e19)` and `double('1e400')` are fixed while `-n`,
- * `n / -1`, duration `±` and string `<` are pinned.
+ * **Four of them used to be closed and are not any more.**
+ * `int()` and `double()` are named calls, so the retired
+ * compatibility layer could rename them onto range-checked
+ * implementations of tsfga's own — cel-js refuses to *replace* a
+ * built-in overload, and renaming the call was the way around
+ * that. Renaming a call means rewriting the author's expression
+ * before parsing it, which is a second CEL implementation in the
+ * path of every decision; `CLAUDE.md`'s *CEL is bounded by cel-js*
+ * says why that is no longer done. So `int(1e19)` and
+ * `double('1e400')` join `-n`, `n / -1`, duration `±` and string
+ * `<` on the pinned side, in the same granting direction: upstream
+ * declines to answer and tsfga returns `true`.
+ *
+ * `string(duration)` and `string(timestamp)` moved the same way,
+ * in the other direction — they were overloads this module
+ * supplied and cel-js has never had, so they are now check-time
+ * refusals (ledger rows R4 and R5).
+ *
+ * One divergence closed rather than opened, and it is recorded
+ * here as `dbl_of_str_zero_a2`: `double('1e-400')` underflows to
+ * zero in Go and the deleted overload read that as a range error,
+ * so tsfga *refused* a check upstream answers `true`. Both answer
+ * `true` now.
  *
  * The `uint` rows moved the other way: a `uint` parameter used to
  * be carried as CEL's `int`, bounding its arithmetic at int64, and
@@ -75,6 +85,8 @@ const CELLS: ReadonlyArray<
   ["int_of_dbl_a2", { x: "double" }, "int(x) > 0"],
   ["int_of_dbl_neg_a2", { x: "double" }, "int(x) < 0"],
   ["dbl_of_str_a2", { s: "string" }, "double(s) > 0.0"],
+  ["dbl_of_str_neg_a2", { s: "string" }, "double(s) < 0.0"],
+  ["dbl_of_str_zero_a2", { s: "string" }, "double(s) == 0.0"],
   ["dur_plus_a2", { d: "duration" }, "d + duration('2400000h') > d"],
   ["dur_minus_a2", { d: "duration" }, "duration('-2400000h') - d < d"],
   ["uint_add_a2", { n: "uint" }, "n + 1u > 0u"],
@@ -187,17 +199,48 @@ describe("CEL arithmetic and conversion conformance", () => {
       expected,
     );
 
-  describe("overflow in a conversion, which is checked", () => {
-    test("int() of a double past int64", async () => {
-      await check("int_of_dbl_a2", { x: 1e19 }, "refused");
+  /**
+   * Ledger mechanism M6: a magnitude past a range check cel-go
+   * applies and cel-js does not. Both ends of both conversions,
+   * because a check with two sides is two measurements — the
+   * negative ends were missing from an earlier ledger and are the
+   * reason this block lists four cells rather than two.
+   *
+   * Measured against v1.18.2: upstream stores the model and then
+   * refuses the check with `integer overflow` / `type conversion
+   * error`, and tsfga answers `true`.
+   */
+  describe("GAP-023: overflow in a conversion, which cel-js skips", () => {
+    test("GAP-023: int() of a double past int64", async () => {
+      await pinned(
+        "int_of_dbl_a2",
+        { x: 1e19 },
+        { openfga: "refused", tsfga: true },
+      );
     });
 
-    test("int() of a double past int64's floor", async () => {
-      await check("int_of_dbl_neg_a2", { x: -1e19 }, "refused");
+    test("GAP-023: int() of a double past int64's floor", async () => {
+      await pinned(
+        "int_of_dbl_neg_a2",
+        { x: -1e19 },
+        { openfga: "refused", tsfga: true },
+      );
     });
 
-    test("double() of a string past float64", async () => {
-      await check("dbl_of_str_a2", { s: "1e400" }, "refused");
+    test("GAP-023: double() of a string past float64", async () => {
+      await pinned(
+        "dbl_of_str_a2",
+        { s: "1e400" },
+        { openfga: "refused", tsfga: true },
+      );
+    });
+
+    test("GAP-023: double() of a string past float64's floor", async () => {
+      await pinned(
+        "dbl_of_str_neg_a2",
+        { s: "-1e400" },
+        { openfga: "refused", tsfga: true },
+      );
     });
   });
 
@@ -264,13 +307,35 @@ describe("CEL arithmetic and conversion conformance", () => {
     });
   });
 
+  /**
+   * Ledger rows R4 and R5, the refusing direction. cel-go declares
+   * `string(duration)` and `string(timestamp)`; cel-js declares
+   * neither, and the overloads that used to supply them here were
+   * tsfga's own. The write still succeeds on both sides — see the
+   * `d1-cel-gate` cells that hold that line — and only the check
+   * parts company.
+   */
   describe("string() of a duration or a timestamp", () => {
-    test("string(duration)", async () => {
-      await check("str_of_dur_a2", { d: "1h" }, true);
+    test("string(duration) has no cel-js overload", async () => {
+      await pinned(
+        "str_of_dur_a2",
+        { d: "1h" },
+        {
+          openfga: true,
+          tsfga: "refused",
+        },
+      );
     });
 
-    test("string(timestamp)", async () => {
-      await check("str_of_ts_a2", { t: "2026-01-02T00:00:00Z" }, true);
+    test("string(timestamp) has no cel-js overload", async () => {
+      await pinned(
+        "str_of_ts_a2",
+        { t: "2026-01-02T00:00:00Z" },
+        {
+          openfga: true,
+          tsfga: "refused",
+        },
+      );
     });
   });
 
@@ -319,6 +384,17 @@ describe("CEL arithmetic and conversion conformance", () => {
 
     test("string() of a double agrees", async () => {
       await check("str_of_dbl_a2", { x: 1.5 }, true);
+    });
+
+    /**
+     * The one divergence the retirement *closed*. Go's
+     * `ParseFloat` reads `1e-400` as an underflow to zero and
+     * answers; the deleted `double(string)` overload classed a
+     * string landing on zero as a range error and refused, which
+     * was a refusing divergence dressed as a range check.
+     */
+    test("double() of a string underflowing to zero agrees", async () => {
+      await check("dbl_of_str_zero_a2", { s: "1e-400" }, true);
     });
 
     test("a timestamp past year 9999 saturates the same way", async () => {

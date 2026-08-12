@@ -10,6 +10,8 @@ type doc_a2
     define int_of_dbl_a2: [user_a2 with int_of_dbl_a2_c]
     define int_of_dbl_neg_a2: [user_a2 with int_of_dbl_neg_a2_c]
     define dbl_of_str_a2: [user_a2 with dbl_of_str_a2_c]
+    define dbl_of_str_neg_a2: [user_a2 with dbl_of_str_neg_a2_c]
+    define dbl_of_str_zero_a2: [user_a2 with dbl_of_str_zero_a2_c]
     define dur_plus_a2: [user_a2 with dur_plus_a2_c]
     define dur_minus_a2: [user_a2 with dur_minus_a2_c]
     define uint_add_a2: [user_a2 with uint_add_a2_c]
@@ -42,6 +44,14 @@ condition int_of_dbl_neg_a2_c(x: double) {
 
 condition dbl_of_str_a2_c(s: string) {
   double(s) > 0.0
+}
+
+condition dbl_of_str_neg_a2_c(s: string) {
+  double(s) < 0.0
+}
+
+condition dbl_of_str_zero_a2_c(s: string) {
+  double(s) == 0.0
 }
 
 condition dur_plus_a2_c(d: duration) {

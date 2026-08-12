@@ -11,6 +11,7 @@ import {
   type CheckOutcome,
   expectConfigsMatchModel,
   expectConformance,
+  expectPinnedDivergence,
   type FixtureRecord,
   recordFixture,
 } from "./helpers/conformance.ts";
@@ -34,15 +35,22 @@ import {
  * `ipaddress` library and nothing else
  * (`internal/condition/condition.go`), so cel-go's
  * `common/stdlib/standard.go` is the exact list a condition may
- * name. `int(timestamp)` and `int(duration)` have no cel-js
- * counterpart — upstream reads them as epoch seconds and as
- * nanoseconds — and both are reachable from a model OpenFGA
- * accepts.
+ * name. `int(timestamp)`, `int(duration)`, `int(uint)` and
+ * `string(timestamp)` have no cel-js counterpart, and all four are
+ * reachable from a model OpenFGA accepts.
  *
  * Every cell here is in the outage direction — upstream answers
  * and tsfga refuses — which makes them the safe kind of
  * divergence, but a condition that stops answering revokes access
  * as surely as one that answers `false`.
+ *
+ * **The four gaps used to be two.** `conditions.ts` supplied the
+ * missing overloads itself, through a replacement `int()` and a
+ * `string(duration)` / `string(timestamp)` pair registered on the
+ * evaluating environment. Those are gone with the rest of the
+ * compatibility layer, so what were agreement cells are now pinned
+ * divergences — ledger rows R1 through R5. The write still
+ * succeeds on both sides; only the check parts company.
  *
  * **This file used to carry the two `matches` spellings as well**,
  * including GAP-380, the finding that the global `matches(s, p)`
@@ -160,33 +168,52 @@ describe("CEL standard library conformance", () => {
       expected,
     );
 
+  const pin = (relation: string, context: Record<string, unknown>) =>
+    expectPinnedDivergence(
+      storeId,
+      modelId,
+      tsfgaClient,
+      {
+        objectType: "doc_c5",
+        objectId: uuid("doc"),
+        relation,
+        subjectType: "user_c5",
+        subjectId: uuid("alice"),
+        context,
+      },
+      { openfga: true, tsfga: "refused" },
+    );
+
   /**
    * `int()` has six overloads upstream — int, double, string,
-   * uint, **duration** and **timestamp**. cel-js ships three, and
-   * `conditions.ts` replaces the function wholesale with four
-   * (adding `int(uint)` and the range checks), so the two upstream
-   * reads as a unit conversion are absent from both.
+   * uint, **duration** and **timestamp**. cel-js ships three, so
+   * three of the six have no implementation to reach.
    *
    * `int(duration)` is nanoseconds and `int(timestamp)` is epoch
    * seconds, which is how a condition spells "how long" or "when"
    * as a number — the arithmetic a business-hours or expiry rule
-   * is written in.
+   * is written in. `int(uint)` is the one a `uint` parameter runs
+   * into first, because the carrier that makes `type(n) == uint`
+   * true is what leaves the `int` overload unmatched.
+   *
+   * Measured against v1.18.2: upstream answers `true` for all
+   * three and tsfga raises `ConditionEvaluationError`.
    */
-  describe("GAP-382: int() of a timestamp or a duration", () => {
-    test("GAP-382: int(timestamp) is epoch seconds", async () => {
-      await check("it_c5", { t: "2026-01-01T00:00:00Z" }, true);
+  describe("GAP-382: int() of a timestamp, a duration or a uint", () => {
+    test("GAP-382: int(timestamp) is epoch seconds upstream", async () => {
+      await pin("it_c5", { t: "2026-01-01T00:00:00Z" });
     });
 
-    test("GAP-382: int(duration) is nanoseconds", async () => {
-      await check("id_c5", { d: "1h" }, true);
+    test("GAP-382: int(duration) is nanoseconds upstream", async () => {
+      await pin("id_c5", { d: "1h" });
     });
 
     test("int(string) still agrees", async () => {
       await check("is_c5", { s: "7" }, true);
     });
 
-    test("int(uint) still agrees", async () => {
-      await check("iu_c5", { n: 7 }, true);
+    test("int(uint) has no cel-js overload", async () => {
+      await pin("iu_c5", { n: 7 });
     });
   });
 
@@ -196,8 +223,12 @@ describe("CEL standard library conformance", () => {
    * two gaps above cannot quietly break a neighbour.
    */
   describe("the rest of the standard library agrees", () => {
-    test("string(timestamp)", async () => {
-      await check("st_c5", { t: "2026-01-01T00:00:00Z" }, true);
+    // Ledger row R5. `string(timestamp)` and `string(duration)`
+    // were registered here rather than supplied by cel-js, so the
+    // agreement they used to record was tsfga's own formatting
+    // agreeing with Go's, not the two libraries agreeing.
+    test("string(timestamp) has no cel-js overload", async () => {
+      await pin("st_c5", { t: "2026-01-01T00:00:00Z" });
     });
 
     test("timestamp(int) is epoch seconds on both", async () => {

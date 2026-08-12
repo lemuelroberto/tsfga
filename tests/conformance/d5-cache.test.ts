@@ -57,6 +57,9 @@ const DOC1 = "00000000-0000-4000-d560-000000010002";
 
 const EXPRESSION = "p.size() > 0";
 
+/** A second shared expression, for the verdict-caching cell. */
+const COMPARISON = "q > 0";
+
 const CONDITIONS = [
   { name: "size_str_d5", parameters: { p: "string" } },
   { name: "size_list_d5", parameters: { p: "list<string>" } },
@@ -197,15 +200,31 @@ describe("D5 condition caches", () => {
     }
 
     test("a warm cache entry does not excuse a failing type check", async () => {
-      // `p.size() > 0` is already compiled and cached by the three
-      // definitions above. A fourth declaring `p` as a `bool` must
+      // `q > 0` is compiled and cached by the `int` definition, so
+      // the `string` one that follows shares its entry. It must
       // still be refused: the type check belongs to the
       // definition, and reading the cached verdict would accept a
       // condition upstream refuses the whole model for.
+      //
+      // This used to be spelled with `p.size() > 0` on a `bool`,
+      // which is a shorter route to the same point but no longer
+      // reaches it: cel-js reports a `size()` with no matching
+      // overload the same way it reports the five conversions
+      // cel-go declares and it does not, and `typeVerdict`
+      // suppresses that whole family. `d1-cel-gate` pins the
+      // divergence that leaves (ledger mechanism M7). A comparison
+      // is a cel-js *operator*, which the type gate still enforces
+      // and which is where the three cells §4.2 credits it with
+      // live.
+      await client.writeConditionDefinition({
+        name: "cmp_int_d5",
+        expression: COMPARISON,
+        parameters: { q: "int" },
+      });
       const write = client.writeConditionDefinition({
-        name: "size_bool_d5",
-        expression: EXPRESSION,
-        parameters: { p: "bool" },
+        name: "cmp_str_d5",
+        expression: COMPARISON,
+        parameters: { q: "string" },
       });
       await expect(write).rejects.toBeInstanceOf(TsfgaError);
 

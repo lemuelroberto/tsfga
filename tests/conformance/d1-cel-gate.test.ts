@@ -10,6 +10,7 @@ import {
 import type { DB } from "@tsfga/kysely";
 import { KyselyTupleStore } from "@tsfga/kysely";
 import type { Kysely } from "kysely";
+import { expectPinnedModelWriteDivergence } from "./helpers/conformance.ts";
 import {
   beginTransaction,
   destroyDb,
@@ -162,6 +163,29 @@ const LEGITIMATE: readonly Cell[] = [
     expression: "bytes(s).size() > 0",
   },
   { name: "g20", parameters: { s: "string" }, expression: "type(s) == string" },
+  // The five overloads cel-go declares and cel-js does not. Each
+  // is a model upstream stores, so each must stay *writable* here
+  // — the check that reads it is what refuses (ledger rows R1–R5,
+  // pinned in `c5-cel-stdlib` and `a2-cel-numeric`).
+  //
+  // They are here because `typeVerdict` gives no verdict on a call
+  // cel-js cannot resolve. Without that narrowing every one of
+  // them is a write-time refusal, which is strictly worse than a
+  // check-time one and more refusing than bare cel-js, the dialect
+  // tsfga retreats to. This block is what holds that line.
+  { name: "g21", parameters: { n: "uint" }, expression: "int(n) == 7" },
+  { name: "g22", parameters: { d: "duration" }, expression: "int(d) > 0" },
+  { name: "g23", parameters: { t: "timestamp" }, expression: "int(t) > 0" },
+  {
+    name: "g24",
+    parameters: { d: "duration" },
+    expression: "string(d) == '3600s'",
+  },
+  {
+    name: "g25",
+    parameters: { t: "timestamp" },
+    expression: "string(t) == 'x'",
+  },
 ];
 
 /**
@@ -169,13 +193,41 @@ const LEGITIMATE: readonly Cell[] = [
  * declaration both environments have.
  */
 const SUSPECTED: readonly Cell[] = [
+  { name: "h02", parameters: { s: "string" }, expression: "s != null" },
+  { name: "h03", parameters: { s: "string" }, expression: "s == null" },
+];
+
+/**
+ * Ledger mechanism M7: a call **both** engines declare, applied to
+ * an argument type **neither** overloads.
+ *
+ * This is the cost of the narrowing that makes `int(duration)` and
+ * its four siblings writable. `typeVerdict` cannot tell "cel-go
+ * declares this overload and cel-js does not" from "neither
+ * declares it" — cel-js reports both as `found no matching
+ * overload for …` — so suppressing the first family suppresses the
+ * second with it. Upstream refuses the *model*; tsfga stores the
+ * definition and refuses at the check that reads it.
+ *
+ * Write-moment only, narrow, and author-controlled: the author has
+ * named a conversion that cannot apply to the parameter they
+ * declared, and nothing downstream can grant on it. It is pinned
+ * rather than closed because closing it needs a per-overload
+ * transcription of cel-go's declaration table, which is the shape
+ * `CLAUDE.md` bans.
+ *
+ * `duration(int)` was measured because an existing `SUSPECTED`
+ * cell moved here; `size()` on a `bool` because a `d5-cache` cell
+ * did. Both were agreement cells before the narrowing.
+ */
+const UNOVERLOADED: readonly Cell[] = [
+  { name: "m01", parameters: { b: "bool" }, expression: "int(b) > 0" },
   {
-    name: "h01",
+    name: "m02",
     parameters: { i: "int" },
     expression: "duration(i) > duration('1s')",
   },
-  { name: "h02", parameters: { s: "string" }, expression: "s != null" },
-  { name: "h03", parameters: { s: "string" }, expression: "s == null" },
+  { name: "m03", parameters: { b: "bool" }, expression: "b.size() > 0" },
 ];
 
 describe("CEL write gate: over-refusal sweep", () => {
@@ -238,6 +290,24 @@ describe("CEL write gate: over-refusal sweep", () => {
           upstreamWrite(cell),
         ]);
         expect(tsfga).toBe(upstream);
+      });
+    }
+  });
+
+  describe("M7: a conversion neither engine overloads", () => {
+    for (const cell of UNOVERLOADED) {
+      test(`${cell.expression}`, async () => {
+        await expectPinnedModelWriteDivergence(
+          storeId,
+          modelWith(cell.name, cell.parameters, cell.expression),
+          () =>
+            tsfgaClient.writeConditionDefinition({
+              name: `${cell.name}_c`,
+              expression: cell.expression,
+              parameters: cell.parameters,
+            }),
+          { openfga: "refused", tsfga: "accepted" },
+        );
       });
     }
   });

@@ -977,6 +977,14 @@ Useful entry points inside the checkout:
 Conformance tests validate that tsfga produces identical results to a real
 OpenFGA service. This is the most important testing layer.
 
+**Build before measuring a single file.** `packages/core/package.json`
+exports only `./dist/index.js`, so `cd tests/conformance && bun test
+<file>` measures the **last built** core, not your working tree.
+`bun run turbo:test:*` builds first and is always sound; a per-file
+iteration run is not, unless you `bun run build` first. This is not a
+detail — a real bug in the CEL work survived a full round because a
+per-file run kept reporting a stale `dist/` as green.
+
 ### Docker Compose (`compose.yaml`)
 
 Runs PostgreSQL + OpenFGA (with migration sidecar):

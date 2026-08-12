@@ -407,7 +407,11 @@ describe("integer parameters are read as bigint", () => {
     const store = new MockTupleStore();
     store.conditionDefinitions.push({
       name: "carrier",
-      expression: "type(n) == uint && n + 1u == 8u && int(n) == 7",
+      // `&& int(n) == 7` used to be a third conjunct here. cel-js
+      // has no `int(uint)` overload — that was one of the deleted
+      // `tsfga_int` rows — so the call now raises at evaluation
+      // (ledger row R1) and says nothing about the carrier.
+      expression: "type(n) == uint && n + 1u == 8u",
       parameters: { n: "uint" },
     });
     const tuple = makeTuple({ conditionName: "carrier" });
@@ -880,7 +884,25 @@ describe("the compiled expression cache is bounded", () => {
  * unit-level rows, including the ones no model in the suite
  * reaches.
  */
-describe("conversions agree with cel-go", () => {
+/**
+ * A list literal takes CEL's `list(dyn)`, not the type of its
+ * first element.
+ *
+ * cel-js's `homogeneousAggregateLiterals` defaults to `true` and
+ * refuses every element whose type differs from the first, so a
+ * variable beside a string literal was an evaluation error.
+ * cel-go's own option of that name defaults off and OpenFGA
+ * never sets it — `internal/condition/condition.go` builds the
+ * base environment from the custom parameter types,
+ * `IPAddressEnvOption` and `EagerlyValidateDeclarations` alone
+ * (issue 322).
+ *
+ * It is the one survivor of the block that asserted tsfga's own
+ * conversion overloads, because it asserts a cel-js *option*
+ * rather than an overload this module supplied: the option is set
+ * on the environment and nothing computes around it.
+ */
+describe("a list literal may mix types", () => {
   const answer = async (
     expression: string,
     parameters: Record<string, ConditionParameterType>,
@@ -888,241 +910,39 @@ describe("conversions agree with cel-go", () => {
   ): Promise<boolean> => {
     const store = new MockTupleStore();
     store.conditionDefinitions.push({
-      name: "convert",
+      name: "listlit",
       expression,
       parameters,
     });
     return evaluateTupleCondition(
       store,
-      makeTuple({ conditionName: "convert" }),
+      makeTuple({ conditionName: "listlit" }),
       context,
     );
   };
 
-  describe("string() of a duration", () => {
-    for (const [written, formatted] of [
-      ["1h", "3600s"],
-      ["1.5s", "1.5s"],
-      ["-90s", "-90s"],
-      ["0", "0s"],
-      ["100ns", "0.0000001s"],
-      ["2h45m", "9900s"],
-    ] as const) {
-      test(`${written} formats as ${formatted}`, async () => {
-        expect(
-          await answer(
-            `string(d) == '${formatted}'`,
-            { d: "duration" },
-            {
-              d: written,
-            },
-          ),
-        ).toBe(true);
-      });
-    }
+  test("a literal before a variable", async () => {
+    expect(
+      await answer('["x", s][1] == "abc"', { s: "string" }, { s: "abc" }),
+    ).toBe(true);
   });
 
-  describe("string() of a timestamp", () => {
-    for (const [written, formatted] of [
-      ["2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z"],
-      ["2026-01-02T00:00:00.500Z", "2026-01-02T00:00:00.5Z"],
-      ["2026-01-02T01:00:00+01:00", "2026-01-02T00:00:00Z"],
-    ] as const) {
-      test(`${written} formats as ${formatted}`, async () => {
-        expect(
-          await answer(
-            `string(t) == '${formatted}'`,
-            { t: "timestamp" },
-            {
-              t: written,
-            },
-          ),
-        ).toBe(true);
-      });
-    }
+  test("a variable before a literal", async () => {
+    expect(
+      await answer('[s, "x"][0] == "abc"', { s: "string" }, { s: "abc" }),
+    ).toBe(true);
   });
 
-  describe("int() is range-checked", () => {
-    test("a double inside int64 converts", async () => {
-      expect(await answer("int(x) == 7", { x: "double" }, { x: 7.9 })).toBe(
-        true,
-      );
-      expect(await answer("int(x) == -7", { x: "double" }, { x: -7.9 })).toBe(
-        true,
-      );
-    });
-
-    for (const value of [1e19, -1e19]) {
-      test(`${value} overflows rather than answering`, async () => {
-        await expect(
-          answer("int(x) > 0", { x: "double" }, { x: value }),
-        ).rejects.toBeInstanceOf(ConditionEvaluationError);
-      });
-    }
-
-    test("a uint converts, which cel-js has no overload for", async () => {
-      expect(await answer("int(n) == 7", { n: "uint" }, { n: "7" })).toBe(true);
-    });
-
-    test("a duration converts to its nanoseconds", async () => {
-      // cel-go reads `int(duration)` as nanoseconds and
-      // `int(timestamp)` as epoch seconds; cel-js has neither
-      // overload, so both were refused (issue 382).
-      const nanos = (written: string, expected: string): Promise<boolean> =>
-        answer(`int(d) == ${expected}`, { d: "duration" }, { d: written });
-      expect(await nanos("1h", "3600000000000")).toBe(true);
-      expect(await nanos("-90s", "-90000000000")).toBe(true);
-    });
-
-    test("a timestamp converts to its epoch seconds", async () => {
-      const epoch = (written: string, expected: string): Promise<boolean> =>
-        answer(`int(t) == ${expected}`, { t: "timestamp" }, { t: written });
-      expect(await epoch("2026-01-01T00:00:00Z", "1767225600")).toBe(true);
-      // Seconds are floored, which is coarser than the
-      // sub-millisecond resolution the coercion boundary already
-      // loses, and matches Go's `Unix()`.
-      expect(await epoch("1970-01-01T00:00:00.999Z", "0")).toBe(true);
-      expect(await epoch("1969-12-31T23:59:59Z", "-1")).toBe(true);
-    });
-
-    test("an int and a numeric string still convert", async () => {
-      expect(await answer("int(n) == 7", { n: "int" }, { n: "7" })).toBe(true);
-      expect(await answer("int(s) == 7", { s: "string" }, { s: "7" })).toBe(
-        true,
-      );
-      await expect(
-        answer("int(s) > 0", { s: "string" }, { s: "abc" }),
-      ).rejects.toBeInstanceOf(ConditionEvaluationError);
-    });
+  test("two literals of different types", async () => {
+    expect(await answer('size(["x", 1]) == 2', {}, {})).toBe(true);
   });
 
-  describe("double() is range-checked", () => {
-    test("a string inside float64 converts", async () => {
-      expect(
-        await answer("double(s) == 1.5", { s: "string" }, { s: "1.5" }),
-      ).toBe(true);
-    });
-
-    for (const value of ["1e400", "-1e400", "1e-400"]) {
-      test(`${value} leaves the range rather than answering`, async () => {
-        await expect(
-          answer("double(s) > 0.0", { s: "string" }, { s: value }),
-        ).rejects.toBeInstanceOf(ConditionEvaluationError);
-      });
-    }
-
-    test("the named infinities still read", async () => {
-      expect(
-        await answer("double(s) > 0.0", { s: "string" }, { s: "Inf" }),
-      ).toBe(true);
-      expect(
-        await answer("double(s) < 0.0", { s: "string" }, { s: "-inf" }),
-      ).toBe(true);
-    });
-
-    test("an int and a uint convert", async () => {
-      expect(await answer("double(n) == 7.0", { n: "int" }, { n: "7" })).toBe(
-        true,
-      );
-      expect(await answer("double(n) == 7.0", { n: "uint" }, { n: "7" })).toBe(
-        true,
-      );
-    });
+  test("a map value of a mixed type", async () => {
+    expect(await answer('{"a": "x", "b": 1}["b"] == 1', {}, {})).toBe(true);
   });
 
-  /**
-   * The rewrite is a source-text splice, so anything it gets wrong
-   * shows up as a changed expression rather than a wrong answer.
-   * These are the shapes where a splice could land in the wrong
-   * place: several calls in one expression, a call nested in
-   * another, a string literal that happens to spell one, and a
-   * field whose name is one.
-   */
-  describe("the rewrite touches only the call it means to", () => {
-    test("several rewritten calls in one expression", async () => {
-      expect(
-        await answer(
-          "int(x) == 1 && double(s) == 2.0 && t.startsWith('a')",
-          { x: "double", s: "string", t: "string" },
-          { x: 1.5, s: "2", t: "abc" },
-        ),
-      ).toBe(true);
-    });
-
-    test("a rewritten call nested in another", async () => {
-      expect(
-        await answer("int(double(s)) == 2", { s: "string" }, { s: "2.5" }),
-      ).toBe(true);
-    });
-
-    test("a string literal spelling a rewritten call", async () => {
-      expect(
-        await answer(
-          "s == 'int(x)' && int(1.0) == 1",
-          { s: "string" },
-          {
-            s: "int(x)",
-          },
-        ),
-      ).toBe(true);
-    });
-
-    test("a map key named like a rewritten call", async () => {
-      expect(
-        await answer(
-          "m['int'] == 'double'",
-          { m: "map<string>" },
-          {
-            m: { int: "double" },
-          },
-        ),
-      ).toBe(true);
-    });
-
-    test("an expression with nothing to rewrite is untouched", async () => {
-      expect(
-        await answer("s.startsWith('a')", { s: "string" }, { s: "abc" }),
-      ).toBe(true);
-    });
-  });
-
-  /**
-   * A list literal takes CEL's `list(dyn)`, not the type of its
-   * first element.
-   *
-   * cel-js's `homogeneousAggregateLiterals` defaults to `true` and
-   * refuses every element whose type differs from the first, so a
-   * variable beside a string literal was an evaluation error.
-   * cel-go's own option of that name defaults off and OpenFGA
-   * never sets it — `internal/condition/condition.go` builds the
-   * base environment from the custom parameter types,
-   * `IPAddressEnvOption` and `EagerlyValidateDeclarations` alone
-   * (issue 322).
-   */
-  describe("a list literal may mix types", () => {
-    test("a literal before a variable", async () => {
-      expect(
-        await answer('["x", s][1] == "abc"', { s: "string" }, { s: "abc" }),
-      ).toBe(true);
-    });
-
-    test("a variable before a literal", async () => {
-      expect(
-        await answer('[s, "x"][0] == "abc"', { s: "string" }, { s: "abc" }),
-      ).toBe(true);
-    });
-
-    test("two literals of different types", async () => {
-      expect(await answer('size(["x", 1]) == 2', {}, {})).toBe(true);
-    });
-
-    test("a map value of a mixed type", async () => {
-      expect(await answer('{"a": "x", "b": 1}["b"] == 1', {}, {})).toBe(true);
-    });
-
-    test("a homogeneous list still reads", async () => {
-      expect(await answer('"b" in ["a", "b"]', {}, {})).toBe(true);
-    });
+  test("a homogeneous list still reads", async () => {
+    expect(await answer('"b" in ["a", "b"]', {}, {})).toBe(true);
   });
 });
 

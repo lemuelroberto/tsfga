@@ -409,93 +409,6 @@ just `false`" makes `base:true but not subtract:cycle` grant,
 because the truncated exclusion reads as "not excluded". OpenFGA
 denies, and so does tsfga.
 
-### `uint` (closed)
-
-A `uint` parameter is carried as CEL's `uint` — cel-js's
-`UnsignedInt` — so `type(n) == uint`, a bare `u`-suffixed literal,
-and arithmetic bounded by **uint64** rather than int64 all agree
-with upstream. The carrier costs `int(n)` on a `uint`, for which
-cel-js has no overload; `conditions.ts` registers one and rewrites
-the call onto it, so the trade this section used to describe is no
-longer a trade.
-
-Saturation is unchanged and still worth stating: a `uint` context
-value saturates at **int64**'s ceiling, not uint64's, because
-upstream converts every numeric string through the same `Int64()`
-and only then rejects a negative.
-
-Note that a mixed-type comparison such as `n >= 7`, `n == 7` or
-`n in [1, 7, 9]` on a `uint` parameter is **refused by OpenFGA at
-model-write time**, so those cells are unreachable in a valid
-model.
-
-Exact comparison past 2^53 and saturation at the int64 bounds
-agree. Overflow *past* those bounds agrees only where cel-js
-checks it — binary `+`, `-` and `*` on ints, and `-` on uints.
-Four operations upstream checks and cel-js does not are pinned;
-see the next section.
-
-### Known divergence: unchecked CEL operators
-
-cel-go range-checks every arithmetic and conversion overload;
-cel-js checks binary `+`, `-` and `*` on ints and `-` on uints.
-tsfga closes the gap wherever the operation has a **name** —
-`int()` and `double()` are renamed onto range-checked
-implementations, because cel-js refuses to replace a built-in
-overload and renaming the call is the way around that. An
-**operator** cannot be closed the same way: a renamed operator is
-type-blind at rewrite time, so its replacement would have to
-reimplement CEL's arithmetic and comparison for bigint, double,
-string, duration and timestamp alike, moving semantics tsfga
-inherits for free into tsfga's own code where they can drift.
-
-| expression | context | OpenFGA | tsfga |
-|---|---|---|---|
-| `-n > 0` | `n = int64min` | refused | `true` |
-| `n / -1 > 0` | `n = int64min` | refused | `true` |
-| `d + duration('2400000h') > d` | `d = 2400000h` | refused | `true` |
-| `duration('-2400000h') - d < d` | `d = 2400000h` | refused | `true` |
-| `s < '\u{1F600}'` | `s = U+1F600` | `false` | `true` |
-
-The first four are the **granting** direction — upstream declines
-to answer and tsfga returns `true` — which makes them the least
-comfortable pins in the suite. The fifth is string ordering: Go
-compares UTF-8 bytes, JavaScript compares UTF-16 code units, and
-only a comparison crossing the surrogate range can disagree. All
-five are pinned two-sided in
-`tests/conformance/a2-cel-numeric.test.ts`, and all five close if
-`@marcbachmann/cel-js` gains a way to replace a built-in overload.
-
-### Known divergence: sub-millisecond timestamps
-
-Go's `time.Time` is nanosecond-resolution; cel-js maps a CEL
-timestamp onto a JS `Date`, which is millisecond. Anything finer
-is discarded silently — from the context value and from the
-`timestamp('…')` literal alike — and both engines still answer,
-so the booleans differ:
-
-| expression | context `n` | OpenFGA | tsfga |
-|---|---|---|---|
-| `n == timestamp('…T00:00:00Z')` | `…00.000000001Z` | `false` | `true` |
-| `n == timestamp('…T00:00:00Z')` | `…00.000001Z` | `false` | `true` |
-| `n > timestamp('…T00:00:00Z')` | `…00.0005Z` | `true` | `false` |
-| `n > timestamp('…00.000000000Z')` | `…00.000000500Z` | `true` | `false` |
-
-The first two rows are the granting direction. Everything at
-millisecond resolution or coarser agrees, so a condition that
-compares whole seconds, minutes or dates — which is what an
-expiry or a business-hours window is — is unaffected. All four
-cells and both boundary controls are pinned two-sided in the
-conformance suite.
-
-Like the unchecked operators above, this one was found
-unreachable rather than judged too costly. `@marcbachmann/cel-js`
-8.0.0
-declines to displace its own `timestamp(string)` overload, and
-its standard library cannot be turned off, so the literal side of
-the comparison truncates whatever a custom carrier held. It will
-close if cel-js changes its timestamp representation.
-
 ### Known divergence: recursive relations
 
 OpenFGA has dedicated resolvers for *recursive* relation shapes
@@ -960,64 +873,6 @@ Upstream refuses it: "cannot write a tuple that is implicit".
 gate is deliberately not in the validation `addTuple` and
 contextual tuples share. Both halves are pinned two-sided.
 
-## Write-time condition validation
-
-`writeConditionDefinition` compiles the expression and throws
-`ConditionCompileError` when it does not parse. OpenFGA compiles
-every condition while validating the model write that carries it,
-so an expression that cannot be parsed never reaches a check
-there; without this it was accepted three times over — the
-definition write, every tuple write beneath it, and every check
-until someone ran one.
-
-Compilation is parse-only. OpenFGA also type-checks the
-expression against its declared parameters and refuses, for
-example, `not_a_function(x)`; cel-js parses that and fails only
-when it is evaluated, so tsfga accepts the definition and raises
-a `ConditionEvaluationError` at check time. Pinned two-sided in
-`tests/conformance/condition-compile.test.ts`.
-
-`addTuple` refuses a tuple whose condition the model cannot
-accept, with the cause on `InvalidConditionalTupleError.cause`:
-
-| cause | meaning |
-|---|---|
-| `condition is missing` | no condition, and every matching restriction has one |
-| `invalid condition for type restriction` | a defined condition this relation does not name |
-| `undefined condition` | no such condition in the store |
-| `parameter type error` | a context value not readable as its declared type |
-| `invalid context parameter` | a context key the condition does not declare |
-| `context contains forbidden characters` | a Unicode control character in a context key, in a string value at any depth, or in the condition name |
-| `context size limit exceeded` | a condition context over `writeContextByteLimit` |
-
-Only the context keys actually **present** are validated. A
-conditioned tuple with no context, or a partial one, is accepted:
-the rest can arrive with the check request.
-
-A tab is a control character and is refused — worth stating,
-since it is the one a caller might send without meaning anything
-by it. The name is scanned before the definition is looked up, so
-a dirty condition name reports the characters rather than
-"undefined condition", which is upstream's order.
-
-The size rule has two qualifications. **It is upstream's rule but
-not upstream's measure:** upstream sizes a serialised protobuf
-`Struct` against `DefaultWriteContextByteLimit` (32 KiB); tsfga
-sizes the UTF-8 bytes of the context's JSON, which cannot be made
-exact, so the two agree except within a narrow band of the
-boundary. The limit is `writeContextByteLimit` on `CheckOptions`,
-defaulting to the exported `DEFAULT_WRITE_CONTEXT_BYTE_LIMIT`.
-**And it applies to `addTuple` only:** upstream enforces it in the
-Write command and nowhere else, so a check request whose
-contextual tuple carries a large context is answered, not refused.
-
-A conditioned write costs one extra round-trip — the
-condition-definition lookup — so 3 rather than 2. Unconditioned
-writes are unchanged. That is deliberate and uncached: a
-client-lifetime cache on a *validation* gate goes stale across
-processes, and would keep accepting tuples after another instance
-narrowed the model.
-
 ## Duplicate writes
 
 `addTuple` throws `DuplicateTupleError` when the tuple is already
@@ -1109,13 +964,10 @@ PostgreSQL adapter.
 
 ## Conditions
 
-CEL condition evaluation is supported via
-[`@marcbachmann/cel-js`](https://github.com/nicholasgasior/cel-js).
-Tuples can reference named condition definitions, and the
-check algorithm evaluates them automatically.
-
-Context merge rule: tuple context properties take precedence
-over request context properties (matching OpenFGA behavior).
+A condition is a CEL expression, stored by name, evaluated on
+every tuple that carries one. This is the one section about CEL:
+what is unsupported, what is validated at write, what agrees, and
+every measured place the two engines part company.
 
 ### `matches()` is not supported
 
@@ -1179,22 +1031,238 @@ analysis, including the measured backtracking curves on three
 runtimes and the complete RE2-versus-cel-js gap table, is checked
 in under [`docs/cel-js/`](../../docs/cel-js/).
 
-`string(duration)` and `string(timestamp)` are absent from cel-js
-and registered by tsfga, formatted as cel-go formats them: total
-seconds with an `s` suffix (`3600s`, `1.5s`, `-90s`), and RFC 3339
-with the trailing zeros of the fractional second trimmed. The
-timestamp side inherits the sub-millisecond boundary documented
-above — a JS `Date` cannot carry the nanoseconds cel-go would
-print, so agreement holds at millisecond resolution.
+### How a condition is handled
 
-Compiled CEL expressions are cached by expression source text
-(content-keyed). Redefining a condition via
-`writeConditionDefinition` therefore takes effect on the next
-evaluation — there is no per-name cache to go stale — and
+`writeConditionDefinition` stores the expression, **compiles** it,
+and **type-checks** it against its declared parameters — which is
+what OpenFGA's model write does, with
+`cel.EagerlyValidateDeclarations(true)`. An expression that cannot
+be parsed, that names a function cel-go does not declare, or that
+does not type-check never reaches a check. Without this it was
+accepted three times over: the definition write, every tuple write
+beneath it, and every check until someone ran one.
+
+At check time, context arrives from the tuple and from the request
+with **tuple context taking precedence**, values are read as their
+declared parameter types using OpenFGA's own conversion grammar,
+and a row whose condition is false is not a grant.
+
+Compiled expressions are cached by expression source text
+(content-keyed). Redefining a condition therefore takes effect on
+the next evaluation — there is no per-name cache to go stale — and
 identical expressions share one compiled entry. The cache holds a
-thousand entries and evicts the least recently used, so a caller
-that keeps rewriting condition definitions does not grow it
-without limit.
+thousand entries and evicts the least recently used. The type
+check is **not** cached with the expression: it belongs to the
+definition, so two conditions sharing an expression and declaring
+different parameters are each checked.
+
+Besides `matches()`, tsfga **refuses** in three places, and only
+three: a condition naming a function OpenFGA does not declare is
+rejected at write, as OpenFGA rejects the model; an expression
+that does not type-check against its declared parameters is
+rejected at write; and an evaluation past
+`maxConditionEvaluationCost` is refused at check. Refusing is not
+emulation — it is how tsfga avoids answering `true` where OpenFGA
+would not answer at all.
+
+`addTuple` refuses a tuple whose condition the model cannot
+accept, with the cause on `InvalidConditionalTupleError.cause`:
+
+| cause | meaning |
+|---|---|
+| `condition is missing` | no condition, and every matching restriction has one |
+| `invalid condition for type restriction` | a defined condition this relation does not name |
+| `undefined condition` | no such condition in the store |
+| `parameter type error` | a context value not readable as its declared type |
+| `invalid context parameter` | a context key the condition does not declare |
+| `context contains forbidden characters` | a Unicode control character in a context key, in a string value at any depth, or in the condition name |
+| `context size limit exceeded` | a condition context over `writeContextByteLimit` |
+
+Only the context keys actually **present** are validated. A
+conditioned tuple with no context, or a partial one, is accepted:
+the rest can arrive with the check request.
+
+A tab is a control character and is refused — worth stating,
+since it is the one a caller might send without meaning anything
+by it. The name is scanned before the definition is looked up, so
+a dirty condition name reports the characters rather than
+"undefined condition", which is upstream's order.
+
+The size rule has two qualifications. **It is upstream's rule but
+not upstream's measure:** upstream sizes a serialised protobuf
+`Struct` against `DefaultWriteContextByteLimit` (32 KiB); tsfga
+sizes the UTF-8 bytes of the context's JSON, which cannot be made
+exact, so the two agree except within a narrow band of the
+boundary. The limit is `writeContextByteLimit` on `CheckOptions`,
+defaulting to the exported `DEFAULT_WRITE_CONTEXT_BYTE_LIMIT`.
+**And it applies to `addTuple` only:** upstream enforces it in the
+Write command and nowhere else, so a check request whose
+contextual tuple carries a large context is answered, not refused.
+
+A conditioned write costs one extra round-trip — the
+condition-definition lookup — so 3 rather than 2. Unconditioned
+writes are unchanged. That is deliberate and uncached: a
+client-lifetime cache on a *validation* gate goes stale across
+processes, and would keep accepting tuples after another instance
+narrowed the model.
+
+### What agrees
+
+The core of the language does. Booleans and logical operators,
+`int` / `uint` / `double` / `string` / `bool` comparison and
+arithmetic within range, list and map membership (`in`), field
+access, `size()`, `has()`, the ternary, the comprehension macros
+(`all`, `exists`, `exists_one`, `filter`, `map`), the string
+members `contains` / `startsWith` / `endsWith`, timestamp and
+duration construction, comparison and arithmetic at millisecond
+resolution or coarser with the whole accessor family, and the
+parameter-type coercion of every value reaching a condition from a
+tuple or a request.
+
+A `uint` parameter is carried as CEL's `uint` — cel-js's
+`UnsignedInt` — so `type(n) == uint`, a bare `u`-suffixed literal,
+and arithmetic bounded by **uint64** rather than int64 all agree
+with upstream. Saturation is worth stating: a `uint` context value
+saturates at **int64**'s ceiling, not uint64's, because upstream
+converts every numeric string through the same `Int64()` and only
+then rejects a negative. A mixed-type comparison such as `n >= 7`
+on a `uint` parameter is refused by OpenFGA at model-write time,
+so those cells are unreachable in a valid model.
+
+That covers what conditions are normally for: an expiry, a
+business-hours window, an IP or tenant allow-list expressed as a
+list membership, a numeric threshold, a flag.
+
+### Where tsfga and OpenFGA disagree
+
+Read the **direction** first; it decides whether a divergence is
+an inconvenience or a security problem.
+
+| Direction | What happens | How bad |
+|---|---|---|
+| **Refusing** | OpenFGA answers, tsfga raises | Access is lost, loudly. Your caller sees an error. |
+| **Different boolean** | Both answer, the answers differ | Quiet. Usually denies. |
+| **Granting** | OpenFGA refuses the model or declines to answer, tsfga returns `true` | **The one to read twice.** tsfga grants where upstream would not. |
+
+The table is short, and it is short because `matches()` was
+removed rather than repaired — most of what used to be here was
+regex. The row that matters most is not in it at all, because it
+is not a subtle disagreement: **a condition using `matches()` is
+refused outright.**
+
+*Measured against `@marcbachmann/cel-js` 8.0.0 and OpenFGA
+v1.18.2. If you have overridden or forked either, this table does
+not describe your build.* Every cell is pinned two-sided in the
+conformance suite, so if either engine changes a test says so
+rather than this table quietly going stale. The table names the
+families that have been measured; it is **not a proof of
+completeness**, because the divergence set is "wherever cel-js
+differs from cel-go" and nobody has enumerated that.
+
+**Granting.** cel-go range-checks every arithmetic and conversion
+overload; cel-js checks binary `+`, `-` and `*` on ints and `-` on
+uints, and nothing else.
+
+| expression | context | OpenFGA | tsfga |
+|---|---|---|---|
+| `int(x) > 0` | `x = 1e19` | refused | `true` |
+| `int(x) < 0` | `x = -1e19` | refused | `true` |
+| `double(s) > 0.0` | `s = "1e400"` | refused | `true` |
+| `double(s) < 0.0` | `s = "-1e400"` | refused | `true` |
+| `-n > 0` | `n = int64min` | refused | `true` |
+| `n / -1 > 0` | `n = int64min` | refused | `true` |
+| `d + duration('2400000h') > d` | `d = 2400000h` | refused | `true` |
+| `duration('-2400000h') - d < d` | `d = 2400000h` | refused | `true` |
+| `s < '\u{1F600}'` | `s = U+1F600` | `false` | `true` |
+| `n == timestamp('…T00:00:00Z')` | `n = …00.000000001Z` | `false` | `true` |
+| `n == timestamp('…T00:00:00Z')` | `n = …00.000001Z` | `false` | `true` |
+
+And three at the **write** moment, where the model is what
+diverges rather than the answer:
+
+| expression | declared | OpenFGA | tsfga |
+|---|---|---|---|
+| `int(b) > 0` | `b: bool` | model refused | definition stored |
+| `duration(i) > duration('1s')` | `i: int` | model refused | definition stored |
+| `b.size() > 0` | `b: bool` | model refused | definition stored |
+
+Each names a call **both** engines declare with an argument type
+**neither** overloads. cel-js reports that the same way it reports
+the five overloads cel-go has and it does not, and tsfga cannot
+tell the two apart without transcribing cel-go's declaration table
+— which is the second-CEL-implementation shape this project does
+not build. The check that reads such a definition refuses on both
+sides, so nothing can be granted on one.
+
+**Refusing.** Five overloads cel-go declares and cel-js does not.
+The definition is stored — refusing the write would refuse a model
+upstream accepts — and every check that reads it raises.
+
+| expression | declared | OpenFGA | tsfga |
+|---|---|---|---|
+| `int(n)` | `n: uint` | answers | refused |
+| `int(d)` | `d: duration` | answers | refused |
+| `int(t)` | `t: timestamp` | answers | refused |
+| `string(d)` | `d: duration` | answers | refused |
+| `string(t)` | `t: timestamp` | answers | refused |
+| `ip.in_cidr(cidr)` / `ipaddress(s)` | — | answers | refused |
+
+These are **per-branch**: cel-js short-circuits, so
+`int(d) > 3600 || role == 'admin'` still answers `true`.
+
+**Different boolean.** Go's `time.Time` is nanosecond-resolution;
+cel-js maps a CEL timestamp onto a JS `Date`, which is
+millisecond, and anything finer is discarded silently — from the
+context value and from the `timestamp('…')` literal alike.
+
+| expression | context `n` | OpenFGA | tsfga |
+|---|---|---|---|
+| `n > timestamp('…T00:00:00Z')` | `…00.0005Z` | `true` | `false` |
+| `n > timestamp('…00.000000000Z')` | `…00.000000500Z` | `true` | `false` |
+
+Everything at millisecond resolution or coarser agrees, so a
+condition comparing whole seconds, minutes or dates — which is
+what an expiry or a business-hours window is — is unaffected.
+
+Every unclosed row above has the same cause and the same fix:
+cel-js declines to replace a built-in overload, and its standard
+library cannot be turned off, so there is no way to reach one from
+outside the library. They close in `@marcbachmann/cel-js`, not
+here.
+
+### What this means for a condition you write
+
+- **A condition is a narrowing device.** Write it so the engines
+  disagreeing costs you a denial, not a grant. Prefer comparisons
+  over parameters your application controls to pattern matching
+  over strings an attacker controls.
+- **`matches()` is unavailable**, as the top of this section says.
+  There is no pattern syntax to get right, no portability rule to
+  apply, and no regular expression anywhere in an authorization
+  decision.
+- **Stay away from the magnitudes.** Arithmetic near the int64 or
+  uint64 bounds, `int()` and `double()` of an out-of-range operand
+  in either direction, durations past a few thousand hours, and
+  timestamps near year 1 or year 9999 are where the engines part
+  company — often in the granting direction, because cel-go
+  range-checks and cel-js does not.
+- **Whole milliseconds, not nanoseconds.** A CEL timestamp is a JS
+  `Date` here. Finer precision is silently dropped from literals
+  and from context alike.
+- **If you also run OpenFGA**, treat the two as sharing a model but
+  not a dialect. An expression tsfga stores may be one OpenFGA
+  refuses to store at all.
+- **`ipaddress()` and `in_cidr()` are unavailable.** cel-js does
+  not implement them. A condition naming either is stored — it is
+  a model upstream accepts — and every check that reads it is
+  refused. Express CIDR membership outside the condition, or as an
+  explicit list.
+
+If any of the above is load-bearing for your authorization
+decisions, the shortest honest advice is: write the check you
+depend on as a test against tsfga itself. That is what the
+conformance suite in this repository does, and it is the only
+thing that stays true across a dependency upgrade.
 
 ## License
 
