@@ -601,10 +601,103 @@ describe("duration and timestamp grammars", () => {
     "2026-01-01T00:00:00",
   ]) {
     test(`timestamp still refuses ${JSON.stringify(spelling)}`, () => {
-      // The regex admits the shape of the first three, so what
-      // refuses them is the Date being invalid — the check that
-      // came free while cel-js built it.
+      // The regex admits the shape of the first three; the field
+      // ranges are what refuse them.
       expect(() => timestamp(spelling)).toThrow();
+    });
+  }
+
+  /**
+   * `time.Parse` validates every field against the calendar and
+   * reports "day out of range" / "hour out of range". `new Date`
+   * rolls them over instead, so a date that does not exist became
+   * a different instant and the condition was evaluated against it
+   * — granting, and silent on both sides (issue 421).
+   */
+  for (const spelling of [
+    "2026-02-30T00:00:00Z",
+    "2026-02-29T00:00:00Z",
+    "2026-04-31T00:00:00Z",
+    "2026-06-31T00:00:00Z",
+    "2100-02-29T00:00:00Z",
+    "2026-01-01T24:00:00Z",
+  ]) {
+    test(`timestamp refuses the rolled-over ${spelling}`, () => {
+      expect(() => timestamp(spelling)).toThrow();
+    });
+  }
+
+  for (const spelling of [
+    "2024-02-29T00:00:00Z",
+    "2000-02-29T00:00:00Z",
+    "2026-01-31T23:59:59Z",
+    "2026-12-31T00:00:00Z",
+  ]) {
+    test(`timestamp still accepts ${spelling}`, () => {
+      expect(timestamp(spelling)).toBeInstanceOf(Date);
+    });
+  }
+
+  test("a zone offset is applied as written, minute 60 included", () => {
+    // Go's range tests "use > rather than >=, as some people do
+    // write offsets of 24 hours or 60 minutes", so `+00:60` is one
+    // hour where `new Date` calls the whole string invalid (issue
+    // 423). Refusing it was fail-closed, and a regex tightened for
+    // 421 would have pinned it.
+    const offset = timestamp("2026-01-01T00:00:00+00:60");
+    const plain = timestamp("2025-12-31T23:00:00Z");
+    expect(offset).toEqual(plain);
+  });
+
+  for (const spelling of [
+    "2026-01-01T00:00:00+23:59",
+    "2026-01-01T00:00:00-00:00",
+    "2026-01-01T00:00:00+24:00",
+  ]) {
+    test(`timestamp reads the offset ${spelling}`, () => {
+      expect(timestamp(spelling)).toBeInstanceOf(Date);
+    });
+  }
+
+  for (const spelling of [
+    "2026-01-01T00:00:00+99:00",
+    "2026-01-01T00:00:00+00:61",
+  ]) {
+    test(`timestamp refuses the offset ${spelling}`, () => {
+      expect(() => timestamp(spelling)).toThrow();
+    });
+  }
+
+  /**
+   * `time.ParseDuration` counts nanoseconds in an int64 and errors
+   * the moment its accumulator overflows, so the magnitude is
+   * refused as the context is *read* — with no arithmetic anywhere
+   * in the condition, and on the write path too, since
+   * `validateTupleWrite` shares this function (issue 420).
+   */
+  for (const spelling of [
+    "9000000h",
+    "-9000000h",
+    "2562047h47m16.854775808s",
+    "2400000h2400000h",
+    "9223372036854775808ns",
+    "99999999999999999999999999h",
+  ]) {
+    test(`duration refuses ${JSON.stringify(spelling)}`, () => {
+      expect(() => duration(spelling)).toThrow();
+    });
+  }
+
+  for (const spelling of [
+    "2562047h47m16.854775807s",
+    "-2562047h47m16.854775808s",
+    "9223372036854775807ns",
+    "1h",
+    "2h45m",
+    "1.5h",
+  ]) {
+    test(`duration still accepts ${JSON.stringify(spelling)}`, () => {
+      expect(duration(spelling)).toBeTruthy();
     });
   }
 });
@@ -1116,10 +1209,16 @@ describe("the RE2 translation refuses what it cannot spell", () => {
       "[a-[:digit:]]",
       "[\\b]",
       "[\\B]",
-      "a{1000}",
       "a{1001}",
-      "a{2,1000}",
+      "a{2,1001}",
       "a{2,1}",
+      // Go bounds the *product* of nested repetitions, not each
+      // one: `repeatIsValid(re, 1000)` divides the budget down
+      // through the tree, so ten thousand copies are refused
+      // however they are spelled (issue 401).
+      "(a{100}){100}",
+      "((a{10}){10}){11}",
+      "(a{1000}){2}",
       "\\C",
     ]) {
       const name = `${JSON.stringify(pattern)} refuses check and write`;
@@ -1132,6 +1231,30 @@ describe("the RE2 translation refuses what it cannot spell", () => {
     test("a repetition below the ceiling still compiles", async () => {
       expect(await matches("a".repeat(999), `^a{999}$`)).toBe(true);
       expect(await matches("aa", "^a{1,999}$")).toBe(true);
+    });
+
+    test("the ceiling is inclusive, as parse.go writes it", async () => {
+      // `min < 0 || min > 1000 || max > 1000` — strictly greater.
+      // tsfga compared with `>=` on a confounded measurement: the
+      // probe behind it matched `a{1000}` against a thousand-
+      // character subject, and it was the subject's length that
+      // made upstream refuse (issue 400).
+      expect(await matches("a".repeat(1000), "^a{1000}$")).toBe(true);
+      expect(await matches("aa", "^a{2,1000}$")).toBe(true);
+      expect(await matches("a".repeat(1000), "^a{1000,}$")).toBe(true);
+    });
+
+    test("repetitions multiply down, not across", async () => {
+      // Siblings each get the whole budget — `repeatIsValid`
+      // recurses on the same `n` for a concatenation — so a
+      // pattern is refused only when the nesting multiplies past
+      // it.
+      expect(
+        await matches("a".repeat(999) + "b".repeat(999), "a{999}b{999}"),
+      ).toBe(true);
+      expect(await matches("a".repeat(100), "^(a{10}){10}$")).toBe(true);
+      expect(await matches("a".repeat(1000), "^(a{1000}){1}$")).toBe(true);
+      expect(await matches("aaa", "^(a{3})*$")).toBe(true);
     });
   });
 

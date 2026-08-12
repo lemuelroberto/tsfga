@@ -216,25 +216,26 @@ describe("CEL arithmetic surface conformance", () => {
     );
 
   /**
-   * The cell that is not covered by the "only an overflowing
-   * expression reaches it" argument.
+   * The cell that was *not* covered by the "only an overflowing
+   * expression reaches it" argument — and, because it was not, the
+   * one that got fixed rather than documented.
    *
    * `coerceContext` range-checks `int` and `uint` (saturating, as
    * upstream's `big.ParseFloat` grammar does) and refuses a
    * `timestamp` outside CEL's window — the two controls below say
-   * so. It does **not** bound a `duration`: `9000000h` is 3.24e19
-   * nanoseconds, past int64, and tsfga carries it into the
-   * expression while upstream refuses to read it. No operator is
-   * involved, so this one is reachable from a stored tuple context
-   * written by whoever can write tuples.
+   * so. It did **not** bound a `duration`: `9000000h` is 3.24e19
+   * nanoseconds, past int64, and tsfga carried it into the
+   * expression while upstream refused to read it. No operator was
+   * involved, which is what made it reachable from a stored tuple
+   * context written by whoever can write tuples, and what put it
+   * outside the argument that justified pinning the rest.
+   *
+   * It was recorded here under 387 before it had an issue number
+   * of its own. It is now issue 420, and both engines refuse.
    */
-  describe("GAP-387: a duration is not range-checked as it is read", () => {
-    test("GAP-387: a duration context value past int64 nanoseconds", async () => {
-      await pinned(
-        "durctx_c5b",
-        { d: DUR_OVER },
-        { openfga: "refused", tsfga: true },
-      );
+  describe("a duration is range-checked as it is read", () => {
+    test("a duration context value past int64 nanoseconds is refused", async () => {
+      await check("durctx_c5b", { d: DUR_OVER }, "refused");
     });
 
     test("the largest duration inside the range agrees", async () => {

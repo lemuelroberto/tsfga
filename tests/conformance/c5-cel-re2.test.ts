@@ -211,6 +211,17 @@ describe("CEL RE2 dialect conformance", () => {
       await match("aaa", "a{2,}", true);
     });
 
+    test("a repetition at RE2's ceiling", async () => {
+      // `maxRepeat` is inclusive: `parse.go` refuses `min > 1000`,
+      // so this is a valid pattern and both engines answer. It
+      // used to sit in the GAP-385 block below, asserting a
+      // refusal it got for another reason entirely — the subject
+      // was a thousand characters long, and it was the CEL
+      // evaluation cost limit that refused, not the bound (issue
+      // 400). A short subject asks the question the cell means to.
+      await match("a", "a{1000}", false);
+    });
+
     test("`{,2}` is a literal in RE2, not a repetition", async () => {
       await match("a{2}", "a{,2}", false);
     });
@@ -360,8 +371,9 @@ describe("CEL RE2 dialect conformance", () => {
    * whose endpoint is a class and `\b` inside a bracket expression
    * are both errors in `regexp/syntax`; JavaScript's Annex B
    * fallback accepts the first and reads the second as a
-   * backspace. RE2's repetition ceiling is 1000, and it is
-   * exclusive.
+   * backspace. RE2's repetition ceiling is 1000 and is inclusive,
+   * so `a{1001}` is the first count it refuses — the cell for
+   * `a{1000}` itself is an agreement cell above.
    */
   describe("GAP-385: patterns RE2 refuses and the translator takes", () => {
     test("GAP-385: a range whose endpoint is a class", async () => {
@@ -370,10 +382,6 @@ describe("CEL RE2 dialect conformance", () => {
 
     test("GAP-385: \\b inside a bracket expression", async () => {
       await match("a", "[\\b]", "refused");
-    });
-
-    test("GAP-385: a repetition at RE2's ceiling", async () => {
-      await match("a".repeat(1000), "a{1000}", "refused");
     });
 
     test("GAP-385: a repetition past RE2's ceiling", async () => {

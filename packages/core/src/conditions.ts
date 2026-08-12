@@ -377,13 +377,28 @@ const LEADING_FLAGS = /^\(\?([imsU]+)\)/;
 const REPETITION = /^\{(\d+)(?:,(\d*))?\}/;
 
 /**
- * The repetition count `regexp/syntax` refuses.
+ * The largest repetition count `regexp/syntax` accepts.
  *
- * Go names the constant `maxRepeat = 1000`; measured against the
- * container, 1000 is already over the line. It exists because a
- * repetition count is the cheapest way to make a pattern expensive,
- * and in tsfga's shapes the pattern usually arrives in the request
- * context — which is to say from whoever is asking.
+ * Go names the constant `maxRepeat = 1000` and the bound is
+ * **inclusive**: `parse.go` refuses on `min < 0 || min > 1000 ||
+ * max > 1000 || max >= 0 && min > max`, so `a{1000}`, `a{1000,}`
+ * and `a{2,1000}` are all valid RE2 and only a count *above* 1000
+ * is refused.
+ *
+ * This comment used to say the opposite — "measured against the
+ * container, 1000 is already over the line" — and the measurement
+ * behind it was confounded. The probe matched `a{1000}` against a
+ * **1000-character subject**, and it was the subject's length that
+ * made upstream refuse: cel-go charges a regex match by the code
+ * points of subject plus pattern and bounds the whole evaluation
+ * at a cost of 100. The pattern was never the reason (issue 400).
+ *
+ * The ceiling exists because a repetition count is the cheapest way
+ * to make a pattern expensive, and in tsfga's shapes the pattern
+ * usually arrives in the request context — which is to say from
+ * whoever is asking. Bounding one repetition is not the whole rule:
+ * see `takeRepetition`, which also carries Go's `repeatIsValid`
+ * product over *nested* repetitions.
  */
 const MAX_REPEAT = 1000;
 
@@ -605,6 +620,37 @@ function translateRe2Pattern(pattern: string): TranslatedPattern {
   /** Group names already emitted. RE2 allows a name twice and
    *  JavaScript does not, so the later one is renamed. */
   const groupNames = new Set<string>();
+
+  /**
+   * Go's `repeatIsValid`, carried through a scanner that has no
+   * tree (issue 401).
+   *
+   * `parse.go` does not bound one repetition; after building a
+   * repeat node it walks the node dividing a budget of 1000 down
+   * through every nested repetition, so `(a{100}){100}` — ten
+   * thousand copies — is refused where each `{100}` alone is fine.
+   * The equivalent bottom-up quantity is, for a subtree, the
+   * smallest budget under which it is valid: 0 for anything
+   * carrying no repetition, `max(m, m × need(child))` for a
+   * repetition of `m`, and the maximum over the parts of a
+   * concatenation or an alternation (those recurse on the *same*
+   * budget). A repetition is refused when its own need passes
+   * 1000, which is exactly Go's test since `n / m >= k` and
+   * `n >= k × m` are the same statement in integers.
+   *
+   * `atomNeed` is the need of the item a quantifier would apply
+   * to; `groupNeed` the maximum over the items already completed
+   * in the group being scanned; `openNeeds` the enclosing ones.
+   */
+  let atomNeed = 0;
+  let groupNeed = 0;
+  const openNeeds: number[] = [];
+
+  /** Close off the item just scanned and begin another. */
+  const startAtom = () => {
+    if (atomNeed > groupNeed) groupNeed = atomNeed;
+    atomNeed = 0;
+  };
 
   /** Flip the quantifier just emitted, for `(?U)`. */
   const flipGreediness = () => {
@@ -904,11 +950,20 @@ function translateRe2Pattern(pattern: string): TranslatedPattern {
         ? null
         : Number.parseInt(highText, 10);
     if (
-      low >= MAX_REPEAT ||
-      (high !== null && (high >= MAX_REPEAT || high < low))
+      low > MAX_REPEAT ||
+      (high !== null && (high > MAX_REPEAT || high < low))
     ) {
       refusePattern(pattern, "invalid repeat count", "invalid");
     }
+    // Go reads `{m,}` as max = -1 and falls back on min; a max of
+    // zero makes the whole subtree unreachable, and `repeatIsValid`
+    // returns before it looks at one.
+    const repeats = high === null ? low : high;
+    const need = repeats === 0 ? 0 : Math.max(repeats, repeats * atomNeed);
+    if ((low >= 2 || (high !== null && high >= 2)) && need > MAX_REPEAT) {
+      refusePattern(pattern, "invalid repeat count", "invalid");
+    }
+    atomNeed = need;
     source += repetition[0];
     index += repetition[0].length;
     flipGreediness();
@@ -918,19 +973,26 @@ function translateRe2Pattern(pattern: string): TranslatedPattern {
   while (index < pattern.length) {
     const char = pattern[index];
     if (char === "\\") {
+      startAtom();
       source += takeEscape(false).source;
       flipGreediness();
       continue;
     }
     if (char === "[") {
+      startAtom();
       takeClass();
       continue;
     }
     if (char === "(") {
+      startAtom();
+      openNeeds.push(groupNeed);
+      groupNeed = 0;
       takeGroup();
       continue;
     }
     if (char === "*" || char === "+" || char === "?") {
+      // `x*`, `x+` and `x?` are not `OpRepeat`, so `repeatIsValid`
+      // divides nothing for them: the item's need passes through.
       source += char;
       index += 1;
       flipGreediness();
@@ -940,11 +1002,13 @@ function translateRe2Pattern(pattern: string): TranslatedPattern {
       if (takeRepetition()) continue;
       // `{` that opens no repetition is a literal in RE2 and a
       // syntax error under the `u` flag.
+      startAtom();
       source += "\\{";
       index += 1;
       continue;
     }
     if (char === "}" || char === "]") {
+      startAtom();
       source += `\\${char}`;
       index += 1;
       continue;
@@ -954,11 +1018,17 @@ function translateRe2Pattern(pattern: string): TranslatedPattern {
       index += 1;
       depth -= 1;
       if (depth < 0) refusePattern(pattern, "unexpected )", "invalid");
+      // The group becomes the item a quantifier applies to, and it
+      // needs whatever the largest thing inside it needed.
+      if (atomNeed > groupNeed) groupNeed = atomNeed;
+      atomNeed = groupNeed;
+      groupNeed = openNeeds.pop() ?? 0;
       flipGreediness();
       continue;
     }
     // An ordinary character, a `.`, an anchor or an alternation
     // bar: the same thing in both dialects.
+    startAtom();
     source += char;
     index += 1;
   }
@@ -1865,6 +1935,87 @@ const DURATION =
  */
 const DURATION_ZERO = /^[+-]?0$/;
 
+/** One term of a duration: digits, an optional fraction, a unit. */
+const DURATION_TERM = /(\d+(?:\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h)/g;
+
+/** Each unit in nanoseconds, as `time.unitMap` spells it. */
+const DURATION_UNIT_NS: Readonly<Record<string, bigint>> = {
+  ns: 1n,
+  us: 1000n,
+  µs: 1000n,
+  μs: 1000n,
+  ms: 1000000n,
+  s: 1000000000n,
+  m: 60000000000n,
+  h: 3600000000000n,
+};
+
+/**
+ * `time.ParseDuration`'s accumulator bound.
+ *
+ * The sum is built in a `uint64` and checked against `1<<63` after
+ * every term; the sign is applied last, so the negative extreme is
+ * exactly `-2^63` and the positive one `2^63 - 1`.
+ */
+const DURATION_MAX_NS = 2n ** 63n;
+
+/**
+ * Whether a duration string names more nanoseconds than an int64
+ * holds (issue 420).
+ *
+ * Upstream's converter is `time.ParseDuration` and nothing else,
+ * and it errors the moment its accumulator overflows — so a value
+ * past the bound is refused as the context is *read*, before any
+ * expression runs and with no arithmetic anywhere in the
+ * condition. tsfga validated Go's grammar with `DURATION` and
+ * never the magnitude, which let a check answer `true` on a value
+ * upstream declines to read, and let the write gate store a tuple
+ * upstream will not store at all.
+ *
+ * The bound is on the **sum**: `2400000h2400000h` is two terms
+ * each inside the range whose total is not. The terms are summed
+ * in a `bigint` rather than a float, and a fraction is truncated
+ * as Go's `uint64` conversion truncates.
+ *
+ * Only the magnitude is decided here. A string this cannot parse
+ * is left to the grammar gate and to cel-js, so no spelling either
+ * of them refuses becomes acceptable by passing through.
+ */
+function durationExceedsInt64(value: string): boolean {
+  let total = 0n;
+  DURATION_TERM.lastIndex = 0;
+  for (;;) {
+    const term = DURATION_TERM.exec(value);
+    if (term === null) break;
+    const digits = term[1];
+    const suffix = term[2];
+    if (digits === undefined || suffix === undefined) return false;
+    const unit = DURATION_UNIT_NS[suffix];
+    if (unit === undefined) return false;
+    const dot = digits.indexOf(".");
+    const whole = dot === -1 ? digits : digits.slice(0, dot);
+    const fraction = dot === -1 ? "" : digits.slice(dot + 1);
+    // 2^63 is nineteen digits, so twenty of them overflow whatever
+    // the unit is. Said before the `BigInt`, because a caller
+    // chooses the length of the string.
+    if (whole.length > 20) return true;
+    const scaled = whole === "" ? 0n : BigInt(whole);
+    if (scaled > DURATION_MAX_NS / unit) return true;
+    let nanos = scaled * unit;
+    // Past twenty fractional digits nothing survives the scaling:
+    // the largest unit is 3.6e12 nanoseconds.
+    const kept = fraction.slice(0, 20);
+    if (kept !== "") {
+      nanos += (BigInt(kept) * unit) / 10n ** BigInt(kept.length);
+      if (nanos > DURATION_MAX_NS) return true;
+    }
+    total += nanos;
+    if (total > DURATION_MAX_NS) return true;
+  }
+  if (value.startsWith("-")) return false;
+  return total > DURATION_MAX_NS - 1n;
+}
+
 /**
  * RFC 3339, as `time.Parse(time.RFC3339, …)` accepts it.
  *
@@ -1876,9 +2027,15 @@ const DURATION_ZERO = /^[+-]?0$/;
  * The fractional part is unbounded on purpose. Upstream accepts 3,
  * 9, 12 and 30 digits alike — it keeps nanoseconds and discards the
  * rest — so the digits are not what this has to gate.
+ *
+ * It gates the **shape** and nothing else, deliberately. The field
+ * ranges are Go's and they are not the ones a regex would express
+ * — the day depends on the month and the year, and the zone
+ * offset's minute is bounded at 60 rather than 59 — so they are
+ * checked in `asTimestamp` against the calendar (issues 421, 423).
  */
 const RFC3339 =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/;
 
 /**
  * The range CEL gives a timestamp: year 1 through year 9999.
@@ -2114,21 +2271,103 @@ function asNumber(value: unknown): number | null {
   return parsed.negative ? -magnitude : magnitude;
 }
 
+/** Days in a month, with Gregorian's leap rule. */
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) {
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    return leap ? 29 : 28;
+  }
+  return month === 4 || month === 6 || month === 9 || month === 11 ? 30 : 31;
+}
+
 /**
  * A timestamp string as a `Date`, or `null`.
  *
  * Built here rather than through cel-js's `timestamp()`, which
  * refuses any spelling longer than 30 characters — ten fractional
  * digits are enough — where upstream keeps nanoseconds and
- * discards the rest of whatever it is given. The bounds and the
- * `Date` itself are what cel-js would have produced.
+ * discards the rest of whatever it is given.
+ *
+ * The components are checked against the calendar rather than
+ * handed to `new Date`, because `new Date` **normalises where Go
+ * refuses** (issue 421): `2026-02-30T00:00:00Z` is March 2 and
+ * `2026-01-01T24:00:00Z` is the next midnight, so a date that does
+ * not exist used to become a different instant and the condition
+ * was evaluated against it. `time.Parse` reports "day out of
+ * range" and "hour out of range" instead, and the check refuses.
+ *
+ * Only the spellings JavaScript is willing to roll over leaked —
+ * `2026-01-32`, `2026-13-01` and `T00:60:00` were already
+ * `Invalid Date` — which is why this is a component parser and not
+ * a stricter regex. A stricter regex would also have pinned the
+ * divergence in the other direction: Go's range tests on the zone
+ * offset "use > rather than >=, as some people do write offsets of
+ * 24 hours or 60 minutes", so `+00:60` is one hour to upstream and
+ * `Invalid Date` to `new Date` (issue 423). The offset is applied
+ * as written here, and only `+24:00` / `+00:60` and beyond refuse.
+ *
+ * The bounds on the resulting instant are CEL's, and are the ones
+ * cel-js would have applied.
  */
 function asTimestamp(value: string): Date | null {
-  const date = new Date(value);
-  const time = date.getTime();
-  if (Number.isNaN(time)) return null;
+  const parts = RFC3339.exec(value);
+  if (!parts) return null;
+  const [
+    ,
+    yearText,
+    monthText,
+    dayText,
+    hourText,
+    minuteText,
+    secondText,
+    fraction,
+    offsetSign,
+    offsetHourText,
+    offsetMinuteText,
+  ] = parts;
+  if (
+    yearText === undefined ||
+    monthText === undefined ||
+    dayText === undefined ||
+    hourText === undefined ||
+    minuteText === undefined ||
+    secondText === undefined
+  ) {
+    return null;
+  }
+  const year = Number.parseInt(yearText, 10);
+  const month = Number.parseInt(monthText, 10);
+  const day = Number.parseInt(dayText, 10);
+  const hour = Number.parseInt(hourText, 10);
+  const minute = Number.parseInt(minuteText, 10);
+  const second = Number.parseInt(secondText, 10);
+  if (month < 1 || month > 12) return null;
+  if (day < 1 || day > daysInMonth(year, month)) return null;
+  if (hour > 23 || minute > 59 || second > 59) return null;
+
+  let offsetMinutes = 0;
+  if (offsetSign !== undefined) {
+    if (offsetHourText === undefined || offsetMinuteText === undefined) {
+      return null;
+    }
+    const offsetHour = Number.parseInt(offsetHourText, 10);
+    const offsetMinute = Number.parseInt(offsetMinuteText, 10);
+    if (offsetHour > 24 || offsetMinute > 60) return null;
+    const magnitude = offsetHour * 60 + offsetMinute;
+    offsetMinutes = offsetSign === "-" ? -magnitude : magnitude;
+  }
+
+  // Every field is now in range, so the canonical spelling is one
+  // `Date.parse` reads the same way Go would — and the fraction
+  // keeps whatever truncation a `Date` has always applied to it.
+  const canonical =
+    `${yearText}-${monthText}-${dayText}` +
+    `T${hourText}:${minuteText}:${secondText}${fraction ?? ""}Z`;
+  const utc = Date.parse(canonical);
+  if (Number.isNaN(utc)) return null;
+  const time = utc - offsetMinutes * 60000;
   if (time < TIMESTAMP_MIN || time > TIMESTAMP_MAX) return null;
-  return date;
+  return new Date(time);
 }
 
 const SCALAR_PARAMETER_TYPES: ReadonlySet<string> = new Set([
@@ -2248,6 +2487,13 @@ function coerceValue(
       // spelling it declines is written out.
       if (DURATION_ZERO.test(value)) return coerceDuration({ val: "0s" });
       if (!DURATION.test(value)) refuse("a valid duration string");
+      // The grammar is not the whole gate: `time.ParseDuration`
+      // counts nanoseconds in an int64 and errors on overflow, so
+      // a well-spelled duration too large to hold is refused as
+      // the context is read (issue 420).
+      if (durationExceedsInt64(value)) {
+        refuse("a duration within int64 nanoseconds");
+      }
       return coerceDuration({ val: value });
     }
 
