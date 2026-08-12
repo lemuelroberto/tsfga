@@ -239,13 +239,23 @@ export class KyselyTupleStore implements TupleStore {
     };
   }
 
-  async insertTuple(tuple: AddTupleRequest): Promise<void> {
+  /**
+   * Insert a tuple, reporting whether it was new.
+   *
+   * `doNothing()` rather than `doUpdateSet()`: the natural key
+   * excludes the condition, so an update here would rewrite a live
+   * grant's condition — in the widening direction as readily as the
+   * narrowing one — and report nothing. `numInsertedOrUpdatedRows`
+   * is `0` exactly when the conflict fired, which is the signal
+   * `addTuple` turns into a `DuplicateTupleError`.
+   */
+  async insertTuple(tuple: AddTupleRequest): Promise<boolean> {
     const condCtx = tuple.conditionContext
       ? JSON.stringify(tuple.conditionContext)
       : null;
     const now = new Date();
 
-    await this.db
+    const result = await this.db
       .insertInto("tsfga.tuples")
       .values({
         object_type: tuple.objectType,
@@ -264,13 +274,11 @@ export class KyselyTupleStore implements TupleStore {
           .expression(
             sql`object_type, object_id, relation, subject_type, subject_id, COALESCE(subject_relation, '')`,
           )
-          .doUpdateSet({
-            condition_name: tuple.conditionName ?? null,
-            condition_context: condCtx,
-            updated_at: now,
-          }),
+          .doNothing(),
       )
-      .execute();
+      .executeTakeFirst();
+
+    return (result.numInsertedOrUpdatedRows ?? 0n) > 0n;
   }
 
   async deleteTuple(tuple: RemoveTupleRequest): Promise<boolean> {

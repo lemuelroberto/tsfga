@@ -2,11 +2,16 @@ import { check } from "./check.ts";
 import { type CheckOutcome, checkMany } from "./check-many.ts";
 import { compileCondition } from "./conditions.ts";
 import { validateRelationConfigWrite } from "./config-validation.ts";
-import { ImplicitTupleError, RelationConfigNotFoundError } from "./errors.ts";
+import {
+  DuplicateTupleError,
+  ImplicitTupleError,
+  RelationConfigNotFoundError,
+} from "./errors.ts";
 import { listObjects } from "./list-objects.ts";
 import type { TupleStore } from "./store-interface.ts";
 import {
   admitsSubjectRef,
+  DEFAULT_WRITE_CONTEXT_BYTE_LIMIT,
   directSubjectRef,
   isSelfDefining,
   validateTupleWrite,
@@ -60,6 +65,24 @@ export interface TsfgaClient {
    * object rather than rebuilding an equal one per request.
    */
   checkMany(requests: readonly CheckRequest[]): Promise<CheckOutcome[]>;
+  /**
+   * Write one tuple.
+   *
+   * @throws ImplicitTupleError for a tuple that says only what the
+   *   model already says.
+   * @throws RelationConfigNotFoundError, InvalidSubjectTypeError or
+   *   InvalidConditionalTupleError when the tuple is not one the
+   *   model admits — including a malformed subject
+   *   (`team:*#member`), a condition context holding a control
+   *   character, and a context over `writeContextByteLimit`.
+   * @throws DuplicateTupleError when the edge is already stored.
+   *   The natural key is object, relation and subject; **the
+   *   condition is not part of it**, so re-granting an edge under a
+   *   different condition is a duplicate, not an edit. Changing a
+   *   grant's condition is `removeTuple` then `addTuple`, which is
+   *   what OpenFGA requires. Nothing is written in this case: the
+   *   stored row keeps the condition it had.
+   */
   addTuple(request: AddTupleRequest): Promise<void>;
   removeTuple(request: RemoveTupleRequest): Promise<boolean>;
   /**
@@ -165,8 +188,27 @@ export function createTsfga(
           request.relation,
         );
       }
-      await validateTupleWrite(store, request);
-      return store.insertTuple(request);
+      await validateTupleWrite(store, request, {
+        contextByteLimit:
+          options?.writeContextByteLimit ?? DEFAULT_WRITE_CONTEXT_BYTE_LIMIT,
+      });
+      const inserted = await store.insertTuple(request);
+      // Upstream's `on_duplicate` defaults to `error`, and the
+      // natural key excludes the condition, so re-granting an edge
+      // *under a condition* is a duplicate rather than an edit. It
+      // used to be an upsert here, which meant a second write
+      // narrowed a live grant — or, worse, widened one by dropping
+      // the condition it carried — and reported nothing.
+      if (!inserted) {
+        throw new DuplicateTupleError(
+          request.objectType,
+          request.objectId,
+          request.relation,
+          request.subjectType,
+          request.subjectId,
+          request.subjectRelation ?? null,
+        );
+      }
     },
 
     removeTuple(request: RemoveTupleRequest): Promise<boolean> {
@@ -273,6 +315,7 @@ export {
   ConditionEvaluationError,
   ConditionNotFoundError,
   DepthExceededError,
+  DuplicateTupleError,
   formatRestriction,
   ImplicitTupleError,
   InvalidConditionalTupleError,
@@ -287,10 +330,12 @@ export type { TupleStore } from "./store-interface.ts";
 export {
   admitsSubjectRef,
   admitsSubjectShape,
+  DEFAULT_WRITE_CONTEXT_BYTE_LIMIT,
   directSubjectRef,
   isSelfDefining,
   type SubjectShape,
   subjectShape,
+  type TupleWriteValidationOptions,
   validateTupleWrite,
 } from "./tuple-validation.ts";
 export type {

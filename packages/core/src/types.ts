@@ -267,6 +267,23 @@ export interface CheckOptions {
    * integer >= 1, or Infinity.
    */
   maxConcurrentChecks?: number;
+  /**
+   * Largest condition context a written tuple may carry, in bytes
+   * (default: 32768, matching OpenFGA's
+   * `DefaultWriteContextByteLimit` /
+   * `OPENFGA_WRITE_CONTEXT_BYTE_LIMIT`).
+   *
+   * Applies to `addTuple` only. Upstream enforces it in the Write
+   * command and nowhere else, so a contextual tuple carrying a
+   * large context is still accepted — as it is upstream.
+   *
+   * The **rule** is upstream's; the **measure** is not. Upstream
+   * sizes a serialised protobuf `Struct`, which tsfga cannot
+   * reproduce, so tsfga sizes the UTF-8 bytes of the context's
+   * JSON. The two agree except within a narrow band of the
+   * boundary.
+   */
+  writeContextByteLimit?: number;
 }
 
 /** Parameters for adding a tuple */

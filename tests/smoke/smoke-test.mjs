@@ -57,7 +57,7 @@ const mockStore = {
     intersection: null,
   }),
   findConditionDefinition: async () => null,
-  insertTuple: async () => {},
+  insertTuple: async () => true,
   deleteTuple: async () => false,
   listCandidateObjectIds: async () => [],
   upsertRelationConfig: async () => {},

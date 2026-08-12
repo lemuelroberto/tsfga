@@ -68,8 +68,32 @@ export interface TupleStore {
 
   // === Write ===
 
-  /** Insert or update a tuple (upsert on natural key) */
-  insertTuple(tuple: AddTupleRequest): Promise<void>;
+  /**
+   * Insert a tuple, reporting whether it was new.
+   *
+   * `true` when a row was inserted; `false` when the natural key
+   * already exists, in which case **nothing may be written** — the
+   * stored row keeps the condition and the context it already had.
+   * `addTuple` turns `false` into a `DuplicateTupleError`, matching
+   * upstream's `on_duplicate: "error"` default
+   * (`pkg/server/commands/write.go:58-67`).
+   *
+   * The natural key is upstream's `TupleKeyWithoutCondition`:
+   * object type, object id, relation, subject type, subject id and
+   * subject relation, where an absent subject relation is one key
+   * value rather than an unknown. **The condition is not part of
+   * it.** Do not add it: two rows for one edge is a state upstream
+   * cannot represent and the check path would read as a union, and
+   * the way to change a grant's condition is to delete the row and
+   * write it again.
+   *
+   * This was an upsert until the semantics were narrowed. A store
+   * that can only upsert cannot implement the upstream default:
+   * rewriting a live grant silently replaced its condition, in the
+   * widening direction as readily as the narrowing one, and
+   * reported nothing.
+   */
+  insertTuple(tuple: AddTupleRequest): Promise<boolean>;
 
   /** Delete a tuple by natural key */
   deleteTuple(tuple: RemoveTupleRequest): Promise<boolean>;

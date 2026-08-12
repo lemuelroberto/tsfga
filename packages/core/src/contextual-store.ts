@@ -139,7 +139,7 @@ export class ContextualTupleStore implements TupleStore {
     return this.inner.findConditionDefinition(name);
   }
 
-  insertTuple(tuple: AddTupleRequest): Promise<void> {
+  insertTuple(tuple: AddTupleRequest): Promise<boolean> {
     return this.inner.insertTuple(tuple);
   }
 

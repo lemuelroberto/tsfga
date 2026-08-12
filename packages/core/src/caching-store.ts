@@ -103,7 +103,7 @@ export class CachingTupleStore implements TupleStore {
     return this.inner.findTuplesByRelation(objectType, objectId, relation);
   }
 
-  insertTuple(tuple: AddTupleRequest): Promise<void> {
+  insertTuple(tuple: AddTupleRequest): Promise<boolean> {
     return this.inner.insertTuple(tuple);
   }
 

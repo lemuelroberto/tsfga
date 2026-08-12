@@ -221,6 +221,80 @@ export function isSelfDefining(request: AddTupleRequest): boolean {
 }
 
 /**
+ * OpenFGA's `DefaultWriteContextByteLimit`
+ * (`pkg/server/config/config.go:36`) — 32 KiB.
+ */
+export const DEFAULT_WRITE_CONTEXT_BYTE_LIMIT = 32 * 1024;
+
+/**
+ * Whether a string holds a Unicode control character.
+ *
+ * Go's `unicode.IsControl` is exactly the `Cc` category —
+ * U+0000-U+001F and U+007F-U+009F
+ * (`internal/utils/sanitize.go:8-11`). Written as a scan rather
+ * than a regular expression, because a regex literal spelling
+ * that range has to hold the control characters themselves.
+ */
+function hasControlChar(value: string): boolean {
+  for (const char of value) {
+    const code = char.codePointAt(0);
+    if (code === undefined) continue;
+    if (code <= 0x1f) return true;
+    if (code >= 0x7f && code <= 0x9f) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a context holds a control character in a key or in a
+ * string value, at any depth.
+ *
+ * Upstream walks the protobuf `Struct` the same way — keys, string
+ * values, and recursively through lists and nested structs
+ * (`ValidateStruct` / `validateValueForbiddenChars`,
+ * `internal/validation/validation.go:402-441`). Numbers, booleans
+ * and nulls carry no characters and are skipped, exactly as the
+ * `switch` on the value kind skips them.
+ *
+ * Returns the offending string so the refusal can name it, or
+ * `null`.
+ */
+function forbiddenChars(value: unknown): string | null {
+  if (typeof value === "string") {
+    return hasControlChar(value) ? value : null;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = forbiddenChars(item);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  if (typeof value === "object" && value !== null) {
+    for (const [key, nested] of Object.entries(value)) {
+      if (hasControlChar(key)) return key;
+      const found = forbiddenChars(nested);
+      if (found !== null) return found;
+    }
+  }
+  return null;
+}
+
+/** What only the write path applies, on top of the shared gate. */
+export interface TupleWriteValidationOptions {
+  /**
+   * Refuse a condition context larger than this many bytes,
+   * measured as the UTF-8 length of its JSON.
+   *
+   * `undefined` does not measure at all, which is what the
+   * contextual-tuple path wants: upstream's limit lives in the
+   * Write command and is not applied to a check request's
+   * contextual tuples.
+   */
+  contextByteLimit?: number;
+}
+
+/**
  * Validate that a tuple is writable under the relation's config.
  * Used by both `addTuple` and contextual-tuple validation so the
  * two paths cannot drift apart.
@@ -238,11 +312,14 @@ export function isSelfDefining(request: AddTupleRequest): boolean {
  *   assignable under any condition.
  * @throws InvalidConditionalTupleError when the shape is
  *   assignable but not with the condition the tuple carries, or
- *   without one.
+ *   without one; when the condition name or the context holds a
+ *   control character; or when the context is over the write
+ *   limit, if one was given.
  */
 export async function validateTupleWrite(
   store: TupleStore,
   request: AddTupleRequest,
+  options?: TupleWriteValidationOptions,
 ): Promise<void> {
   const config = await store.findRelationConfig(
     request.objectType,
@@ -257,6 +334,30 @@ export async function validateTupleWrite(
     request.subjectId,
     request.subjectRelation,
   );
+
+  // `team:*#member` is not a userset, not a wildcard and not a
+  // concrete subject: it is not a well-formed subject at all.
+  // `subjectShape` reads the subject relation first and so files it
+  // as the userset `team#member`, which a relation admitting
+  // `team#member` would then accept — storing a row no model can
+  // describe. Upstream refuses it in `ValidateUser`, before any
+  // type restriction or condition is consulted
+  // (`pkg/tuple/tuple.go:477-517`), and the order is observable, so
+  // this runs before the shape gate rather than inside it.
+  if (
+    request.subjectId === "*" &&
+    request.subjectRelation !== null &&
+    request.subjectRelation !== undefined
+  ) {
+    throw new InvalidSubjectTypeError(
+      shape,
+      request.objectType,
+      request.relation,
+      config.directlyAssignable,
+      "malformed subject",
+    );
+  }
+
   if (!admitsSubjectShape(config, shape)) {
     throw new InvalidSubjectTypeError(
       shape,
@@ -288,13 +389,39 @@ export async function validateTupleWrite(
     );
   };
 
+  // Upstream measures the context last, after every validation
+  // above has passed (`validateWriteRequest` sizes it only once
+  // `ValidateTupleForWrite` has returned,
+  // `pkg/server/commands/write.go:150-165`), so a context that is
+  // both oversized and malformed reports the malformation.
+  const enforceContextSize = (): void => {
+    const limit = options?.contextByteLimit;
+    if (limit === undefined) return;
+    const context = request.conditionContext;
+    if (context === null || context === undefined) return;
+    const size = new TextEncoder().encode(JSON.stringify(context)).length;
+    if (size > limit) {
+      refuse("context size limit exceeded", `${size} bytes exceeds ${limit}`);
+    }
+  };
+
   // An unconditioned tuple needs a matching restriction that names
   // no condition. There is nothing further to check for it — no
   // definition to look up, no context to read — so it costs no
   // extra round-trip.
   if (ref.condition === undefined) {
     if (!admitsSubjectRef(config, ref)) refuse("condition is missing");
+    enforceContextSize();
     return;
+  }
+
+  // The name is scanned before the definition is looked up, which
+  // is upstream's order (`validateCondition`,
+  // `internal/validation/validation.go:232-244`): a name holding a
+  // control character reports *that*, not "undefined condition",
+  // even though no such condition can be defined.
+  if (hasControlChar(ref.condition)) {
+    refuse("context contains forbidden characters", "condition name");
   }
 
   // Upstream's order, and it is observable: a name that is not
@@ -312,6 +439,14 @@ export async function validateTupleWrite(
 
   const context = request.conditionContext;
   if (!context) return;
+
+  // `ValidateStruct` runs before the parameters are cast
+  // (`internal/validation/validation.go:266-272`), so a context
+  // that is both mistyped and dirty reports the characters.
+  const offending = forbiddenChars(context);
+  if (offending !== null) {
+    refuse("context contains forbidden characters", JSON.stringify(offending));
+  }
 
   // Only the keys actually present are validated. A conditioned
   // tuple with no context at all, or with a partial one, is
@@ -336,4 +471,6 @@ export async function validateTupleWrite(
       refuse("invalid context parameter", key);
     }
   }
+
+  enforceContextSize();
 }

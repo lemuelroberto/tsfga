@@ -347,8 +347,13 @@ describe("KyselyTupleStore", () => {
       expect(tuples).toHaveLength(2);
     });
 
-    test("insertTuple upserts on conflict", async () => {
-      await store.insertTuple({
+    test("insertTuple reports a conflict and writes nothing", async () => {
+      // The natural key excludes the condition, so this used to be
+      // an upsert that replaced `old_cond` with `new_cond` and said
+      // nothing about it. Upstream has no write that edits a row in
+      // place: the row stands, and `addTuple` turns the `false`
+      // into a `DuplicateTupleError`.
+      const first = await store.insertTuple({
         objectType: "workspace",
         objectId: uuid1,
         relation: "member",
@@ -356,7 +361,7 @@ describe("KyselyTupleStore", () => {
         subjectId: uuid2,
         conditionName: "old_cond",
       });
-      await store.insertTuple({
+      const second = await store.insertTuple({
         objectType: "workspace",
         objectId: uuid1,
         relation: "member",
@@ -365,6 +370,9 @@ describe("KyselyTupleStore", () => {
         conditionName: "new_cond",
       });
 
+      expect(first).toBe(true);
+      expect(second).toBe(false);
+
       const tuple = await readDirect(
         "workspace",
         uuid1,
@@ -372,7 +380,7 @@ describe("KyselyTupleStore", () => {
         "user",
         uuid2,
       );
-      expect(tuple?.conditionName).toBe("new_cond");
+      expect(tuple?.conditionName).toBe("old_cond");
     });
 
     test("insertTuple with condition context", async () => {
@@ -472,7 +480,11 @@ describe("KyselyTupleStore", () => {
       expect(tuple?.conditionContext).toBeNull();
     });
 
-    test("upsert clears conditionName with null", async () => {
+    test("a second write does not clear conditionName", async () => {
+      // This asserted the opposite while `insertTuple` was an
+      // upsert, and that is the widening direction of issue 044: a
+      // conditioned grant became a permanent one because someone
+      // re-wrote the edge without its condition. The row stands.
       await store.insertTuple({
         objectType: "doc",
         objectId: uuid1,
@@ -481,7 +493,7 @@ describe("KyselyTupleStore", () => {
         subjectId: uuid2,
         conditionName: "in_region",
       });
-      await store.insertTuple({
+      const second = await store.insertTuple({
         objectType: "doc",
         objectId: uuid1,
         relation: "viewer",
@@ -490,31 +502,31 @@ describe("KyselyTupleStore", () => {
         conditionName: null,
       });
 
+      expect(second).toBe(false);
       const tuple = await readDirect("doc", uuid1, "viewer", "user", uuid2);
-      expect(tuple?.conditionName).toBeNull();
+      expect(tuple?.conditionName).toBe("in_region");
     });
 
-    test("upsert clears conditionContext with null", async () => {
-      await store.insertTuple({
+    test("deleting then writing clears the condition", async () => {
+      // The supported way to change a grant's condition, and the
+      // only one upstream has.
+      const key = {
         objectType: "doc",
         objectId: uuid1,
         relation: "viewer",
         subjectType: "user",
         subjectId: uuid2,
+      };
+      await store.insertTuple({
+        ...key,
         conditionName: "in_region",
         conditionContext: { region: "us" },
       });
-      await store.insertTuple({
-        objectType: "doc",
-        objectId: uuid1,
-        relation: "viewer",
-        subjectType: "user",
-        subjectId: uuid2,
-        conditionName: "in_region",
-        conditionContext: null,
-      });
+      expect(await store.deleteTuple(key)).toBe(true);
+      expect(await store.insertTuple(key)).toBe(true);
 
       const tuple = await readDirect("doc", uuid1, "viewer", "user", uuid2);
+      expect(tuple?.conditionName).toBeNull();
       expect(tuple?.conditionContext).toBeNull();
     });
 
