@@ -132,6 +132,16 @@ tsfga/
 │       ├── tsconfig.json
 │       └── bunfig.toml
 │
+├── docs/
+│   └── cel-js/                      checked-in gap catalogue
+│       ├── README.md                capability report + gap table
+│       ├── cases.jsonl              one measured cell per line
+│       ├── regex/                   why there is no regex support
+│       ├── gaps/                    GAP-001… with issue back-pointers
+│       ├── probes/                  reproducible probe scripts
+│       ├── retired/                 removed suites + the translator
+│       └── upstream/                drafted cel-js issue bodies
+│
 ├── package.json                     root workspace config
 ├── turbo.json                       Turborepo pipeline
 ├── tsconfig.base.json               shared TS compiler options
@@ -729,8 +739,183 @@ not until v1.**
 - When you break a tsfga API, say so plainly in the commit body and
   update the affected package `README.md` and `CHANGELOG.md` in the
   same commit.
+- **One axis is carved out of "always respect OpenFGA", and only
+  one: CEL.** tsfga's condition dialect is bounded by
+  `@marcbachmann/cel-js`, and a cel-js/cel-go disagreement is a
+  documented divergence rather than a bug to fix. See **CEL is
+  bounded by cel-js** below before writing anything in
+  `packages/core/src/conditions.ts`.
 - This policy expires at v1. After the v1 release, tsfga's public API
   becomes a semver contract like any other.
+
+## CEL is bounded by cel-js
+
+**tsfga's CEL surface is exactly what `@marcbachmann/cel-js`
+supports unaided. Where cel-js and cel-go disagree, tsfga
+diverges from OpenFGA on purpose, documents the divergence, and
+does not repair it in tsfga source.**
+
+This overrides the parity mandate above — deliberately, and only
+here. It is written down because the mandate already produced the
+opposite once: a repair layer in `packages/core/src/conditions.ts`
+holding an RE2-to-`RegExp` pattern translator, an AST source-splice
+that renamed calls onto tsfga-owned overloads, and custom
+`string()` / `int()` / `double()` overloads. Every piece of it was
+a correct response to a real divergence. Together they were a
+second CEL implementation, owned by this project, in the path of
+every authorization decision. It has been removed. **Do not
+rebuild it, in whole or one function at a time.**
+
+**The line is emulation versus refusal.** An *emulation* makes
+cel-js compute what cel-go computes. A *refusal* computes nothing
+new — it declines to store or to answer an expression the two
+engines would read differently. Emulation is out of bounds.
+Refusal is how tsfga stays honest, and **exactly three** refusals
+exist:
+
+1. the cel-go declaration allow-list;
+2. the write-time type check built on cel-js's own `check()`;
+3. `maxConditionEvaluationCost`, a port of an OpenFGA server
+   limit and a sibling of `maxDepth` and `maxBreadth`.
+
+**`matches()` is not supported, and that is refusal 1 doing its
+job — not a fourth refusal.** `matches` is simply absent from the
+allow-list's table, so any condition naming it is refused at write
+with `undeclared reference to 'matches'`, exactly as `split` or
+`substring` is. **tsfga has no regular-expression support of any
+kind and no code that inspects a pattern.**
+
+**The refusal set is closed at those three.** A fourth —
+including a "small" one that declines a single input — is a scope
+change, not a validation fix. It needs an owner decision recorded
+by amending **this section**, and a measurement pass against the
+OpenFGA container, before it is written.
+
+### This section has been amended twice, and that is the point
+
+Both amendments are recorded here because the history is the
+argument. A clean final state presented as though it were obvious
+would teach a future contributor nothing.
+
+**First** the set was opened to add a fourth refusal: a write-time
+deny-list refusing `matches()` patterns RE2 rejects. It was
+authorised on the strength of one measured row — `^[^]*$`, a
+pattern its author wrote as a whitelist, which JavaScript reads as
+*every possible input* and which OpenFGA will not store. The row
+reached the owner because it was written down with an honest
+justification instead of a smoothed one.
+
+**Then the set was closed again at three, and `matches` was
+dropped entirely instead.** The deny-list would have closed some
+divergences and left others: constructs RE2 *accepts* and
+JavaScript reads more widely (`\A`, `\Q`, `\s`, `[[:alpha:]]`)
+were outside it, patterns arriving from context could not be
+checked at all, and catastrophic backtracking — measured on V8 at
+6 520 ms for a 30-character input, and unbounded above that — was
+untouched by it. Each measurement pass moved the count. Removing
+the feature removed the entire class.
+
+**Read the shape of that.** The second amendment **narrowed the
+code** — no deny-list, no pattern layer, ~120 lines never written
+— while **widening the refusal**, from "some patterns" to "all of
+them". That is the direction this project should move when a
+compatibility question keeps producing new measurements: not a
+more careful layer, a smaller surface.
+
+So, specifically, and because these are the shapes that have
+already been tried or proposed:
+
+- **Do not reintroduce a pattern layer "just for validation".** A
+  rule that reads a `matches()` pattern in order to accept or
+  reject it is the deny-list that was authorised, built nowhere,
+  and then deliberately abandoned. There is no `matches()` to
+  validate. If you are writing code that parses a regular
+  expression, you are rebuilding what two owner decisions removed.
+- **Do not re-declare `matches` in the allow-list**, with or
+  without a guard beside it. That single table entry is the whole
+  of regex support; adding it back restores every divergence in
+  `docs/cel-js/`, silently, with no other diff.
+- **A three-line change in the write gate that declines one more
+  input**, filed as "fix a validation gap", is a fourth refusal
+  with a small diff. Size is not the test. **Does the set still
+  have three members afterwards?** is the test.
+- **Restoring regex is a fork-shaped change, not a patch.** It
+  needs a cel-js that behaves like cel-go, which is the work
+  `docs/cel-js/` exists to feed. It does not need a clever wrapper
+  here.
+
+**Do not:**
+
+- translate, rewrite, splice, re-parse or otherwise transform a
+  CEL expression before handing it to cel-js;
+- parse, inspect, validate or deny a regular expression — there is
+  no supported call that takes one;
+- register a function or operator that replaces, shadows or stands
+  in for one cel-go declares, or that supplies one cel-js lacks —
+  **except** the two declaration stubs on the checking clone in
+  `typeVerdict`, which declare `ipaddress` / `in_cidr` so the
+  write gate does not refuse a model upstream stores, and which
+  are never evaluated;
+- transcribe cel-go's overload table, its type rules or its
+  evaluation semantics in order to reproduce them — **except**
+  `maxConditionEvaluationCost`'s cost model, which is a port of an
+  OpenFGA server limit and is exempt as refusal 3;
+- add a second CEL engine — a WASM cel-go build, a native regex
+  binding, or a hand-written checker or interpreter. **A
+  linear-time regex engine is a second engine**, however narrowly
+  it is scoped, and however good the argument for it.
+
+The two exceptions above are load-bearing, not hedges: without
+them this list bans, verbatim, two of the three refusals the
+paragraph above keeps, and a future reader would be licensed to
+delete them.
+
+**When you hit a gap** — an expression OpenFGA answers and tsfga
+refuses, or the two answer differently:
+
+1. Confirm it against the OpenFGA container, not the Go checkout.
+   A claim without a run is a hypothesis.
+2. Pin it two-sided in the conformance suite:
+   `expectPinnedDivergence` for a check,
+   `expectPinnedWriteDivergence` for a tuple write,
+   `expectPinnedModelWriteDivergence` for a model or condition
+   definition OpenFGA refuses to store. Each refuses to pass on
+   agreement. A divergence nothing asserts is indistinguishable
+   from one nobody has noticed.
+3. Name it in `packages/core/README.md`'s conditions section with
+   its direction — refusing, granting, or a different boolean. The
+   granting ones are the ones consumers must be able to find.
+4. Add the measured case to `docs/cel-js/cases.jsonl`, with both
+   version strings. A measurement without them is folklore.
+5. Stop. The fix is a cel-js fork, later. It is not a patch here.
+
+**What this is not.** Conditions are supported and first class.
+Definitions are stored, compiled and type-checked at write time,
+context is coerced by OpenFGA's own grammar, tuple context
+overrides request context, and every direct, userset and tupleset
+row is condition-evaluated. A bug in tsfga's own condition
+handling — coercion, the context merge, error scoping, the write
+gate, caching, the tuple/type restriction match — is an ordinary
+bug and is fixed ordinarily. Only the layer that repairs *cel-js*
+is out of bounds. If you cannot tell which side of the line you
+are on, ask three questions: **would this code exist if cel-js
+behaved exactly like cel-go?**; if no, **does it change what
+cel-js computes, or only what tsfga will store?**; and, if only
+what tsfga will store, **does the refusal set still have three
+members afterwards?** The first is forbidden outright. The third
+is the one that catches the rest: a new refusal is a fourth member
+however small its diff, and it needs this section amended before
+it is written, not after.
+
+The full analysis lives in `docs/cel-js/`: the measured capability
+report, the gap table, the reproducible probes, the retired test
+cases, and the drafted upstream cel-js issues. It is checked in,
+so a fresh clone has it.
+
+`@marcbachmann/cel-js` is pinned exactly in
+`packages/core/package.json` and stays exactly pinned. An upgrade
+is a deliberate change with its own measurement pass, because the
+divergence set moves with it.
 
 ## OpenFGA Source of Truth (`.openfga_repo`)
 
@@ -1174,7 +1359,8 @@ has native TypeScript support). Tests run via:
 The shims cover: `describe`, `test`, `beforeEach`, `afterEach`,
 `beforeAll`, `afterAll`, and `expect()` with matchers `toBe`, `toBeNull`,
 `toEqual`, `toHaveLength`, `toBeTruthy`, `toBeUndefined`,
-`toBeGreaterThan`, `toBeInstanceOf`, `not.toBeNull`, `not.toBe`, and
+`toBeGreaterThan`, `toBeInstanceOf`, `toContain`, `toThrow`,
+`not.toBeNull`, `not.toBe`, `not.toContain`, `not.toThrow`, and
 `rejects.toBeInstanceOf`.
 
 **The list is the contract, and Bun will not tell you when you leave
