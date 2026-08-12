@@ -19,12 +19,14 @@ import { type Kysely, sql } from "kysely";
 import type { DB, Json } from "./schema.ts";
 
 /**
- * The public wildcard subject, stored as itself.
+ * The public wildcard subject, as `@tsfga/core` spells it.
  *
- * `subject_id` is `text` since migration `006`, so `"*"` needs no
- * encoding and no id is reserved. It used to be `uuid`-typed, which
- * forced the wildcard into the nil UUID and made a grant to a real
- * subject with that id indistinguishable from a grant to everyone.
+ * It is not an id and it is not stored as one. Since migration
+ * `006` the shape lives in `subject_wildcard boolean` and
+ * `subject_id` is NULL on those rows, so no id value is reserved
+ * and a grant to `user:00000000-0000-0000-0000-000000000000` names
+ * that one subject. This constant is what `insertTuple` recognises
+ * and `rowToTuple` renders; nothing writes it to a column.
  */
 const WILDCARD = "*";
 
@@ -151,9 +153,51 @@ export class KyselyTupleStore implements TupleStore {
           return refs.map((r) => eb.and([...slot, condition(r)]));
         };
 
+        /**
+         * The wildcard slot, written out rather than passed
+         * through `probe`, so all three of its conditions stay
+         * visible at the call site.
+         *
+         * `subject_id IS NULL AND subject_wildcard` rather than
+         * `subject_wildcard` alone. The check constraint makes the
+         * two equivalent, and the planner does not know that.
+         * Measured on PG 18 with one object carrying 5000
+         * subjects: the bare boolean has nothing indexed to
+         * descend on, falls to a sequential scan at 77 buffers and
+         * discards 5000 rows; the `IS NULL` conjunct extends the
+         * `idx_tuples_unique` index condition to five columns and
+         * costs 3. Zero cost to write, no new index.
+         *
+         * `subject_relation IS NULL` stays for a different reason:
+         * dropping it files a `user:*#member` row into the
+         * wildcard bucket.
+         */
+        const wildcardProbe = (
+          refs: readonly TypeRestriction[] | null,
+          subjectType: string,
+        ) => {
+          if (!wanted(refs)) return [];
+          const slot = [
+            eb("subject_type", "=", subjectType),
+            eb("subject_id", "is", null),
+            eb("subject_wildcard", "=", true),
+            eb("subject_relation", "is", null),
+          ];
+          if (refs === null) return [eb.and(slot)];
+          return refs.map((r) => eb.and([...slot, condition(r)]));
+        };
+
         return eb.or([
-          ...probe(directRefs, query.subjectId),
-          ...probe(wildcardRefs, WILDCARD),
+          // A check *for* `user:*` asks about the wildcard row, so
+          // the direct slot is the wildcard predicate. `"*"` is
+          // not an id and there is no id column value to compare
+          // it against -- it used to be one, while the column was
+          // `text`, and reaching a `uuid` column with it now would
+          // be a driver error rather than a miss.
+          ...(query.subjectId === WILDCARD
+            ? wildcardProbe(directRefs, query.subjectType)
+            : probe(directRefs, query.subjectId)),
+          ...wildcardProbe(wildcardRefs, query.subjectType),
           ...(!wanted(usersetRefs)
             ? []
             : usersetRefs === null
@@ -177,24 +221,36 @@ export class KyselyTupleStore implements TupleStore {
       .execute();
 
     let direct: Tuple | null = null;
-    // A list, because the slot is one: `idx_tuples_unique` means
-    // this scan can return at most one `subject_type:*` row, so
-    // what is wrapped here is 0 or 1 rows. The shape exists for
+    // A list, because the slot is one: `idx_tuples_unique`'s
+    // `NULLS NOT DISTINCT` means this scan can return at most one
+    // wildcard row per key, so what is wrapped here is 0 or 1
+    // rows. The shape exists for
     // `ContextualTupleStore`, which adds the request's own wildcard
     // rows to whatever the store found instead of replacing them.
     const wildcard: Tuple[] = [];
     const usersets: Tuple[] = [];
 
+    // What the request asked for, in the row's own terms: the
+    // wildcard is a flag rather than an id, so the comparison is
+    // against the flag when the request names it.
+    const requested = (row: {
+      subject_id: string | null;
+      subject_wildcard: boolean;
+    }) =>
+      query.subjectId === WILDCARD
+        ? row.subject_wildcard
+        : row.subject_id === query.subjectId;
+
     for (const row of rows) {
       const tuple = this.rowToTuple(row);
       if (row.subject_relation !== null) {
         usersets.push(tuple);
-      } else if (wanted(directRefs) && row.subject_id === query.subjectId) {
+      } else if (wanted(directRefs) && requested(row)) {
         // Checked first, so a check *for* the wildcard subject —
         // where both disjuncts are the same query — lands in
         // `direct` rather than being reported twice.
         direct = tuple;
-      } else if (wanted(wildcardRefs) && row.subject_id === WILDCARD) {
+      } else if (wanted(wildcardRefs) && row.subject_wildcard) {
         wildcard.push(tuple);
       }
       // Both arms are positively matched rather than falling
@@ -330,7 +386,10 @@ export class KyselyTupleStore implements TupleStore {
         object_id: tuple.objectId,
         relation: tuple.relation,
         subject_type: tuple.subjectType,
-        subject_id: tuple.subjectId,
+        // The wildcard leaves the id namespace here. Everything
+        // else is an id and the column holds it as one.
+        subject_id: tuple.subjectId === WILDCARD ? null : tuple.subjectId,
+        subject_wildcard: tuple.subjectId === WILDCARD,
         subject_relation: tuple.subjectRelation ?? null,
         condition_name: tuple.conditionName ?? null,
         condition_context: condCtx,
@@ -356,7 +415,15 @@ export class KyselyTupleStore implements TupleStore {
       .where("object_id", "=", tuple.objectId)
       .where("relation", "=", tuple.relation)
       .where("subject_type", "=", tuple.subjectType)
-      .where("subject_id", "=", tuple.subjectId)
+      // The same branch the subject relation takes below, for the
+      // same reason: a NULL is not a value to compare against.
+      .$call((qb) =>
+        tuple.subjectId === WILDCARD
+          ? qb
+              .where("subject_id", "is", null)
+              .where("subject_wildcard", "=", true)
+          : qb.where("subject_id", "=", tuple.subjectId),
+      )
       .$call((qb) => {
         if (
           tuple.subjectRelation !== null &&
@@ -377,11 +444,11 @@ export class KyselyTupleStore implements TupleStore {
    * that hold, so the order carries no meaning and no `ORDER BY`
    * is paid for.
    *
-   * Ids come back exactly as they were written. `object_id` is
-   * `text` since migration `007`; while it was `uuid`, PostgreSQL
-   * canonicalised every id on the way in and out, so two ids that
-   * differ only in hex case or hyphenation — two objects upstream
-   * — collapsed into one candidate.
+   * `object_id` is a `uuid` column, so an id reaching it is
+   * already canonical: the store declares `CANONICAL_UUID_IDS` and
+   * core refuses every other spelling at the request boundary, so
+   * PostgreSQL never gets the chance to fold two ids upstream
+   * holds apart into one candidate.
    */
   async listCandidateObjectIds(objectType: string): Promise<string[]> {
     const rows = await this.db
@@ -473,22 +540,57 @@ export class KyselyTupleStore implements TupleStore {
     return BigInt(result.numDeletedRows) > 0n;
   }
 
+  /**
+   * A row becomes a `Tuple`, with the wildcard rendered back into
+   * the id position `@tsfga/core` reads it from.
+   *
+   * The two impossible shapes are checked rather than assumed.
+   * `tuples_wildcard_shape` forbids both at the column level and
+   * `insertTuple` produces neither, so a row carrying one came
+   * from outside the library — and this is the same
+   * validate-at-the-boundary rule the JSON columns follow,
+   * generalised from one column to a pair. A store's reply is a
+   * hint; a wildcard row silently read as the id `null`, or an id
+   * row read as the wildcard, is the issue-045 bug arriving from
+   * the other direction.
+   */
   private rowToTuple(row: {
     object_type: string;
     object_id: string;
     relation: string;
     subject_type: string;
-    subject_id: string;
+    subject_id: string | null;
+    subject_wildcard: boolean;
     subject_relation: string | null;
     condition_name: string | null;
     condition_context: Json | null;
   }): Tuple {
+    let subjectId: string;
+    if (row.subject_wildcard) {
+      if (row.subject_id !== null) {
+        throw new InvalidStoredDataError(
+          "tsfga.tuples",
+          "subject_wildcard",
+          "a wildcard row carries a subject id",
+        );
+      }
+      subjectId = WILDCARD;
+    } else {
+      if (row.subject_id === null) {
+        throw new InvalidStoredDataError(
+          "tsfga.tuples",
+          "subject_id",
+          "a row with no subject id is not marked as the wildcard",
+        );
+      }
+      subjectId = row.subject_id;
+    }
     return {
       objectType: row.object_type,
       objectId: row.object_id,
       relation: row.relation,
       subjectType: row.subject_type,
-      subjectId: row.subject_id,
+      subjectId,
       subjectRelation: row.subject_relation,
       conditionName: row.condition_name,
       conditionContext: this.parseConditionContext(row.condition_context),

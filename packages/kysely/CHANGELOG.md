@@ -45,10 +45,6 @@ releases may contain breaking changes).
   writing a row `addTuple` refuses. Requires `@tsfga/core` with
   those types exported.
 
-## Unreleased
-
-### Changed
-
 - **BREAKING: `KyselyTupleStore.insertTuple` no longer updates an
   existing row.** It returns `true` when a row was inserted and
   `false` when the natural key already existed, leaving the stored
@@ -56,38 +52,61 @@ releases may contain breaking changes).
   `false` into `DuplicateTupleError`. The conflict clause is
   `doNothing()` where it was `doUpdateSet(...)`.
 
-- **BREAKING: migration `006-subject-id-text`.**
-  `tsfga.tuples.subject_id` becomes `text`, and the wildcard `"*"`
-  is stored literally instead of being encoded as the nil UUID.
+- **BREAKING: migration `006-wildcard-subject`, and the removal of
+  two pre-release migrations.** `006-subject-id-text` and
+  `007-object-id-text` are **deleted**, not superseded, so
+  `object_id` and `subject_id` are `uuid` columns as `001` created
+  them. The new `006` adds
+  `tsfga.tuples.subject_wildcard boolean`, makes `subject_id`
+  nullable, and recreates `idx_tuples_unique` with
+  `NULLS NOT DISTINCT`. It contains no type change at all — there
+  is nothing to narrow, because the chain a database runs is
+  `001`…`005` and then this.
 
-  **This fixes a grant to everybody.** A tuple written for a real
-  subject whose ID was `00000000-0000-0000-0000-000000000000`
-  landed in the wildcard's slot: it read back as `"*"`, granted
-  every subject of its type on any relation admitting `type:*`,
-  and stopped matching the subject it was written for. OpenFGA
-  reserves no ID; only the literal `*` is a wildcard, and no
-  subject ID is reserved here now either.
+  **This fixes a grant to everybody.** `subject_id` is a `uuid`
+  column and `"*"` is not a UUID, so the adapter stored the typed
+  wildcard as the nil UUID. A tuple written for a real subject
+  whose ID was `00000000-0000-0000-0000-000000000000` landed in
+  the wildcard's slot: it read back as `"*"`, granted every
+  subject of its type on any relation admitting `type:*`, and
+  stopped matching the subject it was written for. The shape now
+  lives in a column of its own, so **no id value is reserved** and
+  the class of bug has nowhere left to live — where widening the
+  column to `text` only removed the instance, and did so by making
+  every id a `text` comparison.
 
-  **Consumers must run migrations.** A database on `005` needs
-  `006` applied before the new adapter reads it correctly, and the
-  old adapter against a `006` database writes wildcards it can no
-  longer find.
+  **PostgreSQL 15 or later.** `NULLS NOT DISTINCT` is what makes a
+  second wildcard row on one key a duplicate while leaving a real
+  nil-UUID subject free beside it. The floor is claimed by feature
+  inspection, not by a CI matrix — CI runs PostgreSQL 18, and the
+  README says which it is. The `COALESCE(subject_id::text, '*')`
+  expression index is the documented fallback if the floor is
+  unacceptable; it costs 25 MB against 18 MB at 242 000 rows.
 
-  **Rolling `006` back is lossy by construction.** `text` admits
-  IDs `uuid` cannot, `"*"` among them; `down` casts and lets
-  PostgreSQL refuse, naming the offending row. Rows with non-UUID
-  subject IDs must be deleted or rewritten deliberately first.
-  `object_id` is unchanged and still `uuid`.
+  **Rolling `006` back refuses rather than merging.** A real
+  subject holding the nil UUID is legal here and *is* the wildcard
+  under `005`; folding the two would grant a relation to every
+  subject of the type on the strength of a row written for one.
+  `down` counts those rows and names them.
+
+  **A database that ran the deleted `006`/`007` cannot reach this
+  one.** Kysely's migrator throws `corrupted migrations: previously
+  executed migration … is missing` and `db:latest` fails before
+  anything else runs — re-provision it. No published
+  `@tsfga/kysely` carried either: 0.5.0 stops at `005`.
 
 - **The peer range on `@tsfga/core` must be raised to a floor
   before this ships.** Core's next release changes `TupleStore`
-  semantics — `insertTuple` is insert-and-report, not upsert — so
-  per the cross-package rules this is the floor case, not the
-  ceiling one: the floor moves to the core release that carries
-  it, and this package takes a **minor**. The range is left at
-  `>=0.6.0 <0.7.0` in the repo because it cannot name a core
-  version that does not exist yet; it moves in the release PR,
-  together with the installation section of the README.
+  twice over — `insertTuple` is insert-and-report rather than
+  upsert, and the interface gains a required `idDomain` — so per
+  the cross-package rules this is the floor case, not the ceiling
+  one: the floor moves to the core release that carries them, and
+  this package takes a **minor**. At the cut that is
+  `>=0.7.0 <0.8.0`, hand-written, never a caret or a tilde. The
+  range is left at `>=0.6.0 <0.7.0` in the repo because it cannot
+  name a core version that does not exist yet; it moves in the
+  release PR, together with the installation section of the
+  README.
 
 ### Documentation
 

@@ -31,9 +31,9 @@ import { fgaCreateStore, fgaWriteModel } from "./helpers/openfga.ts";
  * (`pkg/tuple/tuple.go:459-518`, `internal/validation/
  * validation.go:362`). tsfga spells it as three fields, which
  * removes some ways to malform it and keeps others: `subjectId`
- * is free text since migration `006`, so a caller can put a `:`,
- * a `#`, a space or a control character in it and upstream's
- * regex never runs.
+ * is a field of its own, so a caller can put a `:`, a `#`, a space
+ * or a control character in it and upstream's regex never runs
+ * over the rendered string.
  *
  * The check path applies the rule since round 1
  * (`validateCheckSubject`). The write path does not — that is

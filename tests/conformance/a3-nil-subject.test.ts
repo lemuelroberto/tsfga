@@ -31,8 +31,10 @@ import { fgaCreateStore, fgaWriteModel } from "./helpers/openfga.ts";
  * matching the one it was written for. That is the granting
  * direction, and the widest failure there is.
  *
- * Migration `006` stores `"*"` as itself and reserves nothing.
- * These tests hold that shut.
+ * Migration `006` moves the wildcard out of the id namespace
+ * entirely — `tsfga.tuples.subject_wildcard` is a boolean and
+ * `subject_id` is NULL on those rows — so there is no reserved
+ * value left for the bug to live in. These tests hold that shut.
  */
 
 const NIL_UUID = "00000000-0000-0000-0000-000000000000";

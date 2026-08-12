@@ -52,10 +52,11 @@ import {
  * subtrahend may be "everyone" or "the contractors" and the second
  * has to expand a nested group to decide.
  *
- * Object ids are human strings, not UUIDs — `object_id` is a
- * `text` column since migration `007`, and a model fixture is the
- * natural place to prove that the ordinary case works rather than
- * only the adversarial one.
+ * The ids were human strings when this fixture was written,
+ * because `object_id` was a `text` column at the time. They are
+ * canonical UUIDs now: the column is `uuid` again and the store
+ * declares its id domain, so the names live in a map and the
+ * assertions read in names.
  */
 
 const uuidMap = new Map<string, string>([

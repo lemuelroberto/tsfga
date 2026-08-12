@@ -143,29 +143,47 @@ Consumers on `@tsfga/core` 0.5.x and `@tsfga/kysely` 0.4.x should
 plan this as a coordinated deploy: the new adapter cannot read the
 old columns, and the old adapter cannot read the new one.
 
-### 006-subject-id-text must be applied
+### 006-wildcard-subject needs PostgreSQL 15
 
-This migration widens `tsfga.tuples.subject_id` from `uuid` to
-`text` and deletes the nil-UUID wildcard encoding: `"*"` is now
-stored literally.
+This migration gives the typed wildcard subject a column of its
+own — `tsfga.tuples.subject_wildcard boolean`, with `subject_id`
+NULL on those rows — so **no id value is reserved**.
 
-It fixes a grant to everybody. A tuple written for a real subject
-whose ID was `00000000-0000-0000-0000-000000000000` landed in the
-wildcard's slot — it read back as `"*"`, granted every subject of
-its type on any relation admitting `type:*`, and stopped matching
-the subject it was written for. OpenFGA reserves no ID; only the
-literal `*` is a wildcard.
+It fixes a grant to everybody. `subject_id` is a `uuid` column and
+`"*"` is not a UUID, so the adapter used to store the wildcard as
+the nil UUID. A tuple written for a real subject whose id was
+`00000000-0000-0000-0000-000000000000` landed in the wildcard's
+slot: it read back as `"*"`, granted every subject of its type on
+any relation admitting `type:*`, and stopped matching the subject
+it was written for. OpenFGA reserves no id. Neither does this,
+now — `user:00000000-0000-0000-0000-000000000000` names that one
+subject.
 
-A database on `005` needs `006` applied before this adapter reads
-it correctly, and the previous adapter against a `006` database
-writes wildcards it can no longer find — so this is a coordinated
-deploy too.
+**PostgreSQL 15 or later.** `idx_tuples_unique` is recreated with
+`NULLS NOT DISTINCT`, which is what makes a second wildcard row on
+one key a duplicate while leaving a real nil-UUID subject free to
+sit beside it. That clause landed in PostgreSQL 15. The floor is
+claimed by feature inspection rather than by a CI matrix — CI runs
+PostgreSQL 18, and a floor nothing exercises is a claim, so this
+says which it is. The alternative is an expression index on
+`COALESCE(subject_id::text, '*')`, which needs no version floor
+and costs 25 MB against 18 MB at 242 000 rows.
 
-**Rolling `006` back is lossy by construction.** `text` admits IDs
-`uuid` cannot, `"*"` among them. `down` casts and lets PostgreSQL
-refuse, naming the offending row; rows with non-UUID subject IDs
-must be deleted or rewritten deliberately first. `object_id` is
-unchanged.
+**Rolling `006` back refuses rather than merging.** A real subject
+whose id is the nil UUID is legal under this migration and is the
+*wildcard* under `005`, so restoring the old encoding would fold
+such a row into the wildcard's slot and grant its relation to
+every subject of the type — a grant nobody authorized. `down`
+counts those rows and names them; delete or rewrite them
+deliberately first.
+
+**If you are on a pre-release `006-subject-id-text` or
+`007-object-id-text`**, those two migrations are deleted rather
+than superseded. Kysely's migrator refuses to run against a
+database that applied them (`corrupted migrations: previously
+executed migration … is missing`), and re-provisioning is the
+answer. No published `@tsfga/kysely` ever carried them — 0.5.0
+stops at `005`.
 
 ## Transactions
 
@@ -229,15 +247,19 @@ Postgres datastore, never on its storage interface.
 
 ## Subject IDs and wildcards
 
-`object_id` is a `uuid` column, so object IDs must be
-UUID-formatted strings. `subject_id` is `text`: it holds the
-public wildcard subject `"*"` ("all subjects") as itself, and no
-subject ID is reserved. A grant to
-`user:00000000-0000-0000-0000-000000000000` names that one
-subject, exactly as it does upstream.
+`object_id` and `subject_id` are `uuid` columns, so ids must be
+canonical UUIDs — see [the top of this
+README](#identifiers-must-be-canonical-uuids).
 
-Object IDs that are not UUIDs are still unsupported — a known
-divergence from OpenFGA, tracked separately.
+The public wildcard subject `"*"` ("all subjects") is **not** an
+id and is not stored as one. `tsfga.tuples.subject_wildcard` is a
+boolean and `subject_id` is NULL on those rows, so **no id value
+is reserved**: a grant to
+`user:00000000-0000-0000-0000-000000000000` names that one
+subject, exactly as it does upstream. `@tsfga/core` still spells
+the wildcard `subjectId: "*"`; the adapter maps it in both
+directions and raises `InvalidStoredDataError` on a row that
+carries neither shape or both.
 
 ## Schema
 
@@ -254,7 +276,7 @@ query the adapter actually issues:
 
 | Index | Columns | Serves |
 |---|---|---|
-| `idx_tuples_unique` | `(object_type, object_id, relation, subject_type, subject_id, COALESCE(subject_relation, ''))`, unique | The insert's conflict target; also every probe, via its leading columns |
+| `idx_tuples_unique` | `(object_type, object_id, relation, subject_type, subject_id, COALESCE(subject_relation, ''))`, unique, `NULLS NOT DISTINCT` | The insert's conflict target; also every probe, via its leading columns. `NULLS NOT DISTINCT` is what makes a second wildcard row a duplicate |
 | `idx_tuples_object` | `(object_type, object_id)` | `findTuplesByRelation` |
 | `idx_tuples_userset` | `(object_type, object_id, relation)` where `subject_relation IS NOT NULL`, partial | The userset scan |
 | `idx_tuples_subject` | `(subject_type, subject_id)` | Reverse lookups by subject |
@@ -352,10 +374,20 @@ because scoping a client to a transaction is a documented and
 otherwise unremarkable thing to do.
 
 Which plan PostgreSQL picks depends on the disjuncts. Asking for
-one part gives the same plan as before this was merged. Asking
-for a direct probe and a wildcard probe collapses to the full
-five-column condition on `idx_tuples_unique`, since the two
-differ only in `subject_id`.
+one part gives the same plan as before this was merged. A direct
+probe and a wildcard probe differ only in `subject_id` — an
+equality against the id for one, `IS NULL` for the other — so
+both reach five columns of `idx_tuples_unique` and the pair is
+combined under it.
+
+The wildcard probe spells that `IS NULL` out even though
+`subject_wildcard` alone would be equivalent, and the difference
+is not cosmetic. The check constraint ties the two together and
+the planner does not know it: measured on PostgreSQL 18 with one
+object carrying 5000 subjects, the bare boolean has nothing
+indexed to descend on, falls to a sequential scan at 77 buffers
+and discards 5000 rows, while the `IS NULL` conjunct extends the
+index condition to five columns and costs 3.
 
 Mixing a probe with the userset scan is the interesting case, and
 the plan is not fixed: the two disjuncts share nothing past

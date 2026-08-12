@@ -471,11 +471,14 @@ const OBJECT_ID_RESERVED: readonly string[] = ["#", ":", " "];
  * write path and the check path.
  *
  * It closed a hole rather than a failing test on the write side.
- * `tsfga.tuples.object_id` was a `uuid` column until migration
- * `007` widened it to `text`, so the driver refused every malformed
- * object id and the missing rule could not be observed — exactly
- * the surface migration `006` opened on the subject side, which is
- * how the subject-side gap came to be reported at all.
+ * The rule was missing for as long as `@tsfga/kysely`'s
+ * `object_id` was a `uuid` column, because the driver refused
+ * every malformed object id on its own account and nothing could
+ * observe the absence. It stayed missing for a window in which the
+ * column was `text` and could observe it, which is how the gap
+ * came to be reported at all. The column is `uuid` again and the
+ * rule is core's, where it belongs: a store that holds opaque
+ * strings gets it too.
  *
  * The check path had no object gate at all until issue 422: a
  * malformed id is a perfectly good text column value, so tsfga read

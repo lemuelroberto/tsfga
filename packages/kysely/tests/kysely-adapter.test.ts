@@ -733,7 +733,7 @@ describe("KyselyTupleStore", () => {
      */
     const nilUuid = "00000000-0000-0000-0000-000000000000";
 
-    test("insertTuple stores the wildcard as itself", async () => {
+    test("insertTuple stores the wildcard out of the id namespace", async () => {
       await store.insertTuple(
         ungatedTuple({
           objectType: "doc",
@@ -744,13 +744,17 @@ describe("KyselyTupleStore", () => {
         }),
       );
 
+      // The shape is a column of its own and the id is absent, so
+      // no id value is reserved and the nil UUID is free to be an
+      // ordinary subject -- which the two tests below assert.
       const row = await db
         .selectFrom("tsfga.tuples")
-        .select("subject_id")
+        .select(["subject_id", "subject_wildcard"])
         .where("object_type", "=", "doc")
         .where("object_id", "=", uuid1)
         .executeTakeFirst();
-      expect(row?.subject_id).toBe("*");
+      expect(row?.subject_id).toBeNull();
+      expect(row?.subject_wildcard).toBe(true);
     });
 
     test("the direct probe reads the wildcard back as *", async () => {
@@ -910,16 +914,26 @@ describe("KyselyTupleStore", () => {
   });
 
   /**
-   * GAP-281. `object_id` is `text` since migration `007`, so an
-   * object id is stored as it was written and compared byte for
-   * byte — as upstream compares it, where `SplitObject` keeps
-   * everything after the first `:` verbatim. While the column was
-   * `uuid`, PostgreSQL parsed and canonicalised every id, so two
-   * ids a caller (and OpenFGA) treat as distinct shared one row
-   * and one set of grants.
+   * GAP-281, from the other end. `object_id` is a `uuid` column,
+   * and that column's input grammar is many-to-one: the uppercase,
+   * hyphenless, braced, braced-hyphenless and odd-hyphen spellings
+   * of one value all store as the same row, while OpenFGA holds
+   * them apart as distinct objects.
+   *
+   * That is the measurement `CANONICAL_UUID_IDS` exists for, and
+   * it is asserted here rather than argued: the store is where the
+   * folding happens, and core's gate is what stops a caller
+   * reaching it. These calls go straight to the store, so the gate
+   * is deliberately out of the way.
+   *
+   * The three tests this replaces asserted the opposite -- that
+   * the two spellings were two rows -- because migrations `006`
+   * and `007` had made both columns `text`. Both are deleted; that
+   * premise is retired, and with it the third test, which round-
+   * tripped `readme.md`.
    */
-  describe("Object ids are opaque strings", () => {
-    test("ids differing only in hex case are two objects", async () => {
+  describe("a uuid column folds the spellings OpenFGA holds apart", () => {
+    test("the uppercase spelling reads back the same row", async () => {
       const lower = "00000000-0000-4000-a000-0000000000ff";
       const upper = lower.toUpperCase();
 
@@ -933,17 +947,18 @@ describe("KyselyTupleStore", () => {
         }),
       );
 
+      // One row, reachable under either spelling and reported
+      // under the canonical one. Two objects upstream.
       const written = await readDirect("doc", upper, "viewer", "user", uuid2);
-      expect(written?.objectId).toBe(upper);
+      expect(written?.objectId).toBe(lower);
+      const other = await readDirect("doc", lower, "viewer", "user", uuid2);
+      expect(other?.objectId).toBe(lower);
       expect(
-        await readDirect("doc", lower, "viewer", "user", uuid2),
-      ).toBeNull();
-      expect(await store.findTuplesByRelation("doc", lower, "viewer")).toEqual(
-        [],
-      );
+        await store.findTuplesByRelation("doc", lower, "viewer"),
+      ).toHaveLength(1);
     });
 
-    test("a hyphenless id is not the hyphenated one", async () => {
+    test("the hyphenless spelling reads back the same row", async () => {
       const hyphenated = "00000000-0000-4000-a000-0000000000fe";
       const bare = hyphenated.replaceAll("-", "");
 
@@ -959,48 +974,29 @@ describe("KyselyTupleStore", () => {
 
       expect(
         (await readDirect("doc", bare, "viewer", "user", uuid2))?.objectId,
-      ).toBe(bare);
+      ).toBe(hyphenated);
       expect(
-        await readDirect("doc", hyphenated, "viewer", "user", uuid2),
-      ).toBeNull();
+        (await readDirect("doc", hyphenated, "viewer", "user", uuid2))
+          ?.objectId,
+      ).toBe(hyphenated);
     });
 
-    /**
-     * An id no `uuid` column could hold. The driver used to refuse
-     * it with its own `DatabaseError` — not a `TsfgaError`, and
-     * inside a transaction one that aborts every later statement.
-     * The column now carries it, and well-formedness is
-     * `@tsfga/core`'s write-path rule.
-     */
-    test("a non-UUID object id round-trips", async () => {
+    test("a subject id folds the same way", async () => {
+      const lower = "00000000-0000-4000-a000-0000000000fd";
+
       await store.insertTuple(
         ungatedTuple({
           objectType: "doc",
-          objectId: "readme.md",
+          objectId: uuid1,
           relation: "viewer",
           subjectType: "user",
-          subjectId: uuid2,
+          subjectId: lower.toUpperCase(),
         }),
       );
 
-      const tuple = await readDirect(
-        "doc",
-        "readme.md",
-        "viewer",
-        "user",
-        uuid2,
-      );
-      expect(tuple?.objectId).toBe("readme.md");
-      expect(await store.listCandidateObjectIds("doc")).toEqual(["readme.md"]);
       expect(
-        await store.deleteTuple({
-          objectType: "doc",
-          objectId: "readme.md",
-          relation: "viewer",
-          subjectType: "user",
-          subjectId: uuid2,
-        }),
-      ).toBe(true);
+        (await readDirect("doc", uuid1, "viewer", "user", lower))?.subjectId,
+      ).toBe(lower);
     });
   });
 

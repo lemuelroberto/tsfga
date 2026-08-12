@@ -109,32 +109,34 @@ describe("migrationProvider", () => {
   });
 
   /**
-   * `007` widens `object_id` to `text` for the same reason `006`
-   * widened `subject_id`, and its rollback is lossy the same way:
-   * `text` holds object ids `uuid` cannot, and inventing a UUID
-   * for one would rewrite a grant to name an object nobody
-   * authorized. So the rollback casts and lets PostgreSQL refuse
-   * the row, naming it.
+   * `006` gives the typed wildcard a column of its own, so a real
+   * subject whose id is the nil UUID becomes legal — and rolling
+   * back reinstates a shape where that value *is* the wildcard.
+   * Merging the two would grant a relation to every subject of the
+   * type on the strength of a row written for one, in the granting
+   * direction, with nothing to report it.
    *
-   * This runs before the `006` case because `migrateDown()` peels
-   * one migration at a time, newest first.
+   * So `down` counts those rows and refuses, naming them. It is
+   * the only contract of the migration nothing else exercises: the
+   * `up` direction is covered by every other suite in this
+   * package.
    */
-  test("rolling back 007 refuses an id uuid cannot hold", async () => {
+  test("rolling back 006 refuses a nil-UUID subject", async () => {
     const tuples = db.withTables<{
       "tsfga.tuples": {
         object_type: string;
         object_id: string;
         relation: string;
         subject_type: string;
-        subject_id: string;
+        subject_id: string | null;
+        subject_wildcard: boolean;
         created_at: Date;
         updated_at: Date;
       };
     }>();
     const now = new Date();
-    // Two rows: the wildcard subject the `006` case below needs
-    // (with a UUID object id, so it survives this rollback), and
-    // an object id only `text` can hold.
+    // The wildcard, which rolls back cleanly onto the nil UUID,
+    // and a real subject holding that same value, which does not.
     await tuples
       .insertInto("tsfga.tuples")
       .values([
@@ -143,16 +145,18 @@ describe("migrationProvider", () => {
           object_id: "00000000-0000-0000-0000-00000000000a",
           relation: "viewer",
           subject_type: "user",
-          subject_id: "*",
+          subject_id: null,
+          subject_wildcard: true,
           created_at: now,
           updated_at: now,
         },
         {
           object_type: "document",
-          object_id: "readme.md",
+          object_id: "00000000-0000-0000-0000-00000000000b",
           relation: "viewer",
           subject_type: "user",
-          subject_id: "00000000-0000-0000-0000-00000000000b",
+          subject_id: "00000000-0000-0000-0000-000000000000",
+          subject_wildcard: false,
           created_at: now,
           updated_at: now,
         },
@@ -165,66 +169,11 @@ describe("migrationProvider", () => {
     }).migrateDown();
     expect(blocked.error).not.toBe(undefined);
 
-    // The failed migration is transactional, so the column is
-    // still `text` and the row is still there to be dealt with.
+    // The failed migration is transactional, so the column pair is
+    // untouched and the row is still there to be dealt with.
     await tuples
       .deleteFrom("tsfga.tuples")
-      .where("object_id", "=", "readme.md")
-      .execute();
-
-    const { error } = await new Migrator({
-      db,
-      provider: migrationProvider,
-    }).migrateDown();
-    expect(error).toBe(undefined);
-    expect(await columnType("object_id")).toBe("uuid");
-  });
-
-  /**
-   * `006` widens `subject_id` to `text`, so rolling it back is
-   * lossy by construction: `text` holds ids `uuid` cannot, the
-   * wildcard `"*"` among them. There is no honest conversion —
-   * mapping `"*"` onto the nil UUID reinstates exactly the
-   * collision `006` deletes — so the rollback casts and lets
-   * PostgreSQL refuse the row, naming it.
-   */
-  test("rolling back 006 refuses an id uuid cannot hold", async () => {
-    const tuples = db.withTables<{
-      "tsfga.tuples": {
-        object_type: string;
-        object_id: string;
-        relation: string;
-        subject_type: string;
-        subject_id: string;
-        created_at: Date;
-        updated_at: Date;
-      };
-    }>();
-    const now = new Date();
-    await tuples
-      .insertInto("tsfga.tuples")
-      .values({
-        object_type: "document",
-        object_id: "00000000-0000-0000-0000-00000000000c",
-        relation: "viewer",
-        subject_type: "user",
-        subject_id: "*",
-        created_at: now,
-        updated_at: now,
-      })
-      .execute();
-
-    const blocked = await new Migrator({
-      db,
-      provider: migrationProvider,
-    }).migrateDown();
-    expect(blocked.error).not.toBe(undefined);
-
-    // The failed migration is transactional, so the column is
-    // still `text` and the row is still there to be dealt with.
-    await tuples
-      .deleteFrom("tsfga.tuples")
-      .where("subject_id", "=", "*")
+      .where("subject_id", "=", "00000000-0000-0000-0000-000000000000")
       .execute();
 
     const { error } = await new Migrator({
@@ -233,6 +182,7 @@ describe("migrationProvider", () => {
     }).migrateDown();
     expect(error).toBe(undefined);
     expect(await columnType("subject_id")).toBe("uuid");
+    expect(await columnType("subject_wildcard")).toBe(undefined);
   });
 
   /**

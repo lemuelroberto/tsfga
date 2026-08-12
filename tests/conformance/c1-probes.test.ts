@@ -36,9 +36,9 @@ import { fgaListObjects, fgaWriteTuplesRaw } from "./helpers/openfga.ts";
  *    from the scan that started the candidate.
  * 2. `check` / `listObjects` now refuse an **undefined subject
  *    type**.
- * 3. `object_id` is a `text` column since migration `007`, so a
- *    non-UUID object id has to survive a four-level composition,
- *    not just a single direct row.
+ * 3. An object id has to survive a four-level composition, two of
+ *    them as the object half of a userset ref the next level
+ *    compares by string, not just a single direct row.
  *
  * The model is `c1-matrix/model.dsl` — OpenFGA's own listobjects
  * matrix, `_c1`-suffixed.
