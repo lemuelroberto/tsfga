@@ -1,6 +1,19 @@
 import type { SubjectShape } from "./tuple-validation.ts";
 import type { TypeRestriction } from "./types.ts";
 
+/**
+ * The base every error this library raises extends, so a caller
+ * can catch the whole surface with one `instanceof`.
+ *
+ * It is also raised **directly**, in one narrow family: a refusal
+ * about the caller's own arguments that upstream cannot express
+ * because its own field would not hold the value — an option
+ * outside its domain (`maxBreadth`, `maxConcurrentChecks`,
+ * `maxDepth`, `writeContextByteLimit`), or a malformed object id.
+ * These are argument errors, not authorization outcomes, and
+ * giving each a class would grow the surface without giving a
+ * caller anything to do differently.
+ */
 export class TsfgaError extends Error {
   constructor(message: string) {
     super(message);
@@ -300,24 +313,57 @@ export type RelationConfigDefect =
    * The object type's own name is not one the model can carry.
    *
    * Upstream refuses it at the API boundary, before the typesystem
-   * ever sees the model — `type_invalid_pattern` for a name holding
-   * `:`, `#`, `@`, a space or a control character, and
+   * ever sees the model — `type_invalid_pattern` for a name the
+   * proto pattern `^[^:#@\s]{1,254}$` rejects, and
    * `type_invalid_length` for an empty or over-long one
    * (`pkg/server/errors/encoded_errors.go:190-198`). One cause
    * covers both: upstream's own split is between two proto
    * constraints on the same field, not between two defects.
+   *
+   * `\s` is Go's five whitespace characters — tab, newline, form
+   * feed, carriage return and space — and **nothing wider**. There
+   * is no general control-character rule here: U+000B, U+0001,
+   * U+007F, U+0085, U+00A0, U+2028 and U+3000 are all stored,
+   * measured against the v1.18.2 container. The bound counts code
+   * points, not bytes and not UTF-16 units.
    */
   | "malformed type name"
   /**
    * The relation's own name is not one the model can carry.
    *
    * `relation_invalid_pattern` / `relation_invalid_length`, the
-   * same pair on the relation field. The predicate is upstream's
-   * `IsValidRelation` (`pkg/tuple/tuple.go:440-457`) — no `:`,
-   * `#`, `@`, space or control character — under a shorter length
-   * bound than a type name's.
+   * same pair on the relation field, and the same character class
+   * — `^[^:#@\s]{1,50}$`, differing from a type name's only in the
+   * bound. `IsValidRelation` (`pkg/tuple/tuple.go:440-457`) is a
+   * later gate on the *tuple* path and is not what refuses a
+   * model.
    */
   | "malformed relation name"
+  /**
+   * A condition's own name is not one the model can carry.
+   *
+   * `Condition.name` carries the same proto pattern as a relation
+   * name, `^[^:#@\s]{1,50}$`, so the predicate and the bound are
+   * the ones above and only the field differs. A condition stored
+   * under a name upstream refuses is one no type restriction in an
+   * OpenFGA-acceptable model could ever name.
+   *
+   * On `InvalidRelationConfigError` rather than a class of its own
+   * for the reason the whole union exists: upstream reports one
+   * invalid-model error and discriminates by message.
+   */
+  | "malformed condition name"
+  /**
+   * A condition parameter's name is not one the model can carry.
+   *
+   * Every key of `Condition.parameters` carries the same pattern
+   * under the same bound. Separate from the condition's own name
+   * because it is a different loop, and because a parameter name
+   * is the one place the model's name class and CEL's identifier
+   * grammar disagree: CEL cannot *reference* a parameter named
+   * `bad:p`, but the model gate refuses it before that matters.
+   */
+  | "malformed condition parameter name"
   /** A set operation with fewer than two children. */
   | "intersection has fewer than two operands"
   /** A tupleset relation may not be assignable to a userset. */
@@ -364,26 +410,110 @@ export type RelationConfigDefect =
   /** A rewrite names a relation the object type does not define. */
   | "undefined relation";
 
-/** A relation config the model would not admit. */
+/**
+ * A piece of the model the model would not admit.
+ *
+ * Named for the relation config because that is where every cause
+ * but two is raised. The two condition-name causes are part of the
+ * same upstream error — one invalid-model refusal, discriminated
+ * by message — and a condition definition has no object type and
+ * no relation, so both fields are `null` on those and the message
+ * names the condition instead.
+ */
 export class InvalidRelationConfigError extends TsfgaError {
   override readonly cause: RelationConfigDefect;
-  readonly objectType: string;
-  readonly relation: string;
+  /** `null` when the defect is a condition definition's, not a config's. */
+  readonly objectType: string | null;
+  /** `null` for the same reason. */
+  readonly relation: string | null;
+  /** The condition the write named, on the two condition causes. */
+  readonly conditionName?: string;
 
   constructor(
     cause: RelationConfigDefect,
-    objectType: string,
-    relation: string,
+    objectType: string | null,
+    relation: string | null,
     detail?: string,
+    conditionName?: string,
   ) {
-    super(
-      `Invalid relation config for ${objectType}.${relation}: ${cause}` +
-        (detail === undefined ? "" : ` (${detail})`),
-    );
+    const where =
+      objectType === null || relation === null
+        ? `Invalid condition definition` +
+          (conditionName === undefined ? "" : ` '${conditionName}'`)
+        : `Invalid relation config for ${objectType}.${relation}`;
+    super(`${where}: ${cause}${detail === undefined ? "" : ` (${detail})`}`);
     this.name = "InvalidRelationConfigError";
     this.cause = cause;
     this.objectType = objectType;
     this.relation = relation;
+    if (conditionName !== undefined) this.conditionName = conditionName;
+  }
+}
+
+/**
+ * Every way a request's own CEL context can be refused, before
+ * anything is resolved.
+ *
+ * A cause string rather than a class each, for the reason
+ * `ConditionalTupleCause` is one.
+ */
+export type RequestContextDefect =
+  /**
+   * A key or string value holds a Unicode control character.
+   *
+   * Go's `unicode.IsControl` — `U+0000`-`U+001F` and
+   * `U+007F`-`U+009F`. Nested lists and structs are in scope;
+   * numbers, booleans and nulls carry no characters and are
+   * skipped, exactly as upstream's switch on the value kind skips
+   * them (`ValidateStruct`,
+   * `internal/validation/validation.go:402-441`).
+   */
+  "context contains forbidden characters";
+
+/**
+ * The request's own context is one upstream refuses.
+ *
+ * Distinct from `InvalidConditionalTupleError`, which is about a
+ * *tuple's* condition context and names the tuple's subject and
+ * relation. Upstream reports this one as a request-level
+ * `validation_error` from `CheckCommand`, before it resolves
+ * anything (`pkg/server/commands/check_command.go:197`), so it
+ * names nothing but the context — there is no tuple to blame and
+ * naming one would be a lie.
+ *
+ * Raised at the entry to `check`, `checkMany`, `listObjects` and
+ * `listSubjects`, ahead of any store read.
+ */
+export class InvalidRequestContextError extends TsfgaError {
+  override readonly cause: RequestContextDefect;
+  /**
+   * Where in the context the offending value sits, outermost key
+   * first — `["claims", "roles"]` for a bad string inside a list
+   * under `claims.roles`.
+   *
+   * `[]` means the walk did not track a path to it; the value
+   * itself is still on the error and in the message, which is
+   * what upstream reports.
+   */
+  readonly path: readonly string[];
+  /** The offending key or string value, when one was isolated. */
+  readonly value?: string;
+
+  constructor(
+    cause: RequestContextDefect,
+    path: readonly string[],
+    value?: string,
+  ) {
+    super(
+      `Invalid request context` +
+        (path.length === 0 ? "" : ` at '${path.join(".")}'`) +
+        `: ${cause}` +
+        (value === undefined ? "" : ` ('${value}')`),
+    );
+    this.name = "InvalidRequestContextError";
+    this.cause = cause;
+    this.path = path;
+    if (value !== undefined) this.value = value;
   }
 }
 

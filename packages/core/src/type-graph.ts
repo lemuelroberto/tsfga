@@ -275,6 +275,29 @@ export function createReachability(
       });
     };
 
+    // A relation node is a source of *itself*. `type#relation`
+    // holds `relation` on `type` by definition — upstream answers
+    // that in `IsSelfDefining` before the type graph is consulted
+    // at all, and `PathExists` for a userset subject walks *from*
+    // the node the userset names, so that node is trivially
+    // reachable from itself (`typesystem.go:708-729`).
+    //
+    // Recorded before the config is read, and never conditioned on
+    // `directlyAssignable`: the identity holds even where the
+    // relation admits no userset at all, measured on v1.18.2 and
+    // recorded beside `checkNode`'s identity block. Without it,
+    // every rewrite standing between a userset subject and the
+    // relation it names — a computed userset, a union arm, an
+    // exclusion minuend, a tuple-to-userset — pruned the node to
+    // `DENIED` before the identity could fire.
+    //
+    // This widens the source set, which is the safe direction: the
+    // prune must stay wider than the truth. It cannot grant across
+    // objects, because the walk is a question about the model's
+    // shape and knows no object ids — `checkNode`'s identity still
+    // compares `objectId`.
+    acc.addUserset(node.objectType, node.relation);
+
     const config = await readConfig(node.objectType, node.relation);
     if (config === undefined) {
       acc.incomplete = true;
