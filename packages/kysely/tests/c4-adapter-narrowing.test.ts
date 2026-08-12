@@ -362,7 +362,7 @@ describe("a client over a transaction", () => {
       subjectId: uuidAlice,
     };
     await client.addTuple(tuple);
-    expect(await client.removeTuple(tuple)).toBe(true);
+    await client.removeTuple(tuple);
     expect(await client.check(tuple)).toBe(false);
     // And the write gate is open again: the row is gone, so this is
     // not a duplicate.

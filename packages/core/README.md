@@ -72,7 +72,7 @@ const allowed = await fga.check({
 | `check(request)` | Check if a subject has a relation on an object; the subject may be a userset via `subjectRelation` |
 | `checkMany(requests)` | Check several requests in one shared resolution scope; outcomes in request order |
 | `addTuple(request)` | Insert a relationship tuple; a tuple that already exists throws `DuplicateTupleError` |
-| `removeTuple(request)` | Delete a relationship tuple |
+| `removeTuple(request)` | Delete a relationship tuple; throws when it is not there |
 | `listObjects(request)` | List object IDs the subject can access, in candidate order; the request takes `subjectRelation`, `context` and `contextualTuples` |
 | `listSubjects(objectType, objectId, relation)` | List direct subjects for an object + relation (no expansion) |
 | `writeRelationConfig(config)` | Insert or update a relation configuration |
@@ -955,6 +955,47 @@ permanent.
 Upstream's `on_duplicate: "ignore"` opt-in is not offered. A
 caller that wants the old absorb-the-duplicate behaviour catches
 `DuplicateTupleError` and ignores it.
+
+## Deleting a tuple that is not there
+
+`removeTuple` throws `MissingTupleError` when no such row exists,
+and returns `Promise<void>`. Upstream's `on_missing` defaults to
+`error`, so a delete of an absent row is
+`write_failed_due_to_invalid_input` rather than a quiet no-op —
+tsfga answered `false`, which encoded an outcome OpenFGA has no
+word for.
+
+A caller that wants the old behaviour catches it:
+
+```ts
+try {
+  await fga.removeTuple(key);
+} catch (error) {
+  if (!(error instanceof MissingTupleError)) throw error;
+}
+```
+
+**A malformed delete throws first.** `removeTuple` applies
+upstream's *syntactic* delete validation — `IsValidUser` on the
+rendered subject, the 512-byte subject bound, the
+`^[^\s]{2,256}$` object bound, and the
+`^[^:#@\s]{1,50}$` relation pattern on a non-empty relation. That
+is the whole of it.
+
+**It applies no model validation at all, deliberately.** Upstream
+does not either: `WriteCommand`'s delete loop is one `IsValidUser`
+call and a `TODO`. So an undefined relation, an undefined type,
+and a subject type the relation does not admit all reach the row
+and report `MissingTupleError` if it is absent. That is what makes
+a bad model change recoverable — a row written under a model that
+defined `editor` is still deletable under one that does not. A
+delete gate built out of the write validators would strand those
+rows permanently.
+
+The subject predicate is genuinely a different one, not the write
+path's narrowed: `IsValidUser` is a union over the bare wildcard,
+a user id, an object and a userset, so `user:a#b` is a legal
+delete key and an illegal write key.
 
 ### Malformed subjects
 

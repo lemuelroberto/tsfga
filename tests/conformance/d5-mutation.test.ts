@@ -139,8 +139,7 @@ describe("D5 write/read interleaving", () => {
 
   /** Remove one tuple from both engines. */
   async function revoke(tuple: AddTupleRequest): Promise<void> {
-    const removed = await client.removeTuple(tuple);
-    expect(removed).toBe(true);
+    await client.removeTuple(tuple);
     await fga.deleteTuples([fgaRef(tuple)], { authorizationModelId });
   }
 

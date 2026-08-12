@@ -85,7 +85,7 @@ describe("Ledger Model Conformance", () => {
     const user = tuple.subjectRelation
       ? `${tuple.subjectType}:${tuple.subjectId}#${tuple.subjectRelation}`
       : `${tuple.subjectType}:${tuple.subjectId}`;
-    const [removed, upstream] = await Promise.all([
+    const [, upstream] = await Promise.all([
       tsfga.removeTuple(tuple),
       fgaClient
         .deleteTuples(
@@ -109,8 +109,7 @@ describe("Ledger Model Conformance", () => {
           throw error;
         }),
     ]);
-    expect(removed ? "deleted" : "missing").toBe(upstream);
-    expect(removed).toBe(true);
+    expect("deleted").toBe(upstream);
   }
 
   beforeAll(async () => {

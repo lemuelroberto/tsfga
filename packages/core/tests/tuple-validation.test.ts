@@ -782,7 +782,7 @@ describe("addTuple refuses a duplicate", () => {
 
   test("removing then writing is how a condition changes", async () => {
     await fga.addTuple(bare);
-    expect(await fga.removeTuple(bare)).toBe(true);
+    await fga.removeTuple(bare);
     await expect(
       fga.addTuple({
         ...bare,
@@ -949,8 +949,8 @@ describe("removeTuple validates as upstream validates a delete", () => {
   /** The rule that refused, or the store's answer. */
   async function ruleFor(request: Parameters<typeof fga.removeTuple>[0]) {
     try {
-      const removed = await fga.removeTuple(request);
-      return removed ? "accepted" : "missing";
+      await fga.removeTuple(request);
+      return "accepted";
     } catch (error) {
       if (!(error instanceof TsfgaError)) throw error;
       return error.ruleId ?? "unnamed";
@@ -971,7 +971,7 @@ describe("removeTuple validates as upstream validates a delete", () => {
 
   test("the rendered subject is bounded at 512 bytes", async () => {
     expect(await ruleFor(target({ subjectId: "a".repeat(507) }))).toBe(
-      "missing",
+      "DELETE-TUPLE-MISSING",
     );
     expect(await ruleFor(target({ subjectId: "a".repeat(508) }))).toBe(
       "DELETE-SUBJECT-TOO-LONG",
@@ -983,7 +983,7 @@ describe("removeTuple validates as upstream validates a delete", () => {
       await ruleFor(
         target({ objectType: "t".repeat(219), objectId: "o".repeat(36) }),
       ),
-    ).toBe("missing");
+    ).toBe("DELETE-TUPLE-MISSING");
     expect(
       await ruleFor(
         target({ objectType: "t".repeat(220), objectId: "o".repeat(36) }),
@@ -1001,14 +1001,18 @@ describe("removeTuple validates as upstream validates a delete", () => {
   });
 
   test("an empty relation is not matched against the pattern", async () => {
-    expect(await ruleFor(target({ relation: "" }))).toBe("missing");
+    expect(await ruleFor(target({ relation: "" }))).toBe(
+      "DELETE-TUPLE-MISSING",
+    );
   });
 
   test("a userset subject id is legal here and not on a write", async () => {
     // `IsValidUser` is a union, and `user:a#b` satisfies its
     // userset arm. The write path runs `IsValidUserID` on the id
     // alone and refuses the `#`.
-    expect(await ruleFor(target({ subjectId: "a#b" }))).toBe("missing");
+    expect(await ruleFor(target({ subjectId: "a#b" }))).toBe(
+      "DELETE-TUPLE-MISSING",
+    );
   });
 
   test("a malformed subject beats a missing row", async () => {

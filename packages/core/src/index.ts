@@ -13,6 +13,7 @@ import {
   DuplicateTupleError,
   ImplicitTupleError,
   InvalidObjectError,
+  MissingTupleError,
   RelationConfigNotFoundError,
   TsfgaError,
 } from "./errors.ts";
@@ -118,7 +119,19 @@ export interface TsfgaClient {
    *   stored row keeps the condition it had.
    */
   addTuple(request: AddTupleRequest): Promise<void>;
-  removeTuple(request: RemoveTupleRequest): Promise<boolean>;
+  /**
+   * Delete one tuple.
+   *
+   * @throws InvalidSubjectTypeError or InvalidObjectError when the
+   *   key is malformed. This is upstream's *syntactic* delete
+   *   validation and **not** its model validation: an undefined
+   *   relation, an undefined type or a subject type the relation
+   *   does not admit all fall through, as upstream does, which is
+   *   what makes a bad model change recoverable.
+   * @throws MissingTupleError when no such tuple exists. Upstream's
+   *   `on_missing` defaults to `error`.
+   */
+  removeTuple(request: RemoveTupleRequest): Promise<void>;
   /**
    * List object IDs of a type for which the subject passes a full
    * check. Candidates come from `listCandidateObjectIds`
@@ -351,7 +364,7 @@ export function createTsfga(
       }
     },
 
-    removeTuple(request: RemoveTupleRequest): Promise<boolean> {
+    async removeTuple(request: RemoveTupleRequest): Promise<void> {
       // Upstream's delete validation, which is *not* its write
       // validation: `IsValidUser` on the rendered subject plus the
       // three proto bounds, and no model validation at all. An
@@ -359,7 +372,23 @@ export function createTsfga(
       // exist", which is what makes a bad model change
       // recoverable.
       validateTupleDelete(request);
-      return store.deleteTuple(request);
+      const removed = await store.deleteTuple(request);
+      // Upstream's `on_missing` defaults to `error`, so a delete
+      // of a row that is not there is refused. The boolean stays
+      // on `TupleStore.deleteTuple` -- it is how the client learns
+      // whether to throw, exactly as `insertTuple`'s feeds
+      // `DuplicateTupleError`.
+      if (!removed) {
+        throw new MissingTupleError(
+          request.objectType,
+          request.objectId,
+          request.relation,
+          request.subjectType,
+          request.subjectId,
+          request.subjectRelation ?? null,
+          "DELETE-TUPLE-MISSING",
+        );
+      }
     },
 
     listObjects(request: ListObjectsRequest): Promise<string[]> {
@@ -576,6 +605,9 @@ export {
   InvalidRequestContextError,
   InvalidStoredDataError,
   InvalidSubjectTypeError,
+  // Raised by `removeTuple` when the row is not there -- upstream's
+  // `on_missing` default. The twin of `DuplicateTupleError`.
+  MissingTupleError,
   // `InvalidObjectError.cause` is a union for the same reason the
   // others here are: a caller switching on it needs the name.
   type ObjectDefect,

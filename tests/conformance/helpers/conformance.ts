@@ -6,6 +6,7 @@ import {
   type AddTupleRequest,
   type CheckRequest,
   formatRestriction,
+  MissingTupleError,
   type RelationConfig,
   type RemoveTupleRequest,
   type TsfgaClient,
@@ -918,11 +919,16 @@ export async function expectDeleteConformance(
 
   let tsfgaOutcome: DeleteOutcome;
   try {
-    const removed = await tsfgaClient.removeTuple(tuple);
-    tsfgaOutcome = removed ? "accepted" : "missing";
+    await tsfgaClient.removeTuple(tuple);
+    tsfgaOutcome = "accepted";
   } catch (error: unknown) {
     if (!(error instanceof TsfgaError)) throw error;
-    tsfgaOutcome = "refused";
+    // The two refusals are different outcomes, and telling them
+    // apart is the whole point of this helper: a malformed delete
+    // is refused at the request boundary, an absent row is refused
+    // from inside the command, and a delete that is both must
+    // report the first.
+    tsfgaOutcome = error instanceof MissingTupleError ? "missing" : "refused";
   }
 
   expect(tsfgaOutcome).toBe(openFgaOutcome);

@@ -420,6 +420,57 @@ export class DuplicateTupleError extends TsfgaError {
 }
 
 /**
+ * The tuple is not there.
+ *
+ * Upstream's `on_missing` defaults to `error`
+ * (`pkg/server/commands/write.go`), so deleting a row that does
+ * not exist is refused rather than absorbed --
+ * `write_failed_due_to_invalid_input`. `removeTuple` used to
+ * answer `false` for it, which encoded an outcome OpenFGA has no
+ * word for.
+ *
+ * Named for `on_missing`, as `DuplicateTupleError` is named for
+ * `on_duplicate`, and carrying the same fields: this is the same
+ * refusal reached from the other direction, and upstream reports
+ * both through one sentinel.
+ */
+export class MissingTupleError extends TsfgaError {
+  readonly objectType: string;
+  readonly objectId: string;
+  readonly relation: string;
+  readonly subjectType: string;
+  readonly subjectId: string;
+  readonly subjectRelation: string | null;
+
+  constructor(
+    objectType: string,
+    objectId: string,
+    relation: string,
+    subjectType: string,
+    subjectId: string,
+    subjectRelation: string | null,
+    ruleId?: WriteRuleId,
+  ) {
+    const subject =
+      subjectRelation === null
+        ? `${subjectType}:${subjectId}`
+        : `${subjectType}:${subjectId}#${subjectRelation}`;
+    super(
+      `Cannot delete a tuple which does not exist: ` +
+        `${objectType}:${objectId}#${relation}@${subject}`,
+      ruleId,
+    );
+    this.name = "MissingTupleError";
+    this.objectType = objectType;
+    this.objectId = objectId;
+    this.relation = relation;
+    this.subjectType = subjectType;
+    this.subjectId = subjectId;
+    this.subjectRelation = subjectRelation;
+  }
+}
+
+/**
  * Every way a relation config can be malformed against the rules
  * OpenFGA's typesystem enforces when it validates a model.
  *

@@ -54,8 +54,8 @@
     "dispositions": {
       "n/a": 51,
       "pinned": 4,
-      "claimed": 36,
-      "claimed-partial": 6,
+      "claimed": 40,
+      "claimed-partial": 2,
       "open": 1
     }
   },
@@ -780,7 +780,7 @@
         "pkg/server/commands/write.go:76"
       ],
       "disposition": "n/a",
-      "reason": "as `on_duplicate`: `removeTuple` takes no options, and upstream's default -- `error` -- is the only behaviour tsfga has."
+      "reason": "`removeTuple` takes no options. Upstream's default -- `error` -- is the only behaviour tsfga has, and it is `DELETE-TUPLE-MISSING`."
     },
     {
       "package": "commands",
@@ -789,12 +789,12 @@
       "sites": [
         "pkg/server/commands/write.go:106"
       ],
-      "disposition": "claimed-partial",
+      "disposition": "claimed",
       "rules": [
-        "TUPLE-DUPLICATE"
+        "TUPLE-DUPLICATE",
+        "DELETE-TUPLE-MISSING"
       ],
-      "test": "packages/core/tests/tuple-validation.test.ts:the second write of the same edge",
-      "gap": "the duplicate-write branch is implemented; the missing-delete branch is finding 502 and `removeTuple` answers `false` where upstream refuses."
+      "test": "packages/core/tests/tuple-validation.test.ts:the second write of the same edge"
     },
     {
       "package": "commands",
@@ -873,12 +873,12 @@
       "sites": [
         "pkg/storage/errors.go:24"
       ],
-      "disposition": "claimed-partial",
+      "disposition": "claimed",
       "rules": [
-        "TUPLE-DUPLICATE"
+        "TUPLE-DUPLICATE",
+        "DELETE-TUPLE-MISSING"
       ],
-      "test": "packages/core/tests/tuple-validation.test.ts:the second write of the same edge",
-      "gap": "the write half is implemented; the delete half is finding 502."
+      "test": "packages/core/tests/tuple-validation.test.ts:the second write of the same edge"
     },
     {
       "package": "storage",
@@ -938,12 +938,12 @@
         "pkg/storage/errors.go:50",
         "pkg/storage/errors.go:58"
       ],
-      "disposition": "claimed-partial",
+      "disposition": "claimed",
       "rules": [
-        "TUPLE-DUPLICATE"
+        "TUPLE-DUPLICATE",
+        "DELETE-TUPLE-MISSING"
       ],
-      "test": "packages/core/tests/tuple-validation.test.ts:the second write of the same edge",
-      "gap": "the write branch (`:59`) is implemented; the delete branch (`:51`) is finding 502."
+      "test": "packages/core/tests/tuple-validation.test.ts:the second write of the same edge"
     },
     {
       "package": "storage",
@@ -1185,12 +1185,12 @@
       "sites": [
         "pkg/server/errors/errors.go:119"
       ],
-      "disposition": "claimed-partial",
+      "disposition": "claimed",
       "rules": [
-        "TUPLE-DUPLICATE"
+        "TUPLE-DUPLICATE",
+        "DELETE-TUPLE-MISSING"
       ],
-      "test": "packages/core/tests/tuple-validation.test.ts:the second write of the same edge",
-      "gap": "the code upstream returns for both halves of `ErrInvalidWriteInput`; the delete half is finding 502."
+      "test": "packages/core/tests/tuple-validation.test.ts:the second write of the same edge"
     },
     {
       "package": "errors",

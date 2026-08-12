@@ -537,6 +537,9 @@ driver's own error for a malformed id — a known, scoped gap.)
 | `ConditionNotFoundError` | a tuple names a condition the store does not define |
 | `ConditionCompileError` | `writeConditionDefinition` given an expression that does not parse |
 | `ConditionEvaluationError` | CEL evaluation fails |
+| `MissingTupleError` | `removeTuple` is given a row that does not exist -- upstream's `on_missing` default |
+| `DuplicateTupleError` | `addTuple` is given an edge already stored -- upstream's `on_duplicate` default |
+| `InvalidObjectError` | the object half of a request or a write is one no row may carry |
 | `DepthExceededError` | the recursion budget is exhausted |
 | `InvalidStoredDataError` | a JSON column holds a shape the adapter cannot read |
 
@@ -688,7 +691,8 @@ export interface TsfgaClient {
    *  failing check reports its error in its own outcome. */
   checkMany(requests: readonly CheckRequest[]): Promise<CheckOutcome[]>;
   addTuple(request: AddTupleRequest): Promise<void>;
-  removeTuple(request: RemoveTupleRequest): Promise<boolean>;
+  /** Throws MissingTupleError when the row is not there. */
+  removeTuple(request: RemoveTupleRequest): Promise<void>;
   listObjects(request: ListObjectsRequest): Promise<string[]>;
   /** Direct subjects only, filtered by the relation's
    *  `directlyAssignable` — condition included. */

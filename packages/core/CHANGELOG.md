@@ -38,6 +38,44 @@ releases may contain breaking changes).
   that fails if the divergence disappears. Neither file ships in
   the package.
 
+### Changed
+
+- **BREAKING: `removeTuple` returns `Promise<void>` and throws.**
+  It threw nothing and answered `false` both for a malformed
+  delete and for a row that was not there; OpenFGA refuses the
+  first with a validation error and the second with
+  `write_failed_due_to_invalid_input`, and has no word for the
+  boolean tsfga was returning.
+
+  **What breaks:** any caller reading the return value. `if (await
+  fga.removeTuple(key))` no longer compiles, and a caller that
+  deleted speculatively now has to catch:
+
+  ```ts
+  try {
+    await fga.removeTuple(key);
+  } catch (error) {
+    if (!(error instanceof MissingTupleError)) throw error;
+  }
+  ```
+
+  `TupleStore.deleteTuple` is unchanged and still returns
+  `Promise<boolean>`: that boolean is how the client learns
+  whether to throw, exactly as `insertTuple`'s feeds
+  `DuplicateTupleError`. A store author has nothing to do.
+
+  The syntactic gate that lands with it is upstream's delete
+  validation, which is **not** its write validation: no relation
+  config is read, so an undefined relation or type falls through
+  to `MissingTupleError` rather than being refused. That is what
+  keeps a model change recoverable.
+
+### Added
+
+- **`MissingTupleError`**, the twin of `DuplicateTupleError`,
+  carrying the same fields and named for upstream's `on_missing`
+  as that one is named for `on_duplicate`.
+
 ### Removed
 
 - **BREAKING: `matches()` is no longer supported.** A condition

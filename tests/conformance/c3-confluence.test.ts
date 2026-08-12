@@ -96,7 +96,7 @@ describe("Confluence Model Conformance", () => {
 
   /** Take a row out of both engines, asserting both had it. */
   async function revoke(tuple: RemoveTupleRequest): Promise<void> {
-    const [removed] = await Promise.all([
+    await Promise.all([
       tsfga.removeTuple(tuple),
       fgaClient
         .deleteTuples(
@@ -123,7 +123,6 @@ describe("Confluence Model Conformance", () => {
           expect(outcome).toBe("deleted");
         }),
     ]);
-    expect(removed).toBe(true);
   }
 
   beforeAll(async () => {

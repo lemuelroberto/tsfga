@@ -3,6 +3,7 @@ import { ErrorCode, FgaApiValidationError, OpenFgaClient } from "@openfga/sdk";
 import {
   type AddTupleRequest,
   createTsfga,
+  MissingTupleError,
   type RemoveTupleRequest,
   type TsfgaClient,
 } from "@tsfga/core";
@@ -220,8 +221,14 @@ describe("Revocation Conformance", () => {
   async function deleteOutcome(
     tuple: RemoveTupleRequest,
   ): Promise<{ tsfga: string; openfga: string }> {
-    const [removed, openfga] = await Promise.all([
-      tsfgaClient.removeTuple(tuple),
+    const [tsfga, openfga] = await Promise.all([
+      tsfgaClient
+        .removeTuple(tuple)
+        .then(() => "deleted")
+        .catch((error: unknown) => {
+          if (error instanceof MissingTupleError) return "missing";
+          throw error;
+        }),
       fgaClient
         .deleteTuples(
           [
@@ -244,7 +251,7 @@ describe("Revocation Conformance", () => {
           throw error;
         }),
     ]);
-    return { tsfga: removed ? "deleted" : "missing", openfga };
+    return { tsfga, openfga };
   }
 
   async function expectRevoke(
