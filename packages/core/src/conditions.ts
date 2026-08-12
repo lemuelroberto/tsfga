@@ -36,13 +36,26 @@ import type {
  *   `string(timestamp)` occupy no existing signature and simply
  *   register (issue 021).
  * - **tsfga-owned names** — `tsfga_int`, `tsfga_double` and
- *   `string.tsfga_re2_matches` cannot be written in a condition,
- *   because `compileCondition` is what puts them there: it parses
- *   the author's expression, rewrites `int(…)`, `double(…)` and
- *   `x.matches(…)` onto these names, and parses the result. See
- *   `rewriteCalls`.
+ *   `tsfga_re2_matches` cannot be written in a condition, because
+ *   `compileCondition` is what puts them there: it parses the
+ *   author's expression, rewrites `int(…)`, `double(…)`,
+ *   `matches(…)` and `x.matches(…)` onto these names, and parses
+ *   the result. See `rewriteCalls`.
+ *
+ * `homogeneousAggregateLiterals` is cel-js's own default (`true`)
+ * turned **off**, because cel-go's is off and OpenFGA never turns
+ * it on: `internal/condition/condition.go` builds the base
+ * environment from the custom parameter types, `IPAddressEnvOption`
+ * and `EagerlyValidateDeclarations` alone. On cel-js's default a
+ * list literal takes its type from its first element and every
+ * later element of another type is an evaluation error, so
+ * `["x", s]` — a string beside a `dyn` variable — refuses where
+ * upstream answers. CEL's list literal is `list(dyn)` (issue 322).
  */
-const env = new Environment({ unlistedVariablesAreDyn: true });
+const env = new Environment({
+  unlistedVariablesAreDyn: true,
+  homogeneousAggregateLiterals: false,
+});
 
 /**
  * Format a duration the way cel-go's `string(duration)` does:
@@ -144,6 +157,29 @@ env.registerFunction("tsfga_int(double): int", (value: number) => {
   }
   return truncated;
 });
+/**
+ * `int(duration)` is the duration's **nanoseconds** and
+ * `int(timestamp)` is its **epoch seconds**, which is how cel-go
+ * reads them (`common/stdlib/standard.go`, the `IntToInt` function
+ * block's `DurationToInt` and `TimestampToInt` overloads). Neither
+ * exists in cel-js, and they are how a condition spells "how long"
+ * and "when" as a number — the arithmetic an expiry rule is
+ * written in (issue 382).
+ *
+ * A timestamp arrives as a JS `Date`, so seconds are read from
+ * milliseconds and floored, which is coarser than the
+ * sub-millisecond resolution the coercion boundary already loses.
+ */
+env.registerFunction(
+  "tsfga_int(google.protobuf.Duration): int",
+  (value: unknown) =>
+    carriedField(value, "seconds") * 1_000_000_000n +
+    carriedField(value, "nanos"),
+);
+env.registerFunction(
+  "tsfga_int(google.protobuf.Timestamp): int",
+  (value: Date) => BigInt(Math.floor(value.getTime() / 1000)),
+);
 env.registerFunction("tsfga_int(string): int", (value: string) => {
   if (value !== value.trim() || value.length > 20 || value.includes("0x")) {
     throw new Error("int() type error: cannot convert to int");
@@ -208,10 +244,22 @@ env.registerFunction("tsfga_double(string): double", (value: string) => {
   return parsed;
 });
 
-env.registerFunction(
-  "string.tsfga_re2_matches(string): bool",
-  (value: string, pattern: string) => compileRe2(pattern).test(value),
-);
+/**
+ * The RE2 matcher, in **both** spellings CEL declares it in.
+ *
+ * cel-go's standard library declares `matches` twice in one
+ * `function(overloads.Matches, …)` block — a global
+ * `matches(string, string): bool` and the member overload
+ * `<string>.matches(string): bool` — bound to the same matcher, so
+ * the two spellings are the same function and must reach the same
+ * implementation here (issues 320 / 380).
+ */
+function re2Matches(value: string, pattern: string): boolean {
+  return compileRe2(pattern).test(value);
+}
+
+env.registerFunction("string.tsfga_re2_matches(string): bool", re2Matches);
+env.registerFunction("tsfga_re2_matches(string, string): bool", re2Matches);
 
 /** A closed range of code points, low first. */
 type CodePointRange = readonly [number, number];
@@ -653,15 +701,74 @@ function compileRe2(pattern: string): RegExp {
   return compiled;
 }
 
-/** Calls whose name is replaced, and what it is replaced with. */
-const CALL_REWRITES: ReadonlyMap<string, string> = new Map([
-  ["int", "tsfga_int"],
-  ["double", "tsfga_double"],
-]);
+/** How one spelling of one owned call is rewritten. */
+interface Rewrite {
+  /** The tsfga-owned name that replaces the author's. */
+  readonly replacement: string;
+  /** Arguments this spelling takes, the receiver excluded. */
+  readonly arity: number;
+  /**
+   * Which argument is an RE2 pattern, or `null` when none is. The
+   * pattern is the last argument in both spellings, so its index
+   * moves with the arity — `args[1]` globally, `args[0]` on a
+   * receiver — which is exactly the bookkeeping issue 321 was
+   * filed for.
+   */
+  readonly patternArgument: number | null;
+}
 
-/** Receiver calls — `s.matches(r)` — under the same rule. */
-const RECEIVER_REWRITES: ReadonlyMap<string, string> = new Map([
-  ["matches", "tsfga_re2_matches"],
+/** The two call styles cel-js's AST has, and nothing else. */
+interface RewriteStyles {
+  /** `f(a)` — a `call` node. */
+  readonly call: Rewrite | null;
+  /** `a.f(b)` — an `rcall` node. */
+  readonly rcall: Rewrite | null;
+}
+
+/**
+ * Every call this module owns an implementation for, keyed by
+ * **name** and then by call style.
+ *
+ * Keying on the style alone — one table for `call`, one for
+ * `rcall` — is what let the global spelling of `matches` escape
+ * both the RE2 rewrite and the write-time pattern compile (issues
+ * 320 / 380 / 321). CEL declares a function once and may declare
+ * several overloads of it in either style, so the name is what
+ * identifies the function and the style is a property of the
+ * overload. The table below is that 3 × 2 matrix in full, with the
+ * cells CEL does not declare written out as `null` rather than
+ * left absent, so adding a name forces a decision on both styles.
+ */
+const REWRITES: ReadonlyMap<string, RewriteStyles> = new Map([
+  [
+    "int",
+    {
+      call: { replacement: "tsfga_int", arity: 1, patternArgument: null },
+      rcall: null,
+    },
+  ],
+  [
+    "double",
+    {
+      call: { replacement: "tsfga_double", arity: 1, patternArgument: null },
+      rcall: null,
+    },
+  ],
+  [
+    "matches",
+    {
+      call: {
+        replacement: "tsfga_re2_matches",
+        arity: 2,
+        patternArgument: 1,
+      },
+      rcall: {
+        replacement: "tsfga_re2_matches",
+        arity: 1,
+        patternArgument: 0,
+      },
+    },
+  ],
 ]);
 
 /** One name replaced, as a half-open range of the source text. */
@@ -792,12 +899,45 @@ function refuseUncompilableConstantPattern(pattern: string): void {
   }
 }
 
+/**
+ * Compile a rewritten call's pattern argument when it is a string
+ * literal, in whichever position that spelling puts it.
+ *
+ * Called from **both** branches of `collectSplices`. Calling it
+ * from the receiver branch alone stored a globally written pattern
+ * RE2 cannot compile, which was harmless only for as long as the
+ * global spelling did not resolve at all — the moment it is
+ * rewritten, an uncompiled pattern is a wrong answer rather than a
+ * refusal, which is why issues 320 and 321 are one change.
+ */
+function refuseConstantPatternArgument(
+  rewrite: Rewrite,
+  args: readonly ASTNode[],
+): void {
+  if (rewrite.patternArgument === null) return;
+  const pattern = args[rewrite.patternArgument];
+  if (
+    pattern !== undefined &&
+    pattern.op === "value" &&
+    typeof pattern.args === "string"
+  ) {
+    refuseUncompilableConstantPattern(pattern.args);
+  }
+}
+
 /** One walk of one expression. */
 interface SpliceScan {
   readonly source: string;
   /** `source` with its comments blanked; see `maskComments`. */
   readonly masked: string;
   readonly out: Splice[];
+}
+
+function unplaceableCall(name: string): string {
+  return (
+    `cannot locate the call site of '${name}' in the expression, ` +
+    `so it cannot be rewritten onto tsfga's implementation`
+  );
 }
 
 /**
@@ -808,12 +948,14 @@ interface SpliceScan {
  * expression survives untouched, and nothing depends on cel-js's
  * serializer round-tripping a literal the way it was written.
  *
- * A receiver call this module owns and cannot place **raises**
- * rather than being left alone. cel-js refuses to let a built-in
- * overload be replaced, so an unspliced `matches` does not fail to
- * resolve — it resolves to cel-js's own JavaScript `RegExp`, which
- * is the silent wrong answer the whole module exists to remove. A
- * loud refusal is the only other option there is.
+ * A call this module owns and cannot place **raises** rather than
+ * being left alone, in **either** style. cel-js refuses to let a
+ * built-in overload be replaced, so an unspliced `int` or receiver
+ * `matches` does not fail to resolve — it resolves to cel-js's own
+ * implementation, which is the silent wrong answer the whole
+ * module exists to remove. A loud refusal is the only other option
+ * there is, and the global spelling inherits the rule rather than
+ * relying on cel-js having no global overload to fall onto.
  */
 function collectSplices(node: ASTNode, scan: SpliceScan): void {
   switch (node.op) {
@@ -870,19 +1012,21 @@ function collectSplices(node: ASTNode, scan: SpliceScan): void {
 
     case "call": {
       const [name, args] = node.args;
-      const replacement = CALL_REWRITES.get(name);
-      // A `call` node starts at its own name, so the name is the
-      // first `name.length` bytes of the node.
-      if (
-        replacement !== undefined &&
-        args.length === 1 &&
-        scan.source.startsWith(name, node.range.start)
-      ) {
+      const rewrite = REWRITES.get(name)?.call ?? null;
+      if (rewrite !== null && args.length === rewrite.arity) {
+        // A `call` node starts at its own name, so the name is the
+        // first `name.length` bytes of the node.
+        if (!scan.source.startsWith(name, node.range.start)) {
+          throw new Error(unplaceableCall(name));
+        }
         scan.out.push({
           start: node.range.start,
           end: node.range.start + name.length,
-          text: replacement,
+          text: rewrite.replacement,
         });
+        // A literal pattern is compiled now, as cel-go's
+        // `regexOptimizer` does while it builds the program.
+        refuseConstantPatternArgument(rewrite, args);
       }
       for (const argument of args) collectSplices(argument, scan);
       return;
@@ -890,27 +1034,17 @@ function collectSplices(node: ASTNode, scan: SpliceScan): void {
 
     case "rcall": {
       const [name, receiver, args] = node.args;
-      const replacement = RECEIVER_REWRITES.get(name);
+      const rewrite = REWRITES.get(name)?.rcall ?? null;
       const first = args[0];
       if (
-        replacement !== undefined &&
-        args.length === 1 &&
+        rewrite !== null &&
+        args.length === rewrite.arity &&
         first !== undefined
       ) {
         const site = findReceiverCallName(scan.masked, name, first.range.start);
-        if (site === null) {
-          throw new Error(
-            `cannot locate the call site of '${name}' in the ` +
-              `expression, so it cannot be rewritten onto tsfga's ` +
-              `implementation`,
-          );
-        }
-        scan.out.push({ ...site, text: replacement });
-        // A literal pattern is compiled now, as cel-go's
-        // `regexOptimizer` does while it builds the program.
-        if (first.op === "value" && typeof first.args === "string") {
-          refuseUncompilableConstantPattern(first.args);
-        }
+        if (site === null) throw new Error(unplaceableCall(name));
+        scan.out.push({ ...site, text: rewrite.replacement });
+        refuseConstantPatternArgument(rewrite, args);
       }
       collectSplices(receiver, scan);
       for (const argument of args) collectSplices(argument, scan);

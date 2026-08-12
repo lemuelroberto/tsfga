@@ -988,6 +988,162 @@ describe("every receiver spelling reaches the RE2 implementation", () => {
 });
 
 /**
+ * The rewrite table is keyed on the call's **name**, with the call
+ * style a property of the overload rather than the key.
+ *
+ * CEL declares `matches` twice in one function block — a global
+ * `matches(string, string)` and the member `<string>.matches(string)`,
+ * bound to the same RE2 matcher (`common/stdlib/standard.go`). A
+ * table split by style knew only the member one, so the global
+ * spelling reached neither the RE2 implementation nor the
+ * write-time pattern compile: every check reading such a condition
+ * was refused, including plain ASCII patterns where the two
+ * dialects agree (issues 320 / 380 / 321).
+ *
+ * The whole owned surface is `int`, `double` and `matches` times
+ * the two call styles cel-js's AST has, and the six cells are
+ * enumerated below.
+ */
+describe("an owned call is rewritten in every style CEL declares", () => {
+  const evaluate = async (
+    expression: string,
+    parameters: Record<string, ConditionParameterType>,
+    context: Record<string, unknown>,
+  ): Promise<boolean> => {
+    const store = new MockTupleStore();
+    store.conditionDefinitions.push({ name: "c", expression, parameters });
+    return evaluateTupleCondition(
+      store,
+      makeTuple({ conditionName: "c" }),
+      context,
+    );
+  };
+
+  const match = (expression: string, s = "abc"): Promise<boolean> =>
+    evaluate(expression, { s: "string", p: "string" }, { s, p: "^a" });
+
+  describe("matches: global as well as receiver", () => {
+    test("a global call reads a POSIX class as RE2", async () => {
+      // A JavaScript `RegExp` reads `[[:alpha:]]` as the class of
+      // the characters `[:alph`, so this answering `true` is what
+      // says the call reached RE2 and not cel-js.
+      expect(await match('matches(s, "[[:alpha:]]+")')).toBe(true);
+    });
+
+    test("a global call reads an RE2 inline flag", async () => {
+      expect(await match('matches(s, "(?i)ABC")')).toBe(true);
+    });
+
+    test("a global call denies a non-match", async () => {
+      expect(await match('matches(s, "[[:alpha:]]+")', "123")).toBe(false);
+    });
+
+    test("a global call resolves at all", async () => {
+      // Nothing exotic in the pattern: before the fix this was not
+      // a wrong answer but a refusal, because cel-js ships no
+      // global `matches` for an unrewritten call to land on.
+      expect(await match('matches(s, "^a.c$")')).toBe(true);
+    });
+
+    test("syntax RE2 refuses does not fall through globally", async () => {
+      // A lookahead is valid JavaScript and invalid RE2, so a
+      // global call answering here would mean it had been left on
+      // a JavaScript `RegExp`.
+      await expect(match('matches(s, "a(?=b)")')).rejects.toBeInstanceOf(
+        TsfgaError,
+      );
+    });
+
+    test("the pattern may arrive in either spelling's argument", async () => {
+      // The pattern is the last argument in both, so its index
+      // moves with the arity — `args[1]` globally, `args[0]` on a
+      // receiver — and both must reach the same implementation.
+      expect(await match("matches(s, p) && s.matches(p)")).toBe(true);
+    });
+
+    test("a global call with the wrong arity is not rewritten", async () => {
+      // CEL declares no such overload either, so both refuse. What
+      // matters is that the arity guard is per entry rather than
+      // the constant 1 the table used to assume.
+      await expect(match('matches(s, "^a", "b")')).rejects.toBeInstanceOf(
+        TsfgaError,
+      );
+    });
+  });
+
+  describe("int and double: global only, as CEL declares them", () => {
+    test("the global spelling is rewritten", async () => {
+      expect(
+        await evaluate(
+          "int(x) == 1 && double(x) == 1.5",
+          { x: "double" },
+          { x: 1.5 },
+        ),
+      ).toBe(true);
+    });
+
+    for (const call of ["x.int()", "x.double()"]) {
+      test(`${call} resolves nowhere, as upstream declares none`, async () => {
+        // CEL declares no member overload of either conversion, so
+        // the receiver cell is empty on purpose and a receiver
+        // spelling must refuse rather than be rewritten onto
+        // tsfga's implementation.
+        await expect(
+          evaluate(`${call} == 1`, { x: "double" }, { x: 1.5 }),
+        ).rejects.toBeInstanceOf(TsfgaError);
+      });
+    }
+  });
+
+  /**
+   * A `call` node's range starts at its own name in every spelling
+   * cel-js parses — there is no `(f)(x)` form — so the splice site
+   * is structurally always placeable and the guard below cannot be
+   * reached through the parser. It exists because falling through
+   * silently is the one outcome that must not happen: cel-js
+   * refuses to let a built-in overload be replaced, so an
+   * unspliced `int` or `matches` does not fail to resolve, it
+   * resolves to cel-js's own implementation. The observable half
+   * of the rule is asserted above — every owned spelling reaches
+   * tsfga's implementation, and none is answered by cel-js's.
+   */
+  describe("a global constant pattern is compiled at write time", () => {
+    const write = async (expression: string): Promise<string> => {
+      const client = createTsfga(new MockTupleStore());
+      return client
+        .writeConditionDefinition({
+          name: "re",
+          expression,
+          parameters: { s: "string", p: "string" },
+        })
+        .then(() => "accepted")
+        .catch((error: unknown) =>
+          error instanceof ConditionCompileError ? "refused" : "other",
+        );
+    };
+
+    for (const pattern of ["a(?=b)", "[[:nope:]]", "a("]) {
+      test(`${JSON.stringify(pattern)} is refused globally too`, async () => {
+        // cel-go's `regexOptimizer` folds a constant pattern by
+        // function name, not by call style, so upstream refuses
+        // the model whichever spelling carries it.
+        expect(await write(`matches(s, "${pattern}")`)).toBe("refused");
+      });
+    }
+
+    test("a pattern RE2 accepts is stored", async () => {
+      expect(await write('matches(s, "^[[:alpha:]]+$")')).toBe("accepted");
+    });
+
+    test("a global pattern that is not a constant is stored", async () => {
+      // Upstream's optimiser folds constants only, so a pattern
+      // arriving in the context is a run-time concern either way.
+      expect(await write("matches(s, p)")).toBe("accepted");
+    });
+  });
+});
+
+/**
  * A constant pattern is compiled when the condition is written.
  *
  * cel-go's `regexOptimizer` folds every `matches` call whose
@@ -1161,6 +1317,27 @@ describe("conversions agree with cel-go", () => {
       expect(await answer("int(n) == 7", { n: "uint" }, { n: "7" })).toBe(true);
     });
 
+    test("a duration converts to its nanoseconds", async () => {
+      // cel-go reads `int(duration)` as nanoseconds and
+      // `int(timestamp)` as epoch seconds; cel-js has neither
+      // overload, so both were refused (issue 382).
+      const nanos = (written: string, expected: string): Promise<boolean> =>
+        answer(`int(d) == ${expected}`, { d: "duration" }, { d: written });
+      expect(await nanos("1h", "3600000000000")).toBe(true);
+      expect(await nanos("-90s", "-90000000000")).toBe(true);
+    });
+
+    test("a timestamp converts to its epoch seconds", async () => {
+      const epoch = (written: string, expected: string): Promise<boolean> =>
+        answer(`int(t) == ${expected}`, { t: "timestamp" }, { t: written });
+      expect(await epoch("2026-01-01T00:00:00Z", "1767225600")).toBe(true);
+      // Seconds are floored, which is coarser than the
+      // sub-millisecond resolution the coercion boundary already
+      // loses, and matches Go's `Unix()`.
+      expect(await epoch("1970-01-01T00:00:00.999Z", "0")).toBe(true);
+      expect(await epoch("1969-12-31T23:59:59Z", "-1")).toBe(true);
+    });
+
     test("an int and a numeric string still convert", async () => {
       expect(await answer("int(n) == 7", { n: "int" }, { n: "7" })).toBe(true);
       expect(await answer("int(s) == 7", { s: "string" }, { s: "7" })).toBe(
@@ -1259,6 +1436,45 @@ describe("conversions agree with cel-go", () => {
       expect(
         await answer("s.startsWith('a')", { s: "string" }, { s: "abc" }),
       ).toBe(true);
+    });
+  });
+
+  /**
+   * A list literal takes CEL's `list(dyn)`, not the type of its
+   * first element.
+   *
+   * cel-js's `homogeneousAggregateLiterals` defaults to `true` and
+   * refuses every element whose type differs from the first, so a
+   * variable beside a string literal was an evaluation error.
+   * cel-go's own option of that name defaults off and OpenFGA
+   * never sets it — `internal/condition/condition.go` builds the
+   * base environment from the custom parameter types,
+   * `IPAddressEnvOption` and `EagerlyValidateDeclarations` alone
+   * (issue 322).
+   */
+  describe("a list literal may mix types", () => {
+    test("a literal before a variable", async () => {
+      expect(
+        await answer('["x", s][1] == "abc"', { s: "string" }, { s: "abc" }),
+      ).toBe(true);
+    });
+
+    test("a variable before a literal", async () => {
+      expect(
+        await answer('[s, "x"][0] == "abc"', { s: "string" }, { s: "abc" }),
+      ).toBe(true);
+    });
+
+    test("two literals of different types", async () => {
+      expect(await answer('size(["x", 1]) == 2', {}, {})).toBe(true);
+    });
+
+    test("a map value of a mixed type", async () => {
+      expect(await answer('{"a": "x", "b": 1}["b"] == 1', {}, {})).toBe(true);
+    });
+
+    test("a homogeneous list still reads", async () => {
+      expect(await answer('"b" in ["a", "b"]', {}, {})).toBe(true);
     });
   });
 });
