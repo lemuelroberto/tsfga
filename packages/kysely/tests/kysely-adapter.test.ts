@@ -800,13 +800,7 @@ describe("KyselyTupleStore", () => {
         subjectId: uuid2,
       });
 
-      const written = await readDirect(
-        "doc",
-        upper,
-        "viewer",
-        "user",
-        uuid2,
-      );
+      const written = await readDirect("doc", upper, "viewer", "user", uuid2);
       expect(written?.objectId).toBe(upper);
       expect(
         await readDirect("doc", lower, "viewer", "user", uuid2),
@@ -828,8 +822,9 @@ describe("KyselyTupleStore", () => {
         subjectId: uuid2,
       });
 
-      expect((await readDirect("doc", bare, "viewer", "user", uuid2))?.objectId)
-        .toBe(bare);
+      expect(
+        (await readDirect("doc", bare, "viewer", "user", uuid2))?.objectId,
+      ).toBe(bare);
       expect(
         await readDirect("doc", hyphenated, "viewer", "user", uuid2),
       ).toBeNull();
