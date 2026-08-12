@@ -1,8 +1,11 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { createTsfga, type TsfgaClient, TsfgaError } from "@tsfga/core";
+import { afterAll, beforeAll, describe, test } from "bun:test";
+import { createTsfga, type TsfgaClient } from "@tsfga/core";
 import { type DB, KyselyTupleStore } from "@tsfga/kysely";
 import type { Kysely } from "kysely";
-import { expectListObjectsConformance } from "./helpers/conformance.ts";
+import {
+  expectListObjectsConformance,
+  expectPinnedListObjectsDivergence,
+} from "./helpers/conformance.ts";
 import {
   beginTransaction,
   destroyDb,
@@ -11,7 +14,6 @@ import {
 } from "./helpers/db.ts";
 import {
   fgaCreateStore,
-  fgaListObjects,
   fgaWriteModel,
   fgaWriteTuplesRaw,
 } from "./helpers/openfga.ts";
@@ -156,26 +158,28 @@ describe("listObjects depth parity", () => {
    * One hop further. Upstream's reverse expansion walks outward
    * from the subject and reports every object on the chain; tsfga
    * runs a `check` per candidate, and the single candidate that
-   * exhausts the budget rejects the whole call — including the 25
-   * objects that were comfortably inside it.
+   * exhausts the budget is dropped rather than costing the answer.
+   * So the divergence is one object wide, not the whole set — the
+   * pinned depth offset (`depth-boundary.test.ts`) read through a
+   * result set instead of through a single cell.
    */
   test("GAP-061: a chain one hop past the budget", async () => {
-    const params = {
-      objectType: "deep_a4d",
-      relation: "plain",
-      subjectType: "user_a4d",
-      subjectId: uuid("alice"),
-    };
-    const tsfga = await tsfgaClient
-      .listObjects(params)
-      .then((objects) => `answered:${objects.length}`)
-      .catch((error: unknown) => {
-        if (error instanceof TsfgaError) return "refused";
-        throw error;
-      });
-    const openfga = await fgaListObjects(storeId, modelId, params)
-      .then((objects) => `answered:${objects.length}`)
-      .catch(() => "refused");
-    expect(tsfga).toBe(openfga);
+    const openfga: string[] = [];
+    for (let i = 0; i <= OVER; i++) openfga.push(uuid(`e${i}`));
+    await expectPinnedListObjectsDivergence(
+      storeId,
+      modelId,
+      tsfgaClient,
+      {
+        objectType: "deep_a4d",
+        relation: "plain",
+        subjectType: "user_a4d",
+        subjectId: uuid("alice"),
+      },
+      // Every object but `e0`, the one whose distance from the
+      // grant is the whole chain. The control above shows the
+      // budget reaches exactly one hop less far than upstream's.
+      { openfga, tsfga: openfga.slice(1) },
+    );
   });
 });

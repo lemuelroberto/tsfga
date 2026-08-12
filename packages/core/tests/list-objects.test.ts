@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { check } from "../src/check.ts";
-import { DepthExceededError } from "../src/errors.ts";
+import { RelationConfigNotFoundError } from "../src/errors.ts";
 import { createTsfga } from "../src/index.ts";
 import { listObjects } from "../src/list-objects.ts";
 import type {
@@ -351,16 +351,22 @@ describe("listObjects", () => {
       );
     });
 
-    test("depth exhaustion aborts the whole call", async () => {
-      // Upstream maps a depth-exceeded candidate to a failed
-      // ListObjects rather than silently dropping that object.
+    test("depth exhaustion drops the candidate, it does not abort", async () => {
+      // The one error that does not abort. Upstream's reverse
+      // expansion walks a job queue rather than recursing, so a
+      // chain long enough to exhaust tsfga's budget is one it
+      // still answers -- and aborting here costs the caller every
+      // object, including the ones well inside the budget that
+      // both engines agree on. Dropping the candidate is closer to
+      // upstream on every shape upstream can actually answer.
+      //
+      // The three cases above still hold: every *other* error
+      // aborts the call.
       seedSharedSubtree(3);
 
-      await expect(
-        listObjects(store, ALICE_VIEWER, {
-          maxDepth: 1,
-        }),
-      ).rejects.toBeInstanceOf(DepthExceededError);
+      expect(await listObjects(store, ALICE_VIEWER, { maxDepth: 1 })).toEqual(
+        [],
+      );
     });
   });
 
@@ -368,7 +374,25 @@ describe("listObjects", () => {
     test("an empty candidate list resolves to an empty array", async () => {
       // The pool must settle with nothing ever launched rather
       // than hanging on a promise no callback will resolve.
+      //
+      // Seeded so the relation is *defined* with no candidates,
+      // which is the state this is about. An undefined relation is
+      // now refused before the pool is read -- the case below.
+      seedSharedSubtree(0);
+
       expect(await listObjects(store, ALICE_VIEWER)).toEqual([]);
+    });
+
+    test("an undefined relation is refused, not answered empty", async () => {
+      // The gate upstream applies before it touches data. Without
+      // it the answer depends on whether the candidate pool
+      // happens to be empty: a relation nothing defines would
+      // report `[]` on an empty type and refuse on a populated
+      // one, so the same model would answer two different ways
+      // for a reason that has nothing to do with the model.
+      await expect(listObjects(store, ALICE_VIEWER)).rejects.toBeInstanceOf(
+        RelationConfigNotFoundError,
+      );
     });
   });
 

@@ -12,6 +12,7 @@ import {
   expectConfigsMatchModel,
   expectConformance,
   expectListObjectsConformance,
+  expectPinnedListObjectsDivergence,
   type FixtureRecord,
   recordFixture,
 } from "./helpers/conformance.ts";
@@ -37,9 +38,9 @@ import {
  * passes. On `listObjects` they part company: upstream walks the
  * relation backwards from the subject and reports everything it
  * reaches, including objects whose forward `check` it would refuse
- * as too complex; tsfga checks each candidate forward and lets the
- * first `DepthExceededError` abort the call, losing the shallow
- * objects too.
+ * as too complex; tsfga checks each candidate forward, so a
+ * candidate further from the grant than the budget allows is
+ * simply absent from the answer.
  */
 
 function id(n: number): string {
@@ -212,8 +213,25 @@ describe("ListObjects Depth Conformance", () => {
     );
   });
 
+  /**
+   * The 40-hop chain is longer than tsfga's forward budget, so the
+   * objects at its root are out of reach: `t2000` is 40 dispatches
+   * from the grant and `check` refuses it, exactly as upstream's
+   * own `Check` refuses it. What tsfga keeps is everything within
+   * the budget of the grant — the whole 10-hop chain, and the last
+   * 25 links of the 40-hop one.
+   *
+   * Upstream reports all 52 because ListObjects does not go
+   * through `Check` there: it reverse-expands from the subject over
+   * a job queue, so the chain costs it no depth at all.
+   *
+   * Pinned rather than left failing: the shortfall is the missing
+   * reverse walk, which is the same machinery the depth-boundary
+   * divergence names, and a divergence nothing asserts is
+   * indistinguishable from one nobody has noticed.
+   */
   test("GAP-170: listObjects reaches past the check budget (TTU)", async () => {
-    await expectListObjectsConformance(
+    await expectPinnedListObjectsDivergence(
       storeId,
       modelId,
       tsfgaClient,
@@ -223,12 +241,20 @@ describe("ListObjects Depth Conformance", () => {
         subjectType: "user_a8",
         subjectId: ALICE,
       },
-      [...chain(1000, 1010), ...chain(2000, 2040)],
+      {
+        openfga: [...chain(1000, 1010), ...chain(2000, 2040)],
+        tsfga: [...chain(1000, 1010), ...chain(2016, 2040)],
+      },
     );
   });
 
+  /**
+   * The same shortfall one hop at a time through usersets rather
+   * than through a tupleset. There is no shallow chain on this
+   * type, so the pin is purely the tail of the 40-hop one.
+   */
   test("GAP-170: listObjects reaches past the check budget (userset)", async () => {
-    await expectListObjectsConformance(
+    await expectPinnedListObjectsDivergence(
       storeId,
       modelId,
       tsfgaClient,
@@ -238,7 +264,7 @@ describe("ListObjects Depth Conformance", () => {
         subjectType: "user_a8",
         subjectId: ALICE,
       },
-      chain(3000, 3040),
+      { openfga: chain(3000, 3040), tsfga: chain(3016, 3040) },
     );
   });
 

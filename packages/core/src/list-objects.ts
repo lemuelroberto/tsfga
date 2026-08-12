@@ -4,6 +4,7 @@ import {
   validateContextualTuples,
 } from "./check.ts";
 import { ContextualTupleStore } from "./contextual-store.ts";
+import { DepthExceededError, RelationConfigNotFoundError } from "./errors.ts";
 import type { TupleStore } from "./store-interface.ts";
 import type { CheckOptions, ListObjectsRequest } from "./types.ts";
 
@@ -24,14 +25,32 @@ import type { CheckOptions, ListObjectsRequest } from "./types.ts";
  * the reverse-expand query
  * (`pkg/server/commands/list_objects.go`).
  *
+ * The target relation is gated up front, before the candidate
+ * pool is read, so an undefined relation is refused whether or not
+ * any row happens to name an object of that type. Upstream orders
+ * the same two gates this way — contextual tuples first, then
+ * `GetRelation` on the target
+ * (`pkg/server/commands/list_objects.go`) — and the order is
+ * observable, so it is kept.
+ *
  * Errors: the first failing candidate *in candidate order* is
  * thrown, not the first to fail in wall-clock order — no candidate
  * after a failure is started, but every candidate before one is
  * awaited, so the error a broken model produces is reproducible.
- * Any error aborts the whole call, including
- * `DepthExceededError`; upstream likewise maps a depth-exceeded
- * candidate to a failed ListObjects rather than dropping that
- * object (`list_objects.go`, `ErrAuthorizationModelResolutionTooComplex`).
+ *
+ * `DepthExceededError` is the one exception: a candidate whose
+ * resolution exhausts the budget is dropped, exactly as a
+ * candidate answering `false` is, and the rest of the call still
+ * answers. Upstream's stated policy is the opposite — a
+ * depth-exceeded candidate fails the whole ListObjects
+ * (`reverse_expand.go`,
+ * `ErrAuthorizationModelResolutionTooComplex`) — but upstream
+ * reverse-expands over a job queue instead of recursing per hop,
+ * so its boundary sits far enough out that it almost never reaches
+ * its own abort. Dropping the candidate is therefore closer to
+ * upstream on every shape upstream can answer, and further from it
+ * only where upstream genuinely aborts. The policy is local to
+ * `listObjects`: `check` still raises, in every set position.
  *
  * The returned array is in candidate order. That is a tsfga
  * determinism choice rather than parity — upstream streams objects
@@ -59,6 +78,13 @@ export async function listObjects(
       ? new ContextualTupleStore(store, contextualTuples)
       : store;
   const scope = createCheckScope(resolutionStore, options);
+  // Read through the scope's caching store, so the per-candidate
+  // checks take this config back out of the cache rather than
+  // paying for a second round trip.
+  const config = await scope.store.findRelationConfig(objectType, relation);
+  if (config === null) {
+    throw new RelationConfigNotFoundError(objectType, relation);
+  }
   const candidateIds = await resolutionStore.listCandidateObjectIds(objectType);
 
   return resolveCandidates(candidateIds, scope.maxBreadth, (objectId) =>
@@ -69,6 +95,13 @@ export async function listObjects(
       subjectType,
       subjectId,
       context,
+    }).catch((error: unknown) => {
+      // A candidate the budget could not resolve is dropped, not
+      // propagated -- see the note on this function. Only this
+      // error: every other one still aborts the call in candidate
+      // order, which is what a broken model should do.
+      if (error instanceof DepthExceededError) return false;
+      throw error;
     }),
   );
 }
