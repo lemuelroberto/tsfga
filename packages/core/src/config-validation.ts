@@ -1,5 +1,6 @@
 import { InvalidRelationConfigError } from "./errors.ts";
 import type { TupleStore } from "./store-interface.ts";
+import { isRe2Space } from "./tuple-validation.ts";
 import type { ConditionDefinition, RelationConfig } from "./types.ts";
 import type { WriteRuleId } from "./write-rules.ts";
 
@@ -342,25 +343,19 @@ export function validateConditionWrite(condition: ConditionDefinition): void {
  * `IsValidRelation` refuses and which the type pattern refuses
  * too.
  *
- * `\s` is Go's, so it is exactly `[\t\n\f\r ]` — five characters,
- * not the Unicode space property. Probed: a vertical tab (U+000B),
- * a no-break space (U+00A0), U+2028 and an ideographic space are
- * all **accepted** by both fields, and so is every other control
- * character outside that set (U+0001, U+007F, U+0085 measured).
- * This deliberately does not reuse `tuple-validation.ts`'s
+ * The `\s` half is `isRe2Space`, shared with the tuple write and
+ * delete paths, which is where the measurements and the reason for
+ * not borrowing JavaScript's class are written down. This
+ * deliberately does not reuse `tuple-validation.ts`'s
  * control-character rule: that one is the tuple write path's, and
  * applying it here would refuse names upstream stores.
  */
-const NAME_RESERVED: ReadonlySet<string> = new Set([
-  ":",
-  "#",
-  "@",
-  " ",
-  "\t",
-  "\n",
-  "\f",
-  "\r",
-]);
+const NAME_RESERVED: ReadonlySet<string> = new Set([":", "#", "@"]);
+
+/** A character no name may hold: reserved, or Go's `\s`. */
+function isNameReserved(char: string): boolean {
+  return NAME_RESERVED.has(char) || isRe2Space(char);
+}
 
 /**
  * The two names a model may not give a type or a relation.
@@ -415,14 +410,14 @@ function isWellFormedName(name: string, maxLength: number): boolean {
   const codePoints = [...name];
   if (codePoints.length === 0) return false;
   if (codePoints.length > maxLength) return false;
-  return !codePoints.some((char) => NAME_RESERVED.has(char));
+  return !codePoints.some(isNameReserved);
 }
 
 /** Why the name was refused, for the error's `detail`. */
 function describeName(name: string): string {
   const codePoints = [...name];
   if (codePoints.length === 0) return "empty";
-  const offending = codePoints.find((char) => NAME_RESERVED.has(char));
+  const offending = codePoints.find(isNameReserved);
   if (offending !== undefined) {
     const code = offending.codePointAt(0) ?? 0;
     const hex = code.toString(16).toUpperCase().padStart(4, "0");

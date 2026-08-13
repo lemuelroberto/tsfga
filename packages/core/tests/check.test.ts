@@ -3522,3 +3522,150 @@ describe("tuple-to-userset arms are independent", () => {
     ).rejects.toBeInstanceOf(Error);
   });
 });
+
+/**
+ * A tuple-to-userset dispatch lands on the object the tupleset row
+ * names, so that row has to *name an object*. A userset row would
+ * have its subject relation discarded and the dispatch would land
+ * on a different relation of the linked object; a wildcard row
+ * names no object at all and the dispatch would ask for object id
+ * `"*"`.
+ *
+ * `config-validation.ts` refuses both shapes at model write —
+ * `tupleset relation admits a userset` and `tupleset relation
+ * admits a wildcard` — but only against the tupleset config that
+ * exists *at the time the TTU is written*. Widening the tupleset
+ * afterwards is not revalidated, which is the documented
+ * write-order gap and the write order both tests below use. The
+ * clamp in `resolveTupleset` is what makes that gap harmless, the
+ * same call `clampToQuery` makes for `findCheckTuples`.
+ */
+describe("a tupleset row must name a concrete object", () => {
+  test("a tupleset row naming a userset does not dispatch", async () => {
+    const store = new MockTupleStore();
+    const client = createTsfga(store);
+    await client.writeRelationConfig(
+      makeConfig({
+        objectType: "folder",
+        relation: "member",
+        directlyAssignable: [{ type: "user" }],
+      }),
+    );
+    await client.writeRelationConfig(
+      makeConfig({
+        objectType: "folder",
+        relation: "viewer",
+        directlyAssignable: [{ type: "user" }],
+      }),
+    );
+    await client.writeRelationConfig(
+      makeConfig({
+        objectType: "doc",
+        relation: "viewer",
+        directlyAssignable: [{ type: "user" }],
+        tupleToUserset: [{ tupleset: "parent", computedUserset: "viewer" }],
+      }),
+    );
+    // Written *after* the TTU, so the "tupleset relation admits a
+    // userset" rule never sees it.
+    await client.writeRelationConfig(
+      makeConfig({
+        objectType: "doc",
+        relation: "parent",
+        directlyAssignable: [{ type: "folder", relation: "member" }],
+      }),
+    );
+    await client.addTuple({
+      objectType: "doc",
+      objectId: "d1",
+      relation: "parent",
+      subjectType: "folder",
+      subjectId: "f1",
+      subjectRelation: "member",
+    });
+    // Alice is a viewer of the folder and deliberately not a
+    // member, so a `true` here is the discarded `#member`.
+    await client.addTuple({
+      objectType: "folder",
+      objectId: "f1",
+      relation: "viewer",
+      subjectType: "user",
+      subjectId: "alice",
+    });
+
+    expect(
+      await client.check({
+        objectType: "doc",
+        objectId: "d1",
+        relation: "viewer",
+        subjectType: "user",
+        subjectId: "alice",
+      }),
+    ).toBe(false);
+  });
+
+  test("a tupleset row naming a wildcard does not dispatch", async () => {
+    const store = new MockTupleStore();
+    const client = createTsfga(store);
+    await client.writeRelationConfig(
+      makeConfig({
+        objectType: "folder",
+        relation: "viewer",
+        directlyAssignable: [{ type: "user" }],
+      }),
+    );
+    await client.writeRelationConfig(
+      makeConfig({
+        objectType: "doc",
+        relation: "viewer",
+        directlyAssignable: [{ type: "user" }],
+        tupleToUserset: [{ tupleset: "parent", computedUserset: "viewer" }],
+      }),
+    );
+    await client.writeRelationConfig(
+      makeConfig({
+        objectType: "doc",
+        relation: "parent",
+        directlyAssignable: [{ type: "folder" }],
+      }),
+    );
+    // The widening, again after the TTU was written.
+    await client.writeRelationConfig(
+      makeConfig({
+        objectType: "doc",
+        relation: "parent",
+        directlyAssignable: [
+          { type: "folder" },
+          { type: "folder", wildcard: true },
+        ],
+      }),
+    );
+    await client.addTuple({
+      objectType: "doc",
+      objectId: "d1",
+      relation: "parent",
+      subjectType: "folder",
+      subjectId: "*",
+    });
+
+    store.resetCounts();
+    expect(
+      await client.check({
+        objectType: "doc",
+        objectId: "d1",
+        relation: "viewer",
+        subjectType: "user",
+        subjectId: "alice",
+      }),
+    ).toBe(false);
+
+    // The answer is `false` on an opaque store either way; what
+    // makes this a bug is the node the dispatch asks for. A store
+    // holding its ids in a `uuid` column answers that read with a
+    // driver error rather than a row.
+    const dispatched = store.calls
+      .filter((call) => call.method === "findCheckTuples")
+      .map((call) => call.args[1]);
+    expect(dispatched).not.toContain("*");
+  });
+});

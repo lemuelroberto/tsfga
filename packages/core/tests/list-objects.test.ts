@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { check } from "../src/check.ts";
 import {
   ConditionEvaluationError,
+  DepthExceededError,
+  InvalidRequestContextError,
   RelationConfigNotFoundError,
   TsfgaError,
 } from "../src/errors.ts";
@@ -802,5 +804,120 @@ describe("listObjects", () => {
 
       expect(store.peakInFlight).toBe(2);
     });
+  });
+});
+
+/**
+ * What the two scan calls actually do at the two boundaries their
+ * JSDoc used to describe backwards: a candidate the depth budget
+ * cannot resolve, and a request context `check` refuses.
+ *
+ * Pinned here because both are documentation-shaped claims that
+ * ship in `dist/index.d.ts`, and prose is the one part of the
+ * library nothing else checks. The assertions are the contrast:
+ * each says what `check` does beside what the scan does, so an
+ * edit that makes the two agree fails rather than passes quietly.
+ */
+describe("the scan calls diverge from check at two boundaries", () => {
+  function chain(): MockTupleStore {
+    const store = new MockTupleStore();
+    store.relationConfigs.push({
+      objectType: "doc",
+      relation: "viewer",
+      directlyAssignable: [
+        { type: "user" },
+        { type: "doc", relation: "viewer" },
+      ],
+      impliedBy: null,
+      computedUserset: null,
+      tupleToUserset: null,
+      excludedBy: null,
+      intersection: null,
+    });
+    // `d0 -> d1 -> ... -> d10`, with only `d10` granting alice
+    // directly. Under `maxDepth: 3` the shallow end of the chain
+    // resolves and the deep end exhausts the budget.
+    for (let i = 0; i < 10; i++) {
+      store.tuples.push({
+        objectType: "doc",
+        objectId: `d${i}`,
+        relation: "viewer",
+        subjectType: "doc",
+        subjectId: `d${i + 1}`,
+        subjectRelation: "viewer",
+        conditionName: null,
+        conditionContext: null,
+      });
+    }
+    store.tuples.push({
+      objectType: "doc",
+      objectId: "d10",
+      relation: "viewer",
+      subjectType: "user",
+      subjectId: "alice",
+      subjectRelation: null,
+      conditionName: null,
+      conditionContext: null,
+    });
+    return store;
+  }
+
+  test("a depth-exceeded candidate is dropped, not propagated", async () => {
+    const client = createTsfga(chain(), { maxDepth: 3 });
+    // `check` raises for the deep candidate...
+    await expect(
+      client.check({
+        objectType: "doc",
+        objectId: "d0",
+        relation: "viewer",
+        subjectType: "user",
+        subjectId: "alice",
+      }),
+    ).rejects.toBeInstanceOf(DepthExceededError);
+    // ...and `listObjects` answers with the candidates it could
+    // resolve rather than abandoning the whole call.
+    expect(
+      await client.listObjects({
+        objectType: "doc",
+        relation: "viewer",
+        subjectType: "user",
+        subjectId: "alice",
+      }),
+    ).toEqual(["d8", "d9", "d10"]);
+  });
+
+  // A control character in a string value: the shape upstream's
+  // `ValidateStruct` refuses, and `ValidateStruct` lives in
+  // `CheckCommand` and nowhere else in `pkg/server/commands`.
+  const context = { role: "ad\u0001min" };
+
+  test("listObjects accepts a request context check refuses", async () => {
+    const client = createTsfga(chain());
+    await expect(
+      client.check({
+        objectType: "doc",
+        objectId: "d10",
+        relation: "viewer",
+        subjectType: "user",
+        subjectId: "alice",
+        context,
+      }),
+    ).rejects.toBeInstanceOf(InvalidRequestContextError);
+    expect(
+      await client.listObjects({
+        objectType: "doc",
+        relation: "viewer",
+        subjectType: "user",
+        subjectId: "alice",
+        context,
+      }),
+    ).toContain("d10");
+  });
+
+  test("listSubjects accepts a request context check refuses", async () => {
+    const client = createTsfga(chain());
+    expect(
+      await client.listSubjects("doc", "d10", "viewer", { context }),
+    ).toHaveLength(1);
   });
 });

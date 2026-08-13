@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { check } from "../src/check.ts";
+import { createTsfga } from "../src/index.ts";
 import type {
   CheckTuples,
   CheckTuplesQuery,
@@ -479,5 +480,92 @@ describe("the clamp matches the condition, not just the shape", () => {
         ],
       }),
     ).toBe(true);
+  });
+});
+
+/**
+ * A wildcard is a subject *shape*, not an id, so a wildcard
+ * carrying a subject relation — `folder:*#member` — is a row no
+ * legal model has. `addTuple` refuses it, contextual tuples go
+ * through the same gate, and the adapter's `tuples_wildcard_shape`
+ * CHECK forbids it at the column level. That leaves exactly the
+ * population this file is about: a store that hands it back
+ * anyway.
+ */
+describe("a wildcard carrying a subject relation is not a userset", () => {
+  function seed(): MockTupleStore {
+    const store = new MockTupleStore();
+    store.relationConfigs.push(
+      makeConfig({
+        objectType: "doc",
+        relation: "viewer",
+        directlyAssignable: [{ type: "team", relation: "member" }],
+      }),
+      makeConfig({
+        objectType: "team",
+        relation: "member",
+        directlyAssignable: [{ type: "user" }],
+      }),
+    );
+    // Injected past the write gate, as a misbehaving adapter or a
+    // database without the CHECK constraint would.
+    store.tuples.push(
+      makeTuple({
+        objectType: "doc",
+        objectId: "1",
+        relation: "viewer",
+        subjectType: "team",
+        subjectId: "*",
+        subjectRelation: "member",
+      }),
+    );
+    return store;
+  }
+
+  test("the clamp drops it rather than dispatching onto '*'", async () => {
+    const store = seed();
+    store.resetCounts();
+
+    expect(await check(store, request)).toBe(false);
+
+    // The answer alone is not the assertion: on an opaque store the
+    // dispatch onto object id `"*"` reads no rows and denies
+    // anyway. What must not happen is the read.
+    const dispatched = store.calls
+      .filter((call) => call.method === "findCheckTuples")
+      .map((call) => call.args[1]);
+    expect(dispatched).not.toContain("*");
+  });
+
+  test("listSubjects does not report it", async () => {
+    const store = seed();
+    const client = createTsfga(store);
+    expect(await client.listSubjects("doc", "1", "viewer")).toEqual([]);
+  });
+
+  test("a direct wildcard row is still reported", async () => {
+    // The guard is on the userset half only: `team:*` with no
+    // subject relation is an ordinary grant and must survive.
+    const store = new MockTupleStore();
+    store.relationConfigs.push(
+      makeConfig({
+        objectType: "doc",
+        relation: "viewer",
+        directlyAssignable: [{ type: "team", wildcard: true }],
+      }),
+    );
+    store.tuples.push(
+      makeTuple({
+        objectType: "doc",
+        objectId: "1",
+        relation: "viewer",
+        subjectType: "team",
+        subjectId: "*",
+      }),
+    );
+    const client = createTsfga(store);
+    expect(await client.listSubjects("doc", "1", "viewer")).toEqual([
+      { subjectType: "team", subjectId: "*", subjectRelation: null },
+    ]);
   });
 });

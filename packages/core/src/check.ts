@@ -1380,9 +1380,19 @@ function clampToQuery(
   // relation admitting only `team#member`, or a conditioned row on
   // a relation admitting only the bare ref, loses it here rather
   // than having it expanded and granted.
+  //
+  // A wildcard is a subject *shape*, not an id, so a wildcard
+  // carrying a subject relation — `team:*#member` — is a row no
+  // legal model has, and `subjectShape` folds `"*"` into the
+  // wildcard shape only when there is no subject relation. Left
+  // in, it would be offered to this gate as the ordinary ref
+  // `team#member` and `checkBase` would dispatch onto object id
+  // `"*"`. The guard sits beside `relationOf(tuple) !== null`, so
+  // a legitimate direct `user:*` row is untouched.
   const isUserset = (tuple: Tuple): boolean =>
     onNode(tuple) &&
     relationOf(tuple) !== null &&
+    tuple.subjectId !== "*" &&
     refsAdmit(query.usersetRefs, refOf(tuple));
 
   let usersets: readonly Tuple[] = NO_TUPLES.usersets;
@@ -1826,11 +1836,33 @@ async function resolveTupleset(
   // and the drop is silent for the reason given there: a check is
   // the wrong place to discover an adapter bug, and denying is the
   // conservative answer.
+  //
+  // The subject half is the same call. A dispatch target must be
+  // an *object*: a userset row would have its subject relation
+  // discarded and land on a different relation of the linked
+  // object, and a wildcard row names no object at all — the
+  // dispatch would ask for object id `"*"`, which an opaque store
+  // answers `false` and a store holding its ids in a `uuid` column
+  // answers with a driver error. `config-validation.ts` refuses
+  // both shapes at model write, but only against the tupleset
+  // config that exists when the TTU is written, so widening the
+  // tupleset afterwards leaves the row reachable. Dropping is the
+  // right answer rather than raising: upstream refuses the model
+  // and so never reaches this state, and every store then agrees
+  // on `false`.
+  //
+  // `?? null` and not `=== null`: a store may hand back
+  // `undefined`, which `relationOf` in `clampToQuery` normalises
+  // for exactly this reason, and `=== null` here would drop every
+  // tupleset row from such a store and answer `false` for every
+  // tuple-to-userset.
   const onNode = linked.filter(
     (tuple) =>
       tuple.objectType === request.objectType &&
       tuple.objectId === request.objectId &&
-      tuple.relation === tupleset,
+      tuple.relation === tupleset &&
+      (tuple.subjectRelation ?? null) === null &&
+      tuple.subjectId !== "*",
   );
 
   const admitted = onNode.filter((tuple) =>

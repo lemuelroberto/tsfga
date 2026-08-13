@@ -378,3 +378,98 @@ describe("a client over a transaction", () => {
     await client.addTuple(tuple);
   });
 });
+
+/**
+ * The one shape whose consequence is visible only through a real
+ * adapter. A tuple-to-userset dispatch onto a wildcard tupleset row
+ * would ask for object id `"*"`; the mock store answers that read
+ * with no rows, but a `uuid` column answers it with a driver error,
+ * and a raw `pg` `DatabaseError` is not a `TsfgaError`.
+ */
+describe("a wildcard tupleset row through the adapter", () => {
+  let db: Kysely<DB>;
+
+  beforeAll(() => {
+    db = getDb();
+  });
+
+  beforeEach(async () => {
+    await rollbackTransaction(db);
+    await beginTransaction(db);
+  });
+
+  afterEach(async () => {
+    await rollbackTransaction(db);
+  });
+
+  afterAll(async () => {
+    await destroyDb();
+  });
+
+  test("check resolves false rather than reaching the driver", async () => {
+    const client = createTsfga(new KyselyTupleStore(db));
+    await client.writeRelationConfig({
+      objectType: "folder_c4k",
+      relation: "viewer",
+      directlyAssignable: [{ type: "user_c4k" }],
+      impliedBy: null,
+      computedUserset: null,
+      tupleToUserset: null,
+      excludedBy: null,
+      intersection: null,
+    });
+    await client.writeRelationConfig({
+      objectType: "doc_c4k",
+      relation: "viewer",
+      directlyAssignable: [{ type: "user_c4k" }],
+      impliedBy: null,
+      computedUserset: null,
+      tupleToUserset: [{ tupleset: "parent", computedUserset: "viewer" }],
+      excludedBy: null,
+      intersection: null,
+    });
+    await client.writeRelationConfig({
+      objectType: "doc_c4k",
+      relation: "parent",
+      directlyAssignable: [{ type: "folder_c4k" }],
+      impliedBy: null,
+      computedUserset: null,
+      tupleToUserset: null,
+      excludedBy: null,
+      intersection: null,
+    });
+    // Widened after the TTU was written, so the "tupleset relation
+    // admits a wildcard" rule never sees it — the documented
+    // write-order gap.
+    await client.writeRelationConfig({
+      objectType: "doc_c4k",
+      relation: "parent",
+      directlyAssignable: [
+        { type: "folder_c4k" },
+        { type: "folder_c4k", wildcard: true },
+      ],
+      impliedBy: null,
+      computedUserset: null,
+      tupleToUserset: null,
+      excludedBy: null,
+      intersection: null,
+    });
+    await client.addTuple({
+      objectType: "doc_c4k",
+      objectId: uuidDoc,
+      relation: "parent",
+      subjectType: "folder_c4k",
+      subjectId: "*",
+    });
+
+    expect(
+      await client.check({
+        objectType: "doc_c4k",
+        objectId: uuidDoc,
+        relation: "viewer",
+        subjectType: "user_c4k",
+        subjectId: uuidAlice,
+      }),
+    ).toBe(false);
+  });
+});

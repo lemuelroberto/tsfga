@@ -23,6 +23,7 @@ import {
   admitsSubjectRef,
   DEFAULT_WRITE_CONTEXT_BYTE_LIMIT,
   directSubjectRef,
+  isRe2Space,
   isSelfDefining,
   validateIdDomain,
   validateRequestContext,
@@ -147,15 +148,21 @@ export interface TsfgaClient {
    * whole call. The result is in candidate order.
    *
    * @throws whatever `check` throws for the first failing
-   *   candidate in candidate order — including
-   *   `DepthExceededError`, which aborts the whole call rather
-   *   than dropping that one object.
+   *   candidate in candidate order — with **two** exceptions, both
+   *   of which drop the candidate and keep the rest of the answer
+   *   rather than abandoning the call. `DepthExceededError` is one:
+   *   a candidate the budget cannot resolve counts as `false`,
+   *   where `check` still raises. A `ConditionEvaluationError` is
+   *   the other, and only when it was *not* raised on a read naming
+   *   the request subject — the reads upstream's reverse expansion
+   *   may never materialise. Both run in the under-reporting
+   *   direction: nothing is granted that a full check does not
+   *   grant. The rationale for each is on `listObjects` in
+   *   `list-objects.ts`.
    * @throws RelationConfigNotFoundError, InvalidSubjectTypeError or
    *   InvalidConditionalTupleError when a contextual tuple fails
    *   the same validation `addTuple` applies. Raised once for the
    *   call, before any candidate is checked.
-   * @throws InvalidRequestContextError for a `context` upstream
-   *   refuses, as `check` does and before anything is read.
    */
   listObjects(request: ListObjectsRequest): Promise<string[]>;
   /**
@@ -187,8 +194,6 @@ export interface TsfgaClient {
    *   define. Upstream refuses the call for the same row, and
    *   reporting the subject unevaluated would be the granting
    *   direction.
-   * @throws InvalidRequestContextError for a `context` upstream
-   *   refuses, as `check` does.
    */
   listSubjects(
     objectType: string,
@@ -232,18 +237,6 @@ export interface TsfgaClient {
   writeConditionDefinition(condition: ConditionDefinition): Promise<void>;
   deleteConditionDefinition(name: string): Promise<boolean>;
 }
-
-/**
- * Go's `\s` inside an RE2 pattern — `[\t\n\f\r ]` and nothing else.
- *
- * Narrower than JavaScript's `\s`, which also matches a vertical
- * tab, a non-breaking space and every other Unicode space
- * separator. Spelled out rather than borrowed, because the
- * difference is the whole point: a non-breaking space is an
- * ordinary character to both engines, and `\s` here would refuse
- * an id upstream accepts.
- */
-const LIST_USERS_WHITESPACE = /[\t\n\f\r ]/;
 
 export function createTsfga(
   store: TupleStore,
@@ -467,7 +460,7 @@ export function createTsfga(
       // in `pkg/server/commands`, and `ListUsers` is not a check.
       // The comment here used to cite `CheckCommand` as its
       // authority; it never was one.
-      if (objectId.length === 0 || LIST_USERS_WHITESPACE.test(objectId)) {
+      if (objectId.length === 0 || [...objectId].some(isRe2Space)) {
         throw new InvalidObjectError(
           "malformed object id",
           objectType,
@@ -500,6 +493,18 @@ export function createTsfga(
             tuple.objectType === objectType &&
             tuple.objectId === objectId &&
             tuple.relation === relation,
+        )
+        // And the same guard `clampToQuery`'s `isUserset` carries:
+        // a wildcard is a subject shape, not an id, so a wildcard
+        // carrying a subject relation is a row no legal model has.
+        // It is admitted as the ordinary ref `team#member`
+        // otherwise, because `subjectShape` folds `"*"` into the
+        // wildcard shape only when there is no subject relation.
+        // Guarded on the relation so a direct `user:*` row — an
+        // ordinary grant — is still reported.
+        .filter(
+          (tuple) =>
+            (tuple.subjectRelation ?? null) === null || tuple.subjectId !== "*",
         )
         .filter((tuple) =>
           admitsSubjectRef(

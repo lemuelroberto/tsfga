@@ -847,11 +847,28 @@ function parseGoNumeric(value: string): ParsedNumber | null {
  * fraction with no finite binary form, and no rounding here would
  * make it one.
  *
- * That is the whole of upstream's precision rule. It parses at
- * 64-bit precision and then converts, refusing when the conversion
- * is inexact, so a `double` given `"0.1"` or
- * `"1.0000000000000000001"` is an error rather than the nearest
- * `float64`.
+ * This is **exact and unbounded**, and upstream's rule is not, so
+ * say what each does. `big.ParseFloat(s, 10, 64, 0)` rounds the
+ * decimal to 64 significand bits and *then* asks whether the
+ * result converts to a `float64` — or, for `int` and `uint`,
+ * whether it is integral. This asks the same question of the
+ * decimal itself, at whatever precision it is written to.
+ *
+ * The two agree wherever rounding moves the value: `"0.1"` and
+ * `"1.0000000000000000001"` are errors on both sides, the second
+ * because 1e-19 is larger than the half-ulp near 1.0 and survives
+ * the rounding. They part company below that half-ulp:
+ * `"1.0000000000000000000000001"` rounds to exactly 1.0 upstream
+ * and is read, and is refused here as the non-dyadic decimal it
+ * is.
+ *
+ * That residue is a **refusing** divergence, pinned in
+ * `tests/conformance/condition-grammar.test.ts` for `double`,
+ * `int` and `uint`. Closing it means rounding to 64 significand
+ * bits before these tests rather than reading a wider rule off
+ * upstream's words — deferred deliberately, because this is the
+ * path every numeric context value crosses and the fix moves it
+ * in the accepting direction.
  */
 function toDyadic(
   parsed: ParsedNumber,
@@ -1493,8 +1510,62 @@ function sumCost(charges: readonly Charge[]): number {
  */
 const FORMATTED_SCALAR_SIZE = 32;
 
-/** The loop bookkeeping a comprehension charges per element. */
-const COMPREHENSION_STEP_COST = 1;
+/**
+ * The loop bookkeeping a comprehension charges per element.
+ *
+ * cel-go charges nothing for the fold itself — `runtimecost.go`'s
+ * `case *evalFold:` drops everything but the iteration range — and
+ * everything for the nodes the *desugared* macro evaluates on each
+ * pass. The desugarings are in `parser/macro.go` (`makeQuantifier`,
+ * `MakeMap`, `MakeFilter`) and the per-node prices in
+ * `common/cost.go`: an ident or a select is 1, creating a list is
+ * `ListCreateBaseCost` 10, a constant is 0, and a call cel-go has
+ * no size-dependent overload for is 1.
+ *
+ * So, per iteration:
+ *
+ * - `all` — `@not_strictly_false(__result__)` is an ident plus a
+ *   call, and the step `__result__ && body` adds one ident (`&&`
+ *   is a short-circuit node, not a call): **3**.
+ * - `exists` — the same loop condition with a `!_` call inside it,
+ *   and one accumulator ident in the step: **4**.
+ * - `exists_one` — the loop condition is the literal `true`, free,
+ *   and the step `body ? __result__ + 1 : __result__` is one ident
+ *   plus the `+` call: **2**.
+ * - `map` — the step `__result__ + [body]` builds a one-element
+ *   list every pass: ident 1 + list create 10 + the `AddList`
+ *   call 1: **12**.
+ * - `filter` — the same, plus the ident for the element it keeps:
+ *   **13**.
+ *
+ * That is why this is a table and not a number. A single figure
+ * cannot be right for both `all` at 3 and `filter` at 13, and the
+ * one that is safe for `all` under-charges `map` and `filter` by
+ * four times — which is exactly how a comprehension used to grant
+ * here well past the point upstream refuses it on cost.
+ */
+const COMPREHENSION_STEP_COST: ReadonlyMap<string, number> = new Map([
+  ["all", 3],
+  ["exists", 4],
+  ["exists_one", 2],
+  ["map", 12],
+  ["filter", 13],
+]);
+
+/**
+ * The comprehension's result expression, charged once.
+ *
+ * `all`, `exists`, `map` and `filter` finish on a bare accumulator
+ * ident; `exists_one` finishes on `__result__ == 1`, an ident plus
+ * a call.
+ */
+const COMPREHENSION_RESULT_COST: ReadonlyMap<string, number> = new Map([
+  ["all", 1],
+  ["exists", 1],
+  ["exists_one", 2],
+  ["map", 1],
+  ["filter", 1],
+]);
 
 /**
  * Charge a function call, receiver folded in as operand 0 — which
@@ -1565,9 +1636,17 @@ function chargeComprehension(
     bindings.set(iterVar.args, elementCeiling(receiver, scope));
   }
   const inner: CostScope = { ...scope, bindings };
-  const perElement = sumCost(chargeAll(body, inner)) + COMPREHENSION_STEP_COST;
+  // The `?? 4` and `?? 1` are unreachable today —
+  // `COMPREHENSION_MACROS` has exactly the five members both
+  // tables name — and exist so that a sixth macro arriving in
+  // cel-js cannot slip in charging nothing for its loop.
+  const perElement =
+    sumCost(chargeAll(body, inner)) + (COMPREHENSION_STEP_COST.get(name) ?? 4);
   return {
-    cost: source.cost + iterations * perElement,
+    cost:
+      source.cost +
+      iterations * perElement +
+      (COMPREHENSION_RESULT_COST.get(name) ?? 1),
     // `map` and `filter` produce a list; the predicates produce a
     // bool. `filter` returns at most as many elements as it read.
     size: name === "map" || name === "filter" ? iterations : 1,

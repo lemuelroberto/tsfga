@@ -370,6 +370,35 @@ function isWellFormedId(id: string, reserved: readonly string[]): boolean {
   return !reserved.some((char) => id.includes(char));
 }
 
+/** The five characters Go's `\s` matches inside an RE2 pattern. */
+const RE2_SPACE: ReadonlySet<string> = new Set([" ", "\t", "\n", "\f", "\r"]);
+
+/**
+ * Go's `\s` inside an RE2 pattern — `[\t\n\f\r ]` and nothing else.
+ *
+ * Every upstream rule this package ports that mentions whitespace
+ * spells it with that class: `TupleKey.object`'s `^[^\s]{2,256}$`,
+ * `TupleKey.relation`'s `^[^:#@\s]{1,50}$`, `ListUsers`'s object
+ * pattern, and the model write path's `^[^:#@\s]{1,254}$` on a
+ * type name and `^[^:#@\s]{1,50}$` on a relation name.
+ *
+ * It is a shared predicate, and not a `/\s/` at each site, because
+ * the difference is the whole point and it is invisible at a
+ * glance. JavaScript's `\s` is the Unicode space property: it also
+ * matches a vertical tab, a no-break space, U+2028 and every other
+ * space separator, none of which Go matches. Probed against
+ * v1.18.2: a vertical tab (U+000B), a no-break space (U+00A0),
+ * U+2028 and an ideographic space are all **accepted** wherever
+ * these patterns run, and so is every control character outside
+ * the five. Borrowing JavaScript's class refuses what upstream
+ * accepts — and on the delete path it did exactly that, leaving a
+ * row that was writable, resolved `true`, and had no library path
+ * that removed it.
+ */
+export function isRe2Space(char: string): boolean {
+  return RE2_SPACE.has(char);
+}
+
 /**
  * The store's own id gate: refuse an id the store has declared it
  * cannot hold.
@@ -1074,16 +1103,7 @@ function isValidUserString(value: string): boolean {
  * delete falls through to "does not exist" rather than being
  * refused — measured, and asserted in the fixture.
  */
-const DELETE_RELATION_RESERVED: readonly string[] = [
-  ":",
-  "#",
-  "@",
-  " ",
-  "\t",
-  "\n",
-  "\f",
-  "\r",
-];
+const DELETE_RELATION_RESERVED: readonly string[] = [":", "#", "@"];
 const DELETE_RELATION_MAX_LENGTH = 50;
 
 /**
@@ -1165,7 +1185,7 @@ export function validateTupleDelete(request: RemoveTupleRequest): void {
       "DELETE-OBJECT-MALFORMED",
     );
   }
-  if (runes.some((char) => /\s/.test(char))) {
+  if (runes.some(isRe2Space)) {
     throw new InvalidObjectError(
       "malformed object id",
       request.objectType,
@@ -1179,7 +1199,9 @@ export function validateTupleDelete(request: RemoveTupleRequest): void {
   const relation = [...request.relation];
   if (
     relation.length > DELETE_RELATION_MAX_LENGTH ||
-    relation.some((char) => DELETE_RELATION_RESERVED.includes(char))
+    relation.some(
+      (char) => DELETE_RELATION_RESERVED.includes(char) || isRe2Space(char),
+    )
   ) {
     throw new InvalidObjectError(
       "malformed object id",

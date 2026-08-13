@@ -1232,3 +1232,74 @@ describe("removeTuple validates as upstream validates a delete", () => {
     expect(methods.join(",")).toBe("deleteTuple");
   });
 });
+
+/**
+ * `TupleKey.object`'s protovalidate pattern is `^[^\s]{2,256}$`,
+ * and the `\s` in it is Go's RE2 class — `[\t\n\f\r ]`, five
+ * characters. JavaScript's `\s` is the Unicode space property,
+ * which is wider, and borrowing it here refused a delete for an
+ * object id the write and check paths both accept: the row was
+ * writable, resolved `true`, and had no library path that removed
+ * it.
+ */
+describe("a delete borrows Go's whitespace class, not JavaScript's", () => {
+  function client(): TsfgaClient {
+    const store = new MockTupleStore();
+    store.relationConfigs.push({
+      objectType: "doc",
+      relation: "viewer",
+      directlyAssignable: [{ type: "user" }],
+      impliedBy: null,
+      computedUserset: null,
+      tupleToUserset: null,
+      excludedBy: null,
+      intersection: null,
+    });
+    return createTsfga(store);
+  }
+
+  // A no-break space, a line separator and an ideographic space:
+  // Unicode space characters, and ordinary id characters to RE2.
+  for (const [name, char] of [
+    ["U+00A0", " "],
+    ["U+2028", " "],
+    ["U+3000", "　"],
+  ] as const) {
+    test(`${name} in an object id survives the round trip`, async () => {
+      const c = client();
+      const key = {
+        objectType: "doc",
+        objectId: `d${char}1`,
+        relation: "viewer",
+        subjectType: "user",
+        subjectId: "alice",
+      };
+      await c.addTuple(key);
+      expect(await c.check(key)).toBe(true);
+      await c.removeTuple(key);
+      expect(await c.check(key)).toBe(false);
+    });
+  }
+
+  // And the five characters that *are* in the class must still
+  // refuse, so the fix cannot be read as dropping the rule.
+  for (const [name, char] of [
+    ["tab", "\t"],
+    ["newline", "\n"],
+    ["form feed", "\f"],
+    ["carriage return", "\r"],
+    ["space", " "],
+  ] as const) {
+    test(`${name} in an object id still refuses a delete`, async () => {
+      await expect(
+        client().removeTuple({
+          objectType: "doc",
+          objectId: `d${char}1`,
+          relation: "viewer",
+          subjectType: "user",
+          subjectId: "alice",
+        }),
+      ).rejects.toBeInstanceOf(InvalidObjectError);
+    });
+  }
+});

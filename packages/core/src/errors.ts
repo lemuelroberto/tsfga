@@ -697,8 +697,12 @@ export type RequestContextDefect =
  * names nothing but the context — there is no tuple to blame and
  * naming one would be a lie.
  *
- * Raised at the entry to `check`, `checkMany`, `listObjects` and
- * `listSubjects`, ahead of any store read.
+ * Raised at the entry to `check` and `checkMany`, ahead of any
+ * store read, and **nowhere else**. `listObjects` and
+ * `listSubjects` do not apply the gate: upstream's nearest
+ * requests to them are `ListObjects` and `ListUsers`, neither of
+ * which is a check, and `ValidateStruct` runs from `CheckCommand`
+ * alone. Borrowing it would refuse a call upstream answers.
  */
 export class InvalidRequestContextError extends TsfgaError {
   override readonly cause: RequestContextDefect;
