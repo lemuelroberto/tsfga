@@ -412,9 +412,17 @@ describe("Write Gate Conformance", () => {
       // `team_a3:*#member` is not a well-formed user upstream:
       // `IsValidUserset` rejects a `*` id, and `IsValidObject`
       // rejects the `#`, so `ValidateUser` refuses the write.
-      // tsfga reads the subject relation first and files the row as
-      // the userset `team_a3#member`, which `userset_only` admits,
-      // storing the wildcard sentinel as its id.
+      //
+      // tsfga refuses it too, at three independent layers. The
+      // core write gate refuses it as a malformed subject, because
+      // a wildcard is a subject shape and not an id, so one
+      // carrying a subject relation is a row no legal model has.
+      // `clampToQuery` drops the same shape on the read side, so a
+      // store that held one anyway could not make it grant. And
+      // migration 006's `tuples_wildcard_shape` forbids it at the
+      // column level: the wildcard lives in `subject_wildcard`
+      // with `subject_id` NULL, and no id value is reserved for
+      // it.
       const sides = await bothSides({
         relation: "userset_only",
         subjectType: "team_a3",

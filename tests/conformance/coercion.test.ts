@@ -42,22 +42,28 @@ import {
  * `duration`, `timestamp`, and the `list<T>` / `map<T>` containers
  * that run each element through the same converter.
  *
- * Two of the eight refuse values tsfga accepts, and both are the
- * **granting** direction:
+ * Two of the eight **used to** refuse values tsfga accepted, both
+ * in the granting direction. Both are closed, and the tests below
+ * now assert `"refused"` on both engines. They are kept, and kept
+ * described, because a coercion gate that has been open once is
+ * the kind that reopens quietly:
  *
- * - **`duration` has no magnitude check.** Upstream's
+ * - **`duration` had no magnitude check.** Upstream's
  *   `time.ParseDuration` overflows at ±2^63 nanoseconds and
- *   errors; tsfga validates the grammar with a regex and never the
- *   size. Reachable through the scalar, through a `list<duration>`
- *   element and through a `map<duration>` value.
- * - **`timestamp` is parsed by `new Date`, which rolls a date over
- *   instead of refusing it.** `2026-02-30` becomes
- *   March 2 and `T24:00:00` becomes the next midnight, where Go's
- *   `time.Parse` reports "day out of range" and "hour out of
- *   range". Same reachability: scalar, list element, stored tuple
- *   context.
+ *   errors; tsfga validated the grammar with a regex and never the
+ *   size, through the scalar, through a `list<duration>` element
+ *   and through a `map<duration>` value alike. Closed by
+ *   `durationExceedsInt64`, which sums the terms into a `BigInt`
+ *   and refuses before the value reaches cel-js.
+ * - **`timestamp` was parsed by `new Date`, which rolls a date
+ *   over instead of refusing it.** `2026-02-30` became March 2 and
+ *   `T24:00:00` became the next midnight, where Go's `time.Parse`
+ *   reports "day out of range" and "hour out of range". Closed by
+ *   `asTimestamp`, which now reads the RFC 3339 components itself
+ *   and checks each against the calendar rather than trusting the
+ *   normalisation.
  *
- * The other six agree on everything probed, and the passing tests
+ * The other six agreed on everything probed, and the passing tests
  * below record that so the next enumeration does not re-derive it:
  * `double` refuses a string that overflows or underflows float64,
  * `int` refuses a fractional value and saturates past int64,
@@ -223,13 +229,16 @@ describe("Context coercion conformance", () => {
    * reports "invalid duration" the moment the accumulator
    * overflows, so a duration outside ±2^63 ns is refused as the
    * context is read — before any expression runs. tsfga's
-   * `coerceContext` matches Go's *grammar* with a regex and hands
-   * whatever matches to cel-js, which does not bound it either.
+   * `coerceContext` used to match Go's *grammar* with a regex and
+   * hand whatever matched to cel-js, which does not bound it
+   * either; `durationExceedsInt64` now sums the terms and refuses
+   * at the same boundary Go's accumulator does.
    *
    * `d > duration('0s')` is as ordinary as a condition gets, and
-   * the value is one a caller stores in a tuple to mean "forever".
+   * the value is one a caller stores in a tuple to mean "forever",
+   * which is why the closed gap keeps its whole enumeration.
    */
-  describe("a duration's magnitude is never checked", () => {
+  describe("a duration's magnitude is checked, at Go's boundary", () => {
     test("a duration past int64 nanoseconds", async () => {
       await check("durctx_d2", { d: DUR_OVER }, "refused");
     });
@@ -259,10 +268,10 @@ describe("Context coercion conformance", () => {
       await check("durmap_d2", { dm: { a: DUR_OVER } }, "refused");
     });
 
-    test("the write gate stores what upstream refuses", async () => {
-      // The granting shape end to end: upstream will not store the
-      // tuple at all, tsfga stores it and then answers `true` on
-      // it.
+    test("the write gate refuses it too, as upstream does", async () => {
+      // The shape that used to grant end to end: upstream would
+      // not store the tuple at all, tsfga stored it and then
+      // answered `true` on it. Both refuse the write now.
       await write("durctx_d2", { d: DUR_OVER }, "refused");
     });
 
@@ -292,16 +301,19 @@ describe("Context coercion conformance", () => {
    * against the calendar — "day out of range", "hour out of range"
    * — and refuses. `new Date` normalises instead: February 30
    * becomes March 2, and `T24:00:00` becomes the next midnight.
-   * tsfga's `RFC3339` regex checks the *shape* (two digits, a
-   * colon) and `asTimestamp` then trusts `new Date`, so the two
-   * rolled-over spellings pass the gate and evaluate.
+   * tsfga's `RFC3339` regex checks only the *shape* (two digits, a
+   * colon), and `asTimestamp` used to hand the rest to `new Date`,
+   * so both rolled-over spellings passed the gate and evaluated.
    *
-   * Granting, and reachable from ordinary data: a caller
-   * assembling `2026-02-${lastDay}` or an off-by-one on a
-   * midnight boundary produces exactly these strings, and
-   * upstream declines to answer where tsfga answers `true`.
+   * That was granting, and reachable from ordinary data: a caller
+   * assembling `2026-02-${lastDay}` or an off-by-one on a midnight
+   * boundary produces exactly these strings, and upstream declined
+   * to answer where tsfga answered `true`. Closed by giving
+   * `asTimestamp` its own component parser, which reads year,
+   * month, day, hour, minute and second out of the match and
+   * checks each against the calendar before building the `Date`.
    */
-  describe("a timestamp is normalised rather than validated", () => {
+  describe("a timestamp is validated, not normalised", () => {
     test("a day past the end of the month", async () => {
       await check("tsctx_d2", { t: "2026-02-30T00:00:00Z" }, "refused");
     });
@@ -322,7 +334,7 @@ describe("Context coercion conformance", () => {
       await check("tslist_d2", { ts: ["2026-02-30T00:00:00Z"] }, "refused");
     });
 
-    test("the write gate stores what upstream refuses", async () => {
+    test("the write gate refuses it too, as upstream does", async () => {
       await write("tsctx_d2", { t: "2026-02-30T00:00:00Z" }, "refused");
     });
 

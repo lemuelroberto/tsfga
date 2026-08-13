@@ -35,11 +35,21 @@ function namesIn(tuplesPath: string): Set<string> {
  * Gate 0 — discovery completeness, against an independent source.
  *
  * Every name the OpenFGA-side fixture uses must be a key of the
- * test file's map. This is the only check that says the map is
- * *complete* rather than merely *consistently applied*: a residue
- * search can only search for keys, so a value the discovery never
- * found is invisible to it by construction. The fixture is written
- * by hand and not derived from the test file, so it can disagree.
+ * test file's map. It says the map is *complete* rather than
+ * merely *consistently applied*: a residue search can only search
+ * for keys, so a value the discovery never found is invisible to
+ * it by construction. The fixture is written by hand and not
+ * derived from the test file, so it can disagree.
+ *
+ * It is not the only completeness gate, and it is the weaker of
+ * the two. `resolveRef` in `helpers/openfga.ts` throws on any
+ * unmapped ref, at fixture load, for every file that passes a
+ * `uuidMap` — a stronger check over more files, because it sees
+ * every ref actually resolved rather than the ones a text scan
+ * recognises. Both are kept: this one runs as an ordinary
+ * assertion, names every missing key at once, and reports against
+ * the tuples file the way a reader reads it, while `resolveRef`
+ * fails on the first ref and only where a map is passed at all.
  */
 export function assertUuidMapCovers(
   tuplesPath: string,

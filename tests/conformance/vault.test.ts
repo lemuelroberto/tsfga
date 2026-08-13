@@ -43,11 +43,14 @@ import {
  *
  * Four seams are the point of this fixture.
  *
- * **`matches()` is RE2, not JavaScript's `RegExp`.**
- * `env_tagged_c3v` uses the inline flag group `(?i)`, which RE2
- * accepts and `RegExp` throws on. A model an OpenFGA user can
- * write is therefore only answerable here since the RE2 rewrite,
- * and this is the ordinary-model proof of it.
+ * **A case-insensitive tag without a regular expression.**
+ * `env_tagged_c3v` used to be a `matches()` call carrying the
+ * inline flag group `(?i)`. `matches()` is not supported at all
+ * now — it is absent from the declaration allow-list, so a
+ * condition naming it is refused at write — and the condition is
+ * a list membership over the spellings it accepts. That is the
+ * shape a model has to take here, and this fixture is the
+ * ordinary-model demonstration of it.
  *
  * **Tuple context beats request context.** `erin`'s `reader` row
  * pins `ip` in the tuple, so a request naming a different IP
@@ -626,7 +629,7 @@ describe("Vault Model Conformance", () => {
     });
   });
 
-  // --- RE2's inline flag group ---
+  // --- the case-insensitive tag, spelled as a list ---
 
   test("15: the environment tag matches case-insensitively", async () => {
     await can("workspace_c3v", "prod", "deployer", "carol", true, {

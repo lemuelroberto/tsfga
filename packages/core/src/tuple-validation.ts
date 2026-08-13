@@ -411,7 +411,8 @@ export function isRe2Space(char: string): boolean {
  *
  * **Where it sits is the decision: after every upstream rule about
  * the request's own strings, and before the first rule about the
- * model.** An id can be malformed by upstream's rules *and*
+ * subject's place in the model.** An id can be malformed by
+ * upstream's rules *and*
  * outside the store's domain — every malformed id is, since none
  * of them is a canonical UUID — so the order is observable on
  * nearly every refusing input, and a caller must hear the refusal
@@ -428,6 +429,16 @@ export function isRe2Space(char: string): boolean {
  * nothing to say about whether the relation would have admitted
  * the subject, and asking anyway would make this the one string
  * rule in the gate that runs after the model.
+ *
+ * **One model question does precede it, at two call sites, and it
+ * is not a restriction.** `validateTupleWrite` and `listObjects`
+ * both fetch the relation config before anything else they do, so
+ * a bad id on a relation the model does not define reports
+ * `RelationConfigNotFoundError` rather than `IdDomainError`.
+ * That is the config *lookup* — whether the relation exists at
+ * all — and not a rule about what it admits. `check` and
+ * `checkMany` have no such ordering: the id gate runs at the
+ * request boundary, ahead of every read.
  *
  * **Absence is refused, and refused named.** `store.idDomain` may
  * be `undefined` at runtime — a JavaScript consumer, a spread

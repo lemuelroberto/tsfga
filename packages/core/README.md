@@ -213,13 +213,24 @@ node plus `maxDepth - 1` dispatches.
   **int64**'s, because upstream converts every numeric string
   through the same `Int64()` and only then rejects a negative.
 
-  A `double` carries one rule more: upstream parses at 64-bit
-  precision and refuses the value if converting it to a `float64`
-  loses anything. A decimal fraction with no finite binary form is
-  therefore an error rather than the nearest double — `"0.1"` as a
-  **string** is refused, while `0.1` as a **number** is accepted,
-  since a number is already a `float64` and is asserted rather
-  than parsed.
+  A `double` carries one rule more: a decimal with no finite
+  binary form is an error rather than the nearest double. `"0.1"`
+  as a **string** is refused, while `0.1` as a **number** is
+  accepted, since a number is already a `float64` and is asserted
+  rather than parsed.
+
+  The two engines ask that question at different precisions, and
+  the difference is a measured divergence rather than a rounding
+  detail. Upstream rounds the decimal to 64 significand bits and
+  *then* asks whether the result converts to a `float64` — or, for
+  `int` and `uint`, whether it is integral. tsfga asks it of the
+  decimal exactly as written, at unbounded precision. They agree
+  wherever the rounding moves the value, so `"0.1"` and
+  `"1.0000000000000000001"` are errors on both sides; they part
+  company below the half-ulp, where
+  `"1.0000000000000000000000001"` rounds to `1.0` upstream and is
+  read, and is refused here. See "Where tsfga and OpenFGA
+  disagree" below.
 
   A `duration` takes Go's unit grammar plus the one unitless form
   its parser special-cases, a bare `"0"`. A `timestamp` takes RFC
@@ -243,7 +254,8 @@ is the same missing machinery as the depth boundary itself.
 What tsfga does **not** do is lose the rest of the answer with it.
 A candidate whose resolution exhausts the budget is dropped,
 exactly as a candidate answering `false` is, and the call still
-returns every object that qualifies. Upstream's stated policy is
+answers with the objects that qualify — up to
+`listObjectsMaxResults`, below. Upstream's stated policy is
 the opposite — a depth-exceeded candidate fails the whole
 ListObjects (`ErrAuthorizationModelResolutionTooComplex`) — but
 its boundary sits far enough out that it almost never reaches its
@@ -252,8 +264,17 @@ every shape upstream can answer, and further from it only where
 upstream genuinely aborts.
 
 The policy is local to `listObjects`. `check` still raises
-`DepthExceededError`, in every set position, and every other error
-still aborts a `listObjects` call in candidate order.
+`DepthExceededError`, in every set position.
+
+`DepthExceededError` is not the only class `listObjects` drops.
+A `ConditionEvaluationError` raised on a read that does **not**
+name the request subject is dropped the same way — the candidate
+counts as `false` and the call answers. An error on a read that
+*does* name the subject still aborts, because upstream's reverse
+expansion always issues that read and would refuse too. Everything
+else aborts the call in candidate order. Both drops run in the
+under-reporting direction: nothing is granted that a full `check`
+does not grant.
 
 Pinned two-sided by `list-objects-depth-budget.test.ts` and
 `list-objects-depth.test.ts`.
@@ -366,16 +387,30 @@ whole userset reaches.
 The subject of a check is validated before any of it is resolved,
 as upstream validates the `user` field at the command layer:
 
-- a `subjectRelation` the subject's type does not define, or a
-  `subjectType` the model does not define, raises
+- a `subjectRelation` the subject's type does not define raises
   `RelationConfigNotFoundError` — upstream answers `relation
   'group#nonexistent' not found` rather than `false`;
+- a `subjectType` the model defines no type for raises
+  `InvalidSubjectTypeError` with
+  `cause: "undefined subject type"`, **not**
+  `RelationConfigNotFoundError`. The two are separate refusals
+  because upstream's `ValidateUser` reports them separately and in
+  that order: the `user` field's type is checked first, and only a
+  subject that survives it has its userset relation resolved. So a
+  userset subject naming an undefined type is refused for its
+  type, and the relation is never looked up;
 - a `subjectId` containing `:` or `#`, a `subjectRelation` that is
   empty, and a `subjectId` of `*` carrying a subject relation, all
   raise `InvalidSubjectTypeError` with
   `cause: "malformed subject"`. Upstream's `userIDRegex` is
   `^[^:#\s\x00\p{Cc}]+$`, so none of them is a subject there
   either.
+
+`SubjectDefect` — what `InvalidSubjectTypeError.cause` carries —
+therefore has two members, `"malformed subject"` and `"undefined
+subject type"`, and a third state: `undefined`, which is the
+ordinary "this relation does not admit that subject" refusal and
+is deliberately causeless.
 
 The second group closes a silent failure. Passing an
 OpenFGA-shaped `user` string through `subjectId` — `subjectId:
@@ -649,10 +684,47 @@ that way and the order is observable.
 An error in any candidate otherwise fails the whole call. Which
 error surfaces is deterministic: it is the first failing candidate
 in *candidate* order, not the first to fail in wall-clock order.
-No candidate after a failure is started. The one exception is
-`DepthExceededError`, which drops that candidate and keeps the
-rest of the answer — see "Known divergence: `listObjects` past the
-depth budget" above for why.
+No candidate after a failure is started. There are exactly two
+exceptions, and both drop the candidate and keep the rest of the
+answer:
+
+- `DepthExceededError` — see "Known divergence: `listObjects` past
+  the depth budget" above for why.
+- a `ConditionEvaluationError` raised on a read that does **not**
+  name the request subject. The reads that *do* name it — the
+  direct row and the `subjectType:*` wildcard row — are the ones
+  upstream's reverse expansion always issues, so an error there
+  refuses on both engines and still aborts here. Every other read
+  sits behind at least one hop, and upstream materialises it only
+  if some path from the subject leads there; tsfga checks each
+  candidate forward and cannot know, so it drops it. The residue
+  is that where upstream's expansion does reach such a row it
+  refuses the whole call and tsfga returns the partial list —
+  under-reporting, never granting.
+
+### `listObjects` truncates, silently
+
+At most `listObjectsMaxResults` objects come back. It defaults to
+**1000**, matching `OPENFGA_LIST_OBJECTS_MAX_RESULTS`, and
+`Infinity` opts out. Upstream truncates silently — `ListObjects`
+has no cursor and no field saying the answer was cut — and so does
+this: a full answer and a truncated one are indistinguishable to
+the caller. Two consequences, both shared with upstream:
+
+- **Which** objects come back above the cap differs between the
+  engines. Upstream keeps whatever its worker pool completed
+  first; tsfga keeps the first `listObjectsMaxResults` granting
+  candidates *in candidate order*. Compare counts, never
+  membership.
+- Reaching the cap **stops the producers**. Nothing further is
+  launched, so a candidate past the cap is never resolved and can
+  never raise. A call that answers is therefore not evidence that
+  every object of the type is resolvable — only that the ones
+  reported are.
+
+The cap bounds the answer and never the gates: a relation with no
+config is still refused, and a cap of `1` does not turn a refusal
+into a one-element list.
 
 ## Relation configs gate the reads
 
@@ -842,6 +914,11 @@ the reason on `.cause`:
 
 | cause | meaning |
 |---|---|
+| `malformed type name` | the object type's own name fails upstream's proto pattern `^[^:#@\s]{1,254}$` — one cause for both `type_invalid_pattern` and `type_invalid_length`, because upstream's split is between two constraints on one field |
+| `malformed relation name` | the same pattern on the relation field, under a bound of 50 |
+| `malformed condition name` | the same pattern and bound again, on `writeConditionDefinition`'s `name` |
+| `malformed condition parameter name` | the same, on every key of `parameters` — a separate loop, so the detail names the offending key |
+| `reserved keyword` | the type's or the relation's name is `self` or `this`; upstream's `validateNames`, which looks at those two names and nothing else — a *condition* named `self` is stored |
 | `intersection has fewer than two operands` | a set operation with one child or none; upstream: "as intersection has less than 2 children" |
 | `undefined condition` | a type restriction names a condition the store has not got |
 | `tupleset relation admits a userset` | the relation a tuple-to-userset reads is assignable to `type#relation` |
@@ -887,19 +964,26 @@ qualifier:
   type is not a cycle — that type's relation may have one. The
   general rule stays open.
 
-`RelationConfigDefect` also declares `computed relation undefined
-on every tupleset type` and `undefined relation`. **Nothing raises
-either yet**, for the reason in the gap below; they are declared
-so the union does not change shape when a whole-model validator
-arrives.
+The table is the set of causes a config or condition write raises
+today, not the whole of `RelationConfigDefect`. The union also
+declares `rewrite names its own relation`, described below with
+`rewrite cycle`, and two more that **nothing raises yet** —
+`computed relation undefined on every tupleset type` and
+`undefined relation` — for the reason in the gap below. They are
+declared so the union does not change shape when a whole-model
+validator arrives. `errors.ts` is the source of truth for the
+union; read it before matching on `.cause` exhaustively.
 
-The first two causes were fail-open: a single-operand intersection
-resolved to whatever that operand said, and a tupleset relation
-admitting a userset had its subject relation discarded on
-dispatch, landing on a different relation of the linked object and
-granting.
+Two of them close fail-open shapes. `intersection has fewer than
+two operands`: a single-operand intersection resolved to whatever
+that operand said. `tupleset relation admits a userset`: such a
+row had its subject relation discarded on dispatch, landing on a
+different relation of the linked object and granting.
 
-**The last two have a stated gap.** They are properties of a
+**The three tupleset rules have a stated gap** — `tupleset
+relation admits a userset`, `tupleset relation admits a wildcard`
+and `tupleset relation is not a direct relation`. They are
+properties of a
 *different* relation than the one being written — the one named as
 `tupleset` — so they can only be checked when that relation's
 config already exists. A tuple-to-userset declared **before** its
@@ -1434,6 +1518,71 @@ upstream accepts — and every check that reads it raises.
 
 These are **per-branch**: cel-js short-circuits, so
 `int(d) > 3600 || role == 'admin'` still answers `true`.
+
+**Four more refusals, none of them a missing overload.** They are
+grouped here because the direction is the same — upstream answers
+and tsfga does not — but the *cause* differs in each, and the
+cause is what tells you whether it will ever be closed.
+
+| expression | context | OpenFGA | tsfga |
+|---|---|---|---|
+| `l.exists_one(x, x == 'zz')` | `l` = 25 non-matching strings | `false` | refused on cost |
+| `n == 1.0` | `n = "1.0000000000000000000000001"` | answers | refused |
+| `n > timestamp('…')` | `n = "2026-01-01T00:00:01,5Z"` | answers | refused |
+| `ds[0] + ts[0] > ts[0]` | `ds: list<duration>`, `ts: list<timestamp>` | model stored | **write** refused |
+
+- **`exists_one` costs more here than upstream charges it.**
+  Upstream answers to 48 elements and refuses from 49;
+  tsfga refuses from 25. This is
+  `maxConditionEvaluationCost` over-charging, and over-charging is
+  the direction that limit is required to fail in. cel-go's
+  desugaring counts matches — `body ? __result__ + 1 : __result__`
+  — so the step costs 2 only on the iterations whose predicate
+  holds. tsfga's estimate runs *before* evaluation, by design, so
+  it cannot know which those are and charges the branch it cannot
+  rule out on every element. With an all-*true* predicate the two
+  boundaries coincide, which is how the constant is known not to
+  be an over-estimate of the step itself. Pinned in
+  `cel-cost.test.ts`. Every other comprehension — `all`, `exists`,
+  `map`, `filter` — refuses at exactly upstream's element count.
+- **A decimal string below the half-ulp is read upstream and
+  refused here**, for `double`, `int` and `uint` alike. Upstream
+  rounds the decimal to 64 significand bits and *then* asks
+  whether the result is representable, so
+  `"1.0000000000000000000000001"` becomes exactly `1.0` and is
+  read; tsfga asks the question of the decimal as written, at
+  whatever precision it is written to, and refuses it as the
+  non-dyadic value it is. `"1.0000000000000000001"` sits above the
+  half-ulp and is refused by both. **This is tsfga's own coercion
+  code, not a cel-js limitation** — cel-js never sees the string.
+  It is deferred by an explicit decision on release risk, not
+  because the CEL carve-out covers it: the fix moves the numeric
+  path every `int`, `uint` and `double` context value crosses, in
+  the accepting direction. Closing it means rounding to 64
+  significand bits before the exactness test.
+- **An RFC 3339 fractional separator must be a period here.** Go's
+  `time.Parse` falls back to a parser that takes a comma as well,
+  so `"…T00:00:01,5Z"` is a timestamp upstream and is not one
+  here. **Again tsfga's own coercion, not a cel-js gap** — this
+  time a regular expression in `conditions.ts`. Refusing, so it is
+  safe; the fix is one character and is post-release work.
+- **A temporal parameter declared inside a container is never
+  temporal-degraded**, so `duration + timestamp` on a
+  `list<duration>` and a `list<timestamp>` is refused at the
+  condition *write*, where the equivalent scalar declaration is
+  stored by both. **This one is cel-js's gap**: the degrade pass
+  exists only because cel-js declares `duration + timestamp` as a
+  Duration where cel-go declares a Timestamp, and it tests the
+  declared type rather than the container's element type. Closing
+  it needs a cel-js that declares the overload as cel-go does —
+  not a wider accommodation here, which would grow the very layer
+  this project removed.
+
+The first is pinned in `cel-cost.test.ts`; the other three in
+`condition-grammar.test.ts`, the last of them by
+`expectPinnedModelWriteDivergence` because what diverges is the
+write and not the answer. All four carry a row in
+`docs/cel-js/cases.jsonl` with both version strings.
 
 **Different boolean.** Go's `time.Time` is nanosecond-resolution;
 cel-js maps a CEL timestamp onto a JS `Date`, which is

@@ -549,7 +549,16 @@ it carries a rule id from `CAPABILITY_RULE_IDS` with an entry in
 `packages/core/capability-refusals.json` rather than a cause in
 the upstream inventory. It runs after every upstream rule about
 the request's own strings and before the first rule about the
-model, so a malformed id still reports the portable refusal.
+*subject's place in the* model, so a malformed id still reports
+the portable refusal rather than a local one.
+
+**Two call sites report a model rule first, and it is the
+relation's own existence.** `addTuple` and `listObjects` both need
+the relation config before anything else they do, so a bad id on
+a relation the model does not define reports
+`RelationConfigNotFoundError`, not `IdDomainError`. That is the
+config *lookup*, not a type restriction: no rule about what the
+relation admits ever runs ahead of the id gate.
 
 | Class | Raised when |
 |---|---|
@@ -1516,8 +1525,9 @@ The shims cover: `describe`, `test`, `beforeEach`, `afterEach`,
 `beforeAll`, `afterAll`, and `expect()` with matchers `toBe`, `toBeNull`,
 `toEqual`, `toHaveLength`, `toBeTruthy`, `toBeUndefined`,
 `toBeGreaterThan`, `toBeInstanceOf`, `toContain`, `toThrow`,
-`not.toBeNull`, `not.toBe`, `not.toContain`, `not.toThrow`, and
-`rejects.toBeInstanceOf`.
+`not.toBeNull`, `not.toBe`, `not.toContain`, `not.toThrow`,
+`rejects.toBeInstanceOf`, `resolves.toBe`, `resolves.toEqual` and
+`resolves.toBeUndefined`.
 
 **The list is the contract, and Bun will not tell you when you leave
 it.** A matcher Bun has and the Node shim does not passes locally and

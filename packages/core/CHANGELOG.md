@@ -260,9 +260,13 @@ releases may contain breaking changes).
   `subjectId`: `subjectId: "eng#member"` used to resolve quietly
   to `false` and now raises `InvalidSubjectTypeError` with
   `cause: "malformed subject"`. A `subjectRelation` the subject's
-  type does not define, and a `subjectType` the model does not
-  define, raise `RelationConfigNotFoundError` where they used to
-  answer `false`.
+  type does not define raises `RelationConfigNotFoundError` where
+  it used to answer `false`, and a `subjectType` the model does
+  not define raises `InvalidSubjectTypeError` with
+  `cause: "undefined subject type"`. They are two separate
+  refusals, and the type is checked first: upstream's
+  `ValidateUser` reports the `user` field's type before it
+  resolves a userset's relation.
 
 - **A relation the subject's type cannot reach is denied, not
   walked.** Before resolving a node's rewrite, tsfga asks whether
@@ -285,12 +289,37 @@ releases may contain breaking changes).
   are still validated first, as upstream orders the two gates.
 
 - **`listObjects` drops a depth-exceeded candidate** instead of
-  failing the whole call, and returns every object that qualifies.
-  Every other error still aborts the call in candidate order, and
-  `check` still raises `DepthExceededError` in every position.
-  Upstream's stated policy is to abort, but its boundary sits far
-  enough out that it almost never reaches its own abort, so this
-  is closer to upstream on every shape upstream can answer.
+  failing the whole call, and answers with the objects that
+  qualify. `check` still raises `DepthExceededError` in every
+  position. Upstream's stated policy is to abort, but its boundary
+  sits far enough out that it almost never reaches its own abort,
+  so this is closer to upstream on every shape upstream can
+  answer.
+
+- **`listObjects` also drops a `ConditionEvaluationError` raised
+  on a read that does not name the request subject.** The reads
+  that do name it — the direct row and the `subjectType:*`
+  wildcard row — are the ones upstream's reverse expansion always
+  issues, so an error there refuses on both engines and still
+  aborts. Every other read sits behind a hop upstream may never
+  materialise, and tsfga checks each candidate forward and cannot
+  know, so the candidate counts as `false`. The residue is
+  under-reporting: where upstream's expansion does reach such a
+  row it refuses the whole call and tsfga returns the partial
+  list. Every other error still aborts the call in candidate
+  order.
+
+- **`listObjects` returns at most `listObjectsMaxResults`
+  objects** (new on `CheckOptions`, default **1000**, matching
+  `OPENFGA_LIST_OBJECTS_MAX_RESULTS`; `Infinity` opts out). The
+  truncation is **silent** on both engines — `ListObjects` has no
+  cursor and no field saying the answer was cut. Which objects
+  survive the cap differs: upstream keeps what its pool finished
+  first, tsfga keeps the first granting candidates in candidate
+  order, so counts are comparable and membership is not. Reaching
+  the cap also stops the producers, so a candidate past it is
+  never resolved and can never raise — a call that answers is not
+  evidence that every object of the type is resolvable.
 
 - **`writeRelationConfig` refuses four model shapes OpenFGA's
   typesystem rejects**: a tupleset relation that is not a direct
@@ -312,29 +341,47 @@ releases may contain breaking changes).
   JSON, so the two agree except within a narrow band of the
   boundary. It applies to `addTuple` only, as upstream applies it.
 
-- **`matches()` follows RE2 rather than JavaScript's `RegExp`.**
-  Inline flags, `(?P<name>`, the POSIX classes and `\pL` are
-  translated; lookahead, lookbehind and backreferences are refused
-  as upstream refuses them. Patterns that used to answer with a
-  JavaScript reading — or to lose a grant silently, `\pL` matching
-  a literal `p` — now answer as upstream answers.
-
-- **`int()` and `double()` are range-checked as cel-go checks
-  them.**
-
 - **A `uint` parameter is carried as CEL's `uint`**, so its
   arithmetic is bounded by uint64 rather than int64 and
   `type(n) == uint` holds.
 
-Each of the last four condition changes can turn a
+Both of the last two condition changes can turn a
 previously-answered check into a refusal or flip a boolean — that
 is the point, they are the cells where tsfga disagreed with
 OpenFGA — but a consumer relying on the old answers will see it.
 
 ### Added
 
-- **`string(duration)` and `string(timestamp)` evaluate**,
-  formatted as cel-go formats them.
+- **`maxConditionEvaluationCost` on `CheckOptions`**, defaulting
+  to **100** — OpenFGA's default check evaluation cost. A
+  condition whose estimated cost exceeds it raises
+  `ConditionEvaluationError`, whose `cause` reads `evaluation cost
+  limit exceeded: estimated N against a limit of M`, and
+  `Infinity` opts out. cel-js has no
+  runtime metering of any kind, so the cost is estimated from the
+  AST and the coerced context before evaluation, which is why a
+  refusal costs nothing to reach.
+
+  The estimate is an approximation of cel-go's and does not agree
+  with it cell for cell. Where the two disagree tsfga charges the
+  larger figure, so the residue is in the refusing direction: a
+  check upstream answers may be refused here, and one upstream
+  refuses is never granted here on cost alone. Comprehensions
+  are charged per iteration at the cost of the nodes cel-go's
+  desugaring evaluates — 3 for `all`, 4 for `exists`, 2 for
+  `exists_one`, 12 for `map` and 13 for `filter`, the last two
+  because each pass builds a one-element list — plus a result
+  charge of 1, or 2 for `exists_one`. Measured against v1.18.2,
+  `exists`, `all`, `map` and `filter` refuse at exactly upstream's
+  element count; `exists_one` refuses earlier, which is a pinned
+  divergence in the refusing direction.
+
+  This is a new class of refusal on the check path: an expression
+  and a context that both used to answer can now raise. That is
+  deliberate — the expression is fixed at model time and the
+  request decides what it costs, so without the limit a caller
+  chooses how much work the authorization path does.
+
 - `DuplicateTupleError`, raised by `addTuple` alone.
 - `writeContextByteLimit` on `CheckOptions`, with
   `DEFAULT_WRITE_CONTEXT_BYTE_LIMIT` (32768) exported beside it.
@@ -342,9 +389,11 @@ OpenFGA — but a consumer relying on the old answers will see it.
   the already-exported `validateTupleWrite`. Omitting it does not
   measure the context at all, which is what the contextual path
   wants.
-- `InvalidSubjectTypeError.cause`, optional and `"malformed
-  subject"` where set. It is `undefined` for every other refusal,
-  so existing messages are unchanged.
+- `InvalidSubjectTypeError.cause`, optional and either
+  `"malformed subject"` or `"undefined subject type"` where set.
+  It is `undefined` for every other refusal — including the
+  ordinary "this relation does not admit that subject" one — so
+  existing messages are unchanged.
 
 ### Documentation
 

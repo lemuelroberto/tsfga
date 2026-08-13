@@ -33,9 +33,11 @@ import { ungatedConfig, ungatedTuple } from "./helpers/ungated.ts";
  * `listDirectSubjects` has since left `TupleStore`, so this is the
  * only library path to those rows — and its whole coverage was one
  * mock-driven core suite. What the mock cannot show is that the
- * rows survive a round trip through PostgreSQL: the wildcard
- * sentinel, the nullable `subject_relation`, and the condition
- * name all have to come back in the shape the filter compares.
+ * rows survive a round trip through PostgreSQL: the wildcard's
+ * column pair — `subject_id` NULL beside `subject_wildcard` true,
+ * which core spells `subjectId: "*"` — the nullable
+ * `subject_relation`, and the condition name all have to come back
+ * in the shape the filter compares.
  *
  * **Rows are pushed straight to the store.** `addTuple` refuses
  * exactly the rows under test, so a fixture built on the write path

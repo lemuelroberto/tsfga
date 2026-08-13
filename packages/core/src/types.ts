@@ -383,11 +383,12 @@ export interface CheckOptions {
    * opt out.
    *
    * The expression is fixed at model time and the **request**
-   * decides what it costs: `s.matches(p)` with both from context,
-   * `x == y` over two strings from context, `needle in haystack`
-   * over a list from context. All three are unbounded work driven
-   * by whoever is asking, on the authorization path. A pattern
-   * ceiling is not the defence; this is.
+   * decides what it costs: `groups.exists(g, g == role)` over a
+   * list from context, `x == y` over two strings from context,
+   * `needle in haystack` over a list from context. All three are
+   * unbounded work driven by whoever is asking, on the
+   * authorization path, and the comprehension is the shape that
+   * grows fastest — its body is charged once per element.
    *
    * **tsfga's cost model is an approximation of cel-go's and does
    * not agree with it cell for cell.** cel-js has no runtime
@@ -399,8 +400,10 @@ export interface CheckOptions {
    * answers may be refused here, and one upstream refuses is never
    * granted here on cost alone.
    *
-   * A refusal is a `ConditionEvaluationError` whose message begins
-   * `evaluation cost limit exceeded`.
+   * A refusal is a `ConditionEvaluationError` whose `cause` begins
+   * `evaluation cost limit exceeded`. The error's own message
+   * carries the wrapper every condition failure carries,
+   * `Failed to evaluate condition '<name>': …`.
    */
   maxConditionEvaluationCost?: number;
 }
