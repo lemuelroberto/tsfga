@@ -25,13 +25,11 @@ import {
  * int64 rather than uint64. cel-js does have a `uint` — its
  * `UnsignedInt`, reachable through `uint()` — and the coercion now
  * carries one, which closed all four cells at once: these two and
- * the two `GAP-024` rows in `a2-cel-numeric.test.ts`.
+ * the two matching rows in `cel-numeric.test.ts`.
  *
- * The one thing the carrier cost is `int(n)` on a `uint`, for
- * which cel-js has no overload. `conditions.ts` registers one and
- * rewrites the call onto it, so the trade is a fix rather than a
- * swap; the assertion for it lives in
- * `packages/core/tests/conditions.test.ts`.
+ * The one thing the carrier costs is `int(n)` on a `uint`, for
+ * which cel-js has no overload and tsfga supplies none — see
+ * `docs/cel-js/` for the gap and why it is not repaired here.
  *
  * The file keeps its name and its cells so the history stays
  * legible: these are the exact three requests the pin used to

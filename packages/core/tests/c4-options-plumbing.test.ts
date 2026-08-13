@@ -144,7 +144,7 @@ describe("maxDepth", () => {
     ).not.toContain("g30");
   });
 
-  test("GAP-362: a nonsense maxDepth is accepted silently", async () => {
+  test("a nonsense maxDepth is accepted silently", async () => {
     // `maxBreadth` and `maxConcurrentChecks` both reject a value
     // that is not a positive integer or Infinity. `maxDepth` takes
     // whatever it is given: NaN compares false against every

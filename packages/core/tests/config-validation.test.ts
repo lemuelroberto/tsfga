@@ -163,7 +163,7 @@ describe("writeRelationConfig refuses what the model would", () => {
  * `self` and `this` are reserved as a type name and as a relation
  * name, and a rewrite on the same object may not name the relation
  * it defines. Both are pinned two-sided against the container in
- * `tests/conformance/d3-model-gate.test.ts`; here are the cause
+ * `tests/conformance/model-gate-rules.test.ts`; here are the cause
  * each raises and — the part no conformance cell can state,
  * because it asserts an *absence* — the shapes each rule must go
  * on accepting.
@@ -211,7 +211,7 @@ describe("the model's own names are reserved", () => {
   });
 
   test("the rule is on the whole name, not a prefix", async () => {
-    // `a3-write-gate` defines `self_a`, and `myself` / `thistle`
+    // `write-gate` defines `self_a`, and `myself` / `thistle`
     // are ordinary names upstream stores.
     for (const ordinary of ["self_a", "myself", "this_1", "thistle"]) {
       await fga.writeRelationConfig(
@@ -281,9 +281,9 @@ describe("a rewrite may not name its own relation", () => {
    *
    * `viewer: [user] or viewer from parent` names this relation on
    * **another** object and is upstream's single most common model
-   * shape — `d4-gcloud`, `d4-oncall`, `d4-market`,
-   * `a5-nested-folders`, `a7-recursion`, `a8-recursion` and
-   * `c3-snowflake` all lean on it. A predicate that reached
+   * shape — `gcloud`, `oncall`, `market`,
+   * `nested-folders`, `recursive-relations`, `recursion-depth-boundary` and
+   * `snowflake` all lean on it. A predicate that reached
    * `tupleToUserset` would take out roughly 150 assertions and
    * refuse models the container stores.
    */
@@ -421,7 +421,7 @@ describe("addTuple refuses a tuple that is implicit", () => {
  * definition carries two more name fields under the same proto
  * pattern, `^[^:#@\s]{1,50}$` — its own name and every key of its
  * parameters. Both bounds are pinned two-sided against the
- * container in `tests/conformance/c2-names.test.ts`. Here: the
+ * container in `tests/conformance/model-name-fields.test.ts`. Here: the
  * error class and its cause, which the conformance suite cannot
  * see, and the acceptances a rule one character too wide loses.
  */

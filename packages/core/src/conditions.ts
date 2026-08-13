@@ -46,7 +46,7 @@ import type { WriteRuleId } from "./write-rules.ts";
  * list literal takes its type from its first element and every
  * later element of another type is an evaluation error, so
  * `["x", s]` — a string beside a `dyn` variable — refuses where
- * upstream answers. CEL's list literal is `list(dyn)` (issue 322).
+ * upstream answers. CEL's list literal is `list(dyn)`.
  */
 const env = new Environment({
   unlistedVariablesAreDyn: true,
@@ -170,8 +170,7 @@ export const CEL_GO_DECLARED_CALLS: Readonly<{
  * so a condition naming one of them is a model OpenFGA refuses to
  * store. It refuses it at `WriteAuthorizationModel`, because
  * `cel.EagerlyValidateDeclarations(true)` compiles every condition
- * against its declared parameters while the model is validated
- * (issue 381).
+ * against its declared parameters while the model is validated.
  *
  * There is no way to *remove* a function from cel-js: registries
  * lock on clone, there is no `deleteFunction`, and `stdlib` has no
@@ -357,8 +356,8 @@ function celTypeName(type: ConditionParameterType): string {
  * `n != 'a'` on an `int` parameter, or a reference to a parameter
  * that was never declared, is a **model-write** refusal upstream and
  * there is no model carrying it for a check to read. tsfga parsed
- * and did not check, so all seven shapes issue 388 reports answered,
- * and four of them granted.
+ * and did not check, so all seven of those shapes answered, and
+ * four of them granted.
  *
  * Two things make this reachable without tsfga writing a checker of
  * its own: cel-js 8.0.0 exposes a typed `check()`, and its
@@ -675,7 +674,7 @@ const DURATION_MAX_NS = 2n ** 63n;
 
 /**
  * Whether a duration string names more nanoseconds than an int64
- * holds (issue 420).
+ * holds.
  *
  * Upstream's converter is `time.ParseDuration` and nothing else,
  * and it errors the moment its accumulator overflows — so a value
@@ -746,7 +745,7 @@ function durationExceedsInt64(value: string): boolean {
  * ranges are Go's and they are not the ones a regex would express
  * — the day depends on the month and the year, and the zone
  * offset's minute is bounded at 60 rather than 59 — so they are
- * checked in `asTimestamp` against the calendar (issues 421, 423).
+ * checked in `asTimestamp` against the calendar.
  */
 const RFC3339 =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/;
@@ -1004,7 +1003,7 @@ function daysInMonth(year: number, month: number): number {
  *
  * The components are checked against the calendar rather than
  * handed to `new Date`, because `new Date` **normalises where Go
- * refuses** (issue 421): `2026-02-30T00:00:00Z` is March 2 and
+ * refuses**: `2026-02-30T00:00:00Z` is March 2 and
  * `2026-01-01T24:00:00Z` is the next midnight, so a date that does
  * not exist used to become a different instant and the condition
  * was evaluated against it. `time.Parse` reports "day out of
@@ -1017,7 +1016,7 @@ function daysInMonth(year: number, month: number): number {
  * divergence in the other direction: Go's range tests on the zone
  * offset "use > rather than >=, as some people do write offsets of
  * 24 hours or 60 minutes", so `+00:60` is one hour to upstream and
- * `Invalid Date` to `new Date` (issue 423). The offset is applied
+ * `Invalid Date` to `new Date`. The offset is applied
  * as written here, and only `+24:00` / `+00:60` and beyond refuse.
  *
  * The bounds on the resulting instant are CEL's, and are the ones
@@ -1204,7 +1203,7 @@ function coerceValue(
       // The grammar is not the whole gate: `time.ParseDuration`
       // counts nanoseconds in an int64 and errors on overflow, so
       // a well-spelled duration too large to hold is refused as
-      // the context is read (issue 420).
+      // the context is read.
       if (durationExceedsInt64(value)) {
         refuse("a duration within int64 nanoseconds");
       }
@@ -1260,7 +1259,7 @@ export function coerceContext(
 }
 
 // ---------------------------------------------------------------
-// The evaluation cost budget (issues 402 / 444)
+// The evaluation cost budget
 // ---------------------------------------------------------------
 
 /**

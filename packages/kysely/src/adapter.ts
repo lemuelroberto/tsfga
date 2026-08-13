@@ -551,8 +551,8 @@ export class KyselyTupleStore implements TupleStore {
    * validate-at-the-boundary rule the JSON columns follow,
    * generalised from one column to a pair. A store's reply is a
    * hint; a wildcard row silently read as the id `null`, or an id
-   * row read as the wildcard, is the issue-045 bug arriving from
-   * the other direction.
+   * row read as the wildcard, is the nil-UUID-as-wildcard bug
+   * arriving from the other direction.
    */
   private rowToTuple(row: {
     object_type: string;

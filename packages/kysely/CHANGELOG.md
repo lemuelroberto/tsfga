@@ -28,7 +28,7 @@ releases may contain breaking changes).
   OpenFGA holds them apart. Admitting more than the canonical
   spelling would let a grant written for one answer `true` for
   another — the one granting-direction hole this could have had,
-  and the reason `b5-identifiers`' three issue-281 rows now record
+  and the reason `identifiers`' three id-spelling rows now record
   a refusal instead of a wrong `true`.
 
   Nothing about the version or variant digits is checked; the nil

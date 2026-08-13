@@ -416,8 +416,8 @@ export function createTsfga(
       // v1.18.2 `ValidateStruct` appears in that one file and
       // nowhere else in `pkg/server/commands`.
       //
-      // Issue 386 added the check-path gate and applied it here at
-      // the same time, which refused a call upstream answers. The
+      // The check-path gate was once applied here too, which refused
+      // a call upstream answers. The
       // contextual tuples' own condition contexts *are* validated,
       // by `validateTupleWrite` — upstream validates those through
       // `ValidateTupleForWrite`, so the two are not symmetric.

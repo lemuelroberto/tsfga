@@ -618,7 +618,7 @@ describe("duration and timestamp grammars", () => {
    * reports "day out of range" / "hour out of range". `new Date`
    * rolls them over instead, so a date that does not exist became
    * a different instant and the condition was evaluated against it
-   * — granting, and silent on both sides (issue 421).
+   * — granting, and silent on both sides.
    */
   for (const spelling of [
     "2026-02-30T00:00:00Z",
@@ -679,7 +679,7 @@ describe("duration and timestamp grammars", () => {
    * the moment its accumulator overflows, so the magnitude is
    * refused as the context is *read* — with no arithmetic anywhere
    * in the condition, and on the write path too, since
-   * `validateTupleWrite` shares this function (issue 420).
+   * `validateTupleWrite` shares this function.
    */
   for (const spelling of [
     "9000000h",
@@ -880,7 +880,7 @@ describe("the compiled expression cache is bounded", () => {
  * cel-js refuses to replace its own `string.matches` overload, so
  * `compileCondition` renames the call onto one of ours and that
  * one translates the pattern first. The conformance assertions
- * live in `tests/conformance/a2-cel-regex.test.ts`; these are the
+ * live in `tests/conformance/cel-regex.test.ts`; these are the
  * unit-level rows, including the ones no model in the suite
  * reaches.
  */
@@ -894,8 +894,7 @@ describe("the compiled expression cache is bounded", () => {
  * cel-go's own option of that name defaults off and OpenFGA
  * never sets it — `internal/condition/condition.go` builds the
  * base environment from the custom parameter types,
- * `IPAddressEnvOption` and `EagerlyValidateDeclarations` alone
- * (issue 322).
+ * `IPAddressEnvOption` and `EagerlyValidateDeclarations` alone.
  *
  * It is the one survivor of the block that asserted tsfga's own
  * conversion overloads, because it asserts a cel-js *option*
@@ -981,9 +980,8 @@ describe("cel-js's declared surface against cel-go's", () => {
    * OpenFGA enables none of these: `internal/condition/condition.go`
    * builds its environment from the custom parameter types,
    * `IPAddressEnvOption` and `EagerlyValidateDeclarations`, so a
-   * condition naming one is a model upstream refuses to store. That
-   * is issue 381, and the declaration gate is what refuses them
-   * here.
+   * condition naming one is a model upstream refuses to store, and
+   * the declaration gate is what refuses them here.
    */
   const CEL_JS_ONLY: Record<"global" | "member", readonly string[]> = {
     global: [],
@@ -1106,7 +1104,7 @@ describe("cel-js's declared surface against cel-go's", () => {
 });
 
 /**
- * The declaration gate (issue 381).
+ * The declaration gate.
  *
  * cel-js ships the equivalent of cel-go's `ext.Strings()` and
  * `ext.Bindings()`, OpenFGA enables neither, and there is no way to
@@ -1221,7 +1219,7 @@ describe("a call cel-go does not declare is refused", () => {
 });
 
 /**
- * The type check (issue 388).
+ * The write-time type check.
  *
  * OpenFGA compiles every condition against its declared parameters
  * while it validates the model, so an expression that does not
@@ -1367,7 +1365,7 @@ describe("an expression is checked against its declarations", () => {
 });
 
 /**
- * The CEL evaluation cost budget (issues 402 / 444).
+ * The CEL evaluation cost budget.
  *
  * OpenFGA compiles every condition with `cel.CostLimit(100)`
  * (`internal/condition/condition.go`,

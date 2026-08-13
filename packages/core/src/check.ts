@@ -688,9 +688,9 @@ export async function validateCheckSubject(
   // (`^[^\s]{2,512}$`, which also carries the length bound) and
   // `IsValidUser` behind it.
   //
-  // Until issue 422 only `:` and `#` were refused here, on the
-  // reading that they are the characters that turn a mis-shaped
-  // request into a plausible-looking denial. So do the others: a
+  // Only `:` and `#` were refused here at first, on the reading
+  // that they are the characters that turn a mis-shaped request
+  // into a plausible-looking denial. So do the others: a
   // trailing space or a stray `U+0001` in an id read from an
   // untrusted source matched no row, and a caller got `false` from
   // tsfga where upstream told them the request was not a question.
@@ -1504,8 +1504,8 @@ async function checkBase(
   // One branch per conditioned wildcard row. They race as siblings
   // of a union, so a stored row whose condition holds still grants
   // when a contextual row on the same key does not — which is the
-  // whole of issue 342: the contextual row joins the stored one,
-  // it does not stand in for it.
+  // whole point of carrying a list: the contextual row joins the
+  // stored one, it does not stand in for it.
   for (const wildcardTuple of wildcardTuples) {
     handlers.push(() =>
       evaluateCondition(scope, wildcardTuple, request.context),

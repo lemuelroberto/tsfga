@@ -534,13 +534,13 @@ describe("listObjects", () => {
       // here too and the call answers `[]`.
       //
       // The earlier shape of this rule raised it instead, which is
-      // what made `listObjects` refuse where upstream answers `[]`
-      // (issues 301 and 341 row 1). The cost is stated with it:
+      // what made `listObjects` refuse where upstream answers `[]`.
+      // The cost is stated with it:
       // where upstream's reverse expansion *does* reach the
       // erroring row it refuses the whole call and this answers,
       // which is the under-reporting residue pinned in
-      // `tests/conformance/c3-vault.test.ts` and
-      // `b4-listobjects-probes.test.ts`.
+      // `tests/conformance/vault.test.ts` and
+      // `list-objects-probes.test.ts`.
       seedTuplesetScan(false);
 
       expect(await listObjects(store, ALICE_VIEWER)).toEqual([]);

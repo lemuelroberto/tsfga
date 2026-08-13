@@ -480,9 +480,9 @@ const OBJECT_ID_RESERVED: readonly string[] = ["#", ":", " "];
  * rule is core's, where it belongs: a store that holds opaque
  * strings gets it too.
  *
- * The check path had no object gate at all until issue 422: a
- * malformed id is a perfectly good text column value, so tsfga read
- * no row and answered `false` where upstream answers 400. The two
+ * The check path once had no object gate at all: a malformed id is
+ * a perfectly good text column value, so tsfga read no row and
+ * answered `false` where upstream answers 400. The two
  * paths run the same predicate here because upstream runs the same
  * one — `ValidateObject`, reached from `ValidateUserObjectRelation`,
  * which `CheckCommand` and `WriteCommand` (through
@@ -495,17 +495,16 @@ const OBJECT_ID_RESERVED: readonly string[] = ["#", ":", " "];
  * is refused outright rather than reinterpreted.
  *
  * The three refusals are upstream's three, in upstream's order:
- * the format predicate, then the typed wildcard (issue 443 — `*` is
- * a *subject*, and `doc:*` is a row nothing may ever read), then
+ * the format predicate, then the typed wildcard (`*` is a
+ * *subject*, and `doc:*` is a row nothing may ever read), then
  * the `TupleKey.object` proto bound. The bound is the caller's
  * argument rather than a constant here because the error names the
  * measurement, and the two paths inherit it from different places
  * upstream even though both land on 256 runes.
  *
- * @throws InvalidObjectError — its own class since round 4; this
- *   raised a bare `TsfgaError` provisionally, because
- *   `InvalidSubjectTypeError`'s `subject` field would have to be a
- *   lie.
+ * @throws InvalidObjectError — its own class, rather than
+ *   `InvalidSubjectTypeError`, whose `subject` field would have to
+ *   be a lie here.
  */
 export function validateObjectRef(
   objectType: string,
@@ -795,10 +794,10 @@ export async function validateTupleWrite(
   // decides it in `ValidateUser` before any type restriction or
   // condition is read (`pkg/tuple/tuple.go:459-518`).
   //
-  // The check path has applied this rule since round 1
-  // (`validateCheckSubject`), so until now a subject id holding `:`
-  // or `#` was writable and *uncheckable* — a grant that existed
-  // and could never be exercised. Same class, same cause, so the
+  // The check path applied this rule first (`validateCheckSubject`),
+  // so for a while a subject id holding `:` or `#` was writable and
+  // *uncheckable* — a grant that existed and could never be
+  // exercised. Same class, same cause, so the
   // two gates report identically.
   //
   // `*` is exempt from nothing: it holds none of the reserved

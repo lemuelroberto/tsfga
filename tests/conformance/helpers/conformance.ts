@@ -101,10 +101,10 @@ export async function expectPinnedDivergence(
  * set of answers from OpenFGA.
  *
  * **For a shape where upstream is nondeterministic — nothing
- * else.** The one call this exists for is issue 003, a condition
- * error behind a dispatch onto a wildcard-only relation.
+ * else.** The one call this exists for is a condition error behind
+ * a dispatch onto a wildcard-only relation.
  * Upstream's answer there is load-dependent: run
- * `a1-wildcard.test.ts` alone and OpenFGA answers `false` every
+ * `wildcard-positions.test.ts` alone and OpenFGA answers `false` every
  * time; run it inside the full suite and it refuses, agreeing
  * with tsfga. The suspected cause is a race in
  * `internal/graph/weight_two_resolver.go` between the tuple
@@ -941,7 +941,7 @@ export async function expectDeleteConformance(
  *
  * The delete-path counterpart to `expectPinnedWriteDivergence`,
  * and it exists for a reason the write path never had. Seven rows
- * of `e1-delete-gate.test.ts` assert that tsfga accepts a delete
+ * of `delete-gate.test.ts` assert that tsfga accepts a delete
  * syntactically and reaches the row — the guard against reusing
  * the write validators on a delete, which would strand every row
  * written under a dropped relation. Every one of those rows is

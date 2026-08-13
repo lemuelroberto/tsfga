@@ -188,7 +188,7 @@ describe("the tupleset read (step 5)", () => {
     expect(await check(store, ttuRequest)).toBe(false);
   });
 
-  test("GAP-360: a tupleset row for another object grants", async () => {
+  test("a tupleset row for another object grants", async () => {
     // The adapter bug this stands in for is a `WHERE` clause that
     // forgot `object_id` — a shape `findCheckTuples` is clamped
     // against (`clampToQuery`'s `onNode`) and this read is not.
@@ -212,7 +212,7 @@ describe("the tupleset read (step 5)", () => {
     expect(await check(store, ttuRequest)).toBe(false);
   });
 
-  test("GAP-360: a tupleset row for another relation grants", async () => {
+  test("a tupleset row for another relation grants", async () => {
     const store = ttuStore();
     store.relationConfigs.push(
       makeConfig({
@@ -559,7 +559,7 @@ describe("listSubjects reads through findTuplesByRelation", () => {
     ]);
   });
 
-  test("GAP-360: rows for another object are reported", async () => {
+  test("rows for another object are reported", async () => {
     const store = subjectStore();
     store.findTuplesByRelation = async (objectType, _objectId, relation) =>
       store.tuples.filter(
@@ -572,7 +572,7 @@ describe("listSubjects reads through findTuplesByRelation", () => {
     ]);
   });
 
-  test("GAP-360: rows on another relation are reported", async () => {
+  test("rows on another relation are reported", async () => {
     const store = subjectStore();
     store.findTuplesByRelation = async (objectType, objectId) =>
       store.tuples.filter(

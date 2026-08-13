@@ -17,7 +17,7 @@ import { MockTupleStore } from "./helpers/mock-store.ts";
 /**
  * The write-path gates OpenFGA applies and tsfga did not.
  *
- * Pinned two-sided in `tests/conformance/a3-write-gate.test.ts`.
+ * Pinned two-sided in `tests/conformance/write-gate.test.ts`.
  * Here the same rules are exercised against the mock, plus the
  * three things the conformance suite cannot say: which error class
  * and cause each refusal carries, that a duplicate leaves the
@@ -423,9 +423,8 @@ describe("the condition context is measured as protobuf does", () => {
 /**
  * `IsValidUserID` and `IsValidObject`, on the write path.
  *
- * The check path has applied the subject half since round 1, so
- * until now a subject id holding `:` or `#` was writable and
- * uncheckable. Both halves report as `TsfgaError`s, so a caller
+ * The check path applied the subject half first, so for a while a
+ * subject id holding `:` or `#` was writable and uncheckable. Both halves report as `TsfgaError`s, so a caller
  * catching the base class sees every malformed identifier.
  */
 describe("addTuple refuses a malformed identifier", () => {
@@ -449,7 +448,7 @@ describe("addTuple refuses a malformed identifier", () => {
   test("the object half still reports as a TsfgaError", async () => {
     // `InvalidObjectError` replaced the bare `TsfgaError` this was
     // raised as, and a caller catching the base class must still
-    // see it — `b5-identifiers.test.ts` asserts exactly that, from
+    // see it — `identifiers.test.ts` asserts exactly that, from
     // the other side.
     await expect(
       fga.addTuple({ ...bare("alice"), objectId: "a b" }),
@@ -638,7 +637,7 @@ describe("addTuple refuses a malformed identifier", () => {
  * rather than re-spelled, and these pin the two halves that differ
  * — the class each side raises, and the bounds.
  *
- * Two-sided in `tests/conformance/d2-request-idents.test.ts`.
+ * Two-sided in `tests/conformance/request-idents.test.ts`.
  */
 describe("check refuses a malformed identifier", () => {
   let store: MockTupleStore;
@@ -1118,7 +1117,7 @@ describe("the id domain runs behind the request rules and ahead of the model", (
  * relation, an undefined type and an unadmitted subject type all
  * fall through to "the tuple does not exist".
  *
- * Pinned two-sided in `tests/conformance/e1-delete-gate.test.ts`,
+ * Pinned two-sided in `tests/conformance/delete-gate.test.ts`,
  * where the fall-through half is asserted against the container.
  * Here: which rule fires, and that the gate reads nothing.
  */

@@ -23,8 +23,7 @@ describe("CANONICAL_UUID_IDS", () => {
   });
 
   test("admits the nil UUID as an ordinary id", () => {
-    // The issue-045 property, and the reason there is no version
-    // check. The nil UUID used to *be* the typed wildcard, so a
+    // The reason there is no version check. The nil UUID used to *be* the typed wildcard, so a
     // real subject carrying it was read back as everyone. It has a
     // column of its own now, no id value is reserved, and a
     // version-nibble check would refuse the exact id that freed.

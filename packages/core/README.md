@@ -255,8 +255,8 @@ The policy is local to `listObjects`. `check` still raises
 `DepthExceededError`, in every set position, and every other error
 still aborts a `listObjects` call in candidate order.
 
-Pinned two-sided by `a8-listobjects.test.ts` and
-`a4-list-objects-depth.test.ts`.
+Pinned two-sided by `list-objects-depth-budget.test.ts` and
+`list-objects-depth.test.ts`.
 
 ## A relation the subject's type cannot reach is denied
 
@@ -427,7 +427,7 @@ with nothing reporting it.
 
 The refused set is a class, not a list: **every id upstream admits
 that is not a canonical UUID**.
-`tests/conformance/b6-id-domain.test.ts` pins representatives of
+`tests/conformance/id-domain.test.ts` pins representatives of
 it, and `capability-refusals.json` carries the inventory entry
 under `ID-DOMAIN-OUT-OF-DOMAIN`.
 

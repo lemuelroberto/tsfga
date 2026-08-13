@@ -583,9 +583,9 @@ describe("KyselyTupleStore", () => {
 
     test("a second write does not clear conditionName", async () => {
       // This asserted the opposite while `insertTuple` was an
-      // upsert, and that is the widening direction of issue 044: a
-      // conditioned grant became a permanent one because someone
-      // re-wrote the edge without its condition. The row stands.
+      // upsert, and that is the widening direction: a conditioned
+      // grant became a permanent one because someone re-wrote the
+      // edge without its condition. The row stands.
       await store.insertTuple(
         ungatedTuple({
           objectType: "doc",
@@ -816,7 +816,7 @@ describe("KyselyTupleStore", () => {
     });
 
     /**
-     * GAP-045. The nil UUID used to *be* the wildcard's storage
+     * The nil UUID used to *be* the wildcard's storage
      * encoding, so a grant written for it read back as `"*"` and
      * granted every subject of the type, while the subject it was
      * written for stopped matching. Both halves are asserted:
@@ -914,7 +914,8 @@ describe("KyselyTupleStore", () => {
   });
 
   /**
-   * GAP-281, from the other end. `object_id` is a `uuid` column,
+   * The `uuid` column's grammar, from the other end. `object_id` is
+   * a `uuid` column,
    * and that column's input grammar is many-to-one: the uppercase,
    * hyphenless, braced, braced-hyphenless and odd-hyphen spellings
    * of one value all store as the same row, while OpenFGA holds

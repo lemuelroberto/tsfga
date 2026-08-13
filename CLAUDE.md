@@ -138,7 +138,7 @@ tsfga/
 │       ├── README.md                capability report + gap table
 │       ├── cases.jsonl              one measured cell per line
 │       ├── regex/                   why there is no regex support
-│       ├── gaps/                    GAP-001… with issue back-pointers
+│       ├── gaps/                    GAP-001… the measured gap set
 │       ├── probes/                  reproducible probe scripts
 │       ├── retired/                 removed suites + the translator
 │       └── upstream/                drafted cel-js issue bodies
@@ -717,7 +717,7 @@ nibble — because the nil UUID must stay an ordinary id.
 
 `user:alice` is an ordinary subject upstream and this adapter
 refuses it, permanently. That is a documented design limit, pinned
-in `tests/conformance/b6-id-domain.test.ts` and `c2-ids.test.ts`.
+in `tests/conformance/id-domain.test.ts` and `non-uuid-object-ids.test.ts`.
 
 **The typed wildcard is not an id.** `subject_wildcard boolean`
 carries the shape and `subject_id` is NULL on those rows, so no id

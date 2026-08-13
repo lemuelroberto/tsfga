@@ -544,7 +544,7 @@ describe("Relation Config Validation Conformance", () => {
   /**
    * The exact boundaries of the name rule.
    *
-   * `b5-names.test.ts` covers the defects themselves, comfortably
+   * `relation-names.test.ts` covers the defects themselves, comfortably
    * past either bound (60 and 301). What it cannot show is where
    * the bound *is*, or what the bound counts, and both are easy to
    * get wrong in a way no failing test would catch:

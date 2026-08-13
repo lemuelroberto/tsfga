@@ -59,9 +59,25 @@ function createClient(storeId?: string): OpenFgaClient {
   });
 }
 
+/**
+ * `CreateStoreRequest.Name` is bounded at 64 characters, and a
+ * store name here is diagnostic rather than load-bearing — it is
+ * what identifies the store in the playground and nothing reads it
+ * back. A fixture that composes its name from a file slug and a
+ * case name can cross the bound just by being renamed, and the
+ * failure that produces is a 400 on store creation followed by a
+ * cascade of unrelated-looking errors from the case's own writes.
+ *
+ * So the bound is enforced here, once, and the **tail** is what
+ * survives: the case name discriminates, the prefix repeats.
+ */
+const STORE_NAME_MAX = 64;
+
 export async function fgaCreateStore(name: string): Promise<string> {
   const client = createClient();
-  const response = await client.createStore({ name });
+  const response = await client.createStore({
+    name: name.length > STORE_NAME_MAX ? name.slice(-STORE_NAME_MAX) : name,
+  });
   return response.id;
 }
 

@@ -45,7 +45,7 @@ these restrictions.
 
 See the [core README's id-domain
 section](../core/README.md#known-divergence-the-stores-id-domain)
-and `tests/conformance/b6-id-domain.test.ts`, which pins the
+and `tests/conformance/id-domain.test.ts`, which pins the
 divergence against a live OpenFGA.
 
 ## Installation

@@ -82,8 +82,8 @@ import type { WriteRuleId } from "./write-rules.ts";
  *
  * That is measured, not assumed. Run warn-only over this repo's
  * own conformance corpus, the strict forms refuse 43 config writes
- * across `deep-rewrite`, `a5-nested-folders`, `a5-ttu-chains`,
- * `a7-recursion`, `a8-*` and `theopenlane.*` — every one of them
+ * across `deep-rewrite`, `nested-folders`, `ttu-chains`,
+ * `recursive-relations`, `a8-*` and `theopenlane.*` — every one of them
  * an ordinary model whose relations happen to be written in
  * definition order rather than dependency order. `viewer: a but
  * not banned` written before `banned`, and `blocked: nblocked from
@@ -277,8 +277,8 @@ export async function validateRelationConfigWrite(
  * condition stored under a name upstream refuses is one no
  * `directly_related_user_types` entry of an acceptable model could
  * ever name, so the model tsfga holds is one OpenFGA would not
- * store — the same defect issue 283 closed on a config's own
- * names, reached through the other write path.
+ * store — the same defect the gate on a config's own names
+ * closes, reached through the other write path.
  *
  * A parameter name is the one place the model's name class and
  * CEL's identifier grammar disagree: CEL cannot *reference* a
@@ -464,9 +464,9 @@ function hasRewrite(config: RelationConfig): boolean {
  * names this relation on **another** object, which is the single
  * most common shape an OpenFGA model has. Extending this
  * predicate to `tupleToUserset` would refuse
- * `d4-gcloud`'s deny policy, `d4-oncall`'s `member from
- * parent_team`, `d4-market`'s TTU onto a TTU, `a5-nested-folders`,
- * `a7-recursion`, `a8-recursion` and `c3-snowflake` — every one of
+ * `gcloud`'s deny policy, `oncall`'s `member from
+ * parent_team`, `market`'s TTU onto a TTU, `nested-folders`,
+ * `recursive-relations`, `recursion-depth-boundary` and `snowflake` — every one of
  * them a model the container stores. The self-recursive TTU that
  * *is* refused upstream is refused for having no entrypoint, and
  * only in the closed form `hasNoEntrypoint` below decides.

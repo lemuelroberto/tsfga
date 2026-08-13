@@ -100,7 +100,7 @@ with **no database, no container and no authorization graph**: an
 expression, a context, and an expected value.
 
 A fork evaluating a candidate build should start with
-`retired/c5-cel-re2/`, which is the highest-value single file for
+`retired/cel-re2/`, which is the highest-value single file for
 this purpose, and with `regex/measure-backtracking.mjs`.
 
 No suite was deleted. A suite whose point was dialect behaviour is

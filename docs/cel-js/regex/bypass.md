@@ -52,7 +52,7 @@ It was abandoned because it closes only [group
 `\Q`, `\s` — is patterns RE2 *accepts*, so a deny-list built from
 RE2's grammar passes them through, and they are the silent-denial
 family. A pattern arriving through condition context, as
-`c3-actions`'s fixture does, cannot be scanned at all without
+`actions`'s fixture does, cannot be scanned at all without
 re-introducing the source splicer. And [catastrophic
 backtracking](./backtracking.md) is untouched by any of it.
 

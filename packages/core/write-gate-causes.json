@@ -89,7 +89,7 @@
       "rules": [
         "CONFIG-TYPE-NAME-MALFORMED"
       ],
-      "test": "tests/conformance/b5-names.test.ts:GAP-283: a type name past the length limit"
+      "test": "tests/conformance/relation-names.test.ts:a type name past the length limit"
     },
     {
       "field": "TypeDefinition.Relations[]",
@@ -98,7 +98,7 @@
       "rules": [
         "CONFIG-RELATION-NAME-MALFORMED"
       ],
-      "test": "tests/conformance/b5-names.test.ts:GAP-283: a relation name past the length limit"
+      "test": "tests/conformance/relation-names.test.ts:a relation name past the length limit"
     },
     {
       "field": "Condition.Name",
@@ -125,7 +125,7 @@
       "rules": [
         "DELETE-RELATION-MALFORMED"
       ],
-      "test": "tests/conformance/e1-delete-gate.test.ts:a relation holding a space",
+      "test": "tests/conformance/delete-gate.test.ts:a relation holding a space",
       "note": "Applied only to a non-empty relation: protovalidate patterns do not run on an empty field, so an empty relation on a delete falls through to 'does not exist'."
     }
   ],
@@ -178,7 +178,7 @@
         "pkg/typesystem/error.go:24"
       ],
       "disposition": "pinned",
-      "test": "tests/conformance/a7-model-gate.test.ts:the gap (155): a rewrite names an undefined relation"
+      "test": "tests/conformance/model-gate.test.ts:the gap (155): a rewrite names an undefined relation"
     },
     {
       "package": "typesystem",
@@ -201,7 +201,7 @@
       "rules": [
         "CONFIG-REWRITE-NAMES-ITSELF"
       ],
-      "test": "tests/conformance/d3-model-gate.test.ts:GAP-441: a bare computed userset onto itself is refused"
+      "test": "tests/conformance/model-gate-rules.test.ts:a bare computed userset onto itself is refused"
     },
     {
       "package": "typesystem",
@@ -215,7 +215,7 @@
         "CONFIG-TYPE-NAME-RESERVED",
         "CONFIG-RELATION-NAME-RESERVED"
       ],
-      "test": "tests/conformance/d3-model-gate.test.ts:as an object type name is refused"
+      "test": "tests/conformance/model-gate-rules.test.ts:as an object type name is refused"
     },
     {
       "package": "typesystem",
@@ -228,7 +228,7 @@
       "rules": [
         "CONFIG-REWRITE-CYCLE"
       ],
-      "test": "tests/conformance/e1-model-cycles.test.ts:two relations rewriting onto each other"
+      "test": "tests/conformance/model-cycles.test.ts:two relations rewriting onto each other"
     },
     {
       "package": "typesystem",
@@ -241,8 +241,8 @@
       "rules": [
         "CONFIG-NO-ENTRYPOINT"
       ],
-      "test": "tests/conformance/a7-model-gate.test.ts:GAP-153: a relation with no entrypoint is refused",
-      "gap": "only the one form a single config decides -- a relation whose sole arm is a tuple-to-userset onto itself over a tupleset admitting its own object type. The general rule is a whole-model property; see finding 503."
+      "test": "tests/conformance/model-gate.test.ts:a relation with no entrypoint is refused",
+      "gap": "only the one form a single config decides -- a relation whose sole arm is a tuple-to-userset onto itself over a tupleset admitting its own object type. The general rule is a whole-model property, which a per-config gate cannot decide."
     },
     {
       "package": "typesystem",
@@ -321,7 +321,7 @@
         "pkg/typesystem/error.go:117"
       ],
       "disposition": "pinned",
-      "test": "tests/conformance/a7-model-gate.test.ts:the gap (155): a rewrite names an undefined relation"
+      "test": "tests/conformance/model-gate.test.ts:the gap (155): a rewrite names an undefined relation"
     },
     {
       "package": "typesystem",
@@ -347,7 +347,7 @@
       "rules": [
         "CONFIG-ADMITS-AND-REWRITES-NOTHING"
       ],
-      "test": "tests/conformance/a7-model-gate.test.ts:GAP-152: an assignable relation with no type restrictions is refused"
+      "test": "tests/conformance/model-gate.test.ts:an assignable relation with no type restrictions is refused"
     },
     {
       "package": "typesystem",
@@ -360,7 +360,7 @@
       "rules": [
         "CONFIG-RESTRICTIONS-ON-NON-ASSIGNABLE"
       ],
-      "test": "tests/conformance/a7-model-gate.test.ts:GAP-151: type restrictions on a non-assignable relation are refused"
+      "test": "tests/conformance/model-gate.test.ts:type restrictions on a non-assignable relation are refused"
     },
     {
       "package": "typesystem",
@@ -410,7 +410,7 @@
         "pkg/typesystem/typesystem.go:1017"
       ],
       "disposition": "pinned",
-      "test": "tests/conformance/a7-model-gate.test.ts:the gap (154): no tupleset type defines it"
+      "test": "tests/conformance/model-gate.test.ts:the gap (154): no tupleset type defines it"
     },
     {
       "package": "typesystem",
@@ -456,7 +456,7 @@
       "rules": [
         "CONFIG-TYPE-NAME-MALFORMED"
       ],
-      "test": "tests/conformance/d3-model-gate.test.ts:control: a plain direct relation is stored by both"
+      "test": "tests/conformance/model-gate-rules.test.ts:control: a plain direct relation is stored by both"
     },
     {
       "package": "typesystem",
@@ -482,7 +482,7 @@
       "rules": [
         "CONFIG-TUPLESET-NOT-DIRECT"
       ],
-      "test": "tests/conformance/a7-model-gate.test.ts:GAP-150: a computed tupleset relation is refused"
+      "test": "tests/conformance/model-gate.test.ts:a computed tupleset relation is refused"
     },
     {
       "package": "typesystem",
@@ -492,7 +492,7 @@
         "pkg/typesystem/typesystem.go:1316"
       ],
       "disposition": "pinned",
-      "test": "tests/conformance/a7-model-gate.test.ts:the gap (154): no tupleset type defines it"
+      "test": "tests/conformance/model-gate.test.ts:the gap (154): no tupleset type defines it"
     },
     {
       "package": "typesystem",
@@ -546,7 +546,7 @@
       "rules": [
         "CONFIG-TUPLESET-NOT-DIRECT"
       ],
-      "test": "tests/conformance/a7-model-gate.test.ts:GAP-150: a computed tupleset relation is refused"
+      "test": "tests/conformance/model-gate.test.ts:a computed tupleset relation is refused"
     },
     {
       "package": "validation",
@@ -585,7 +585,7 @@
       "rules": [
         "TUPLE-RELATION-UNDEFINED"
       ],
-      "test": "tests/conformance/a3-write-gate.test.ts:a relation the model does not define"
+      "test": "tests/conformance/write-gate.test.ts:a relation the model does not define"
     },
     {
       "package": "validation",
@@ -624,7 +624,7 @@
       "rules": [
         "TUPLE-SUBJECT-NOT-ADMITTED"
       ],
-      "test": "tests/conformance/a3-write-gate.test.ts:a subject type the relation does not admit"
+      "test": "tests/conformance/write-gate.test.ts:a subject type the relation does not admit"
     },
     {
       "package": "validation",
@@ -637,7 +637,7 @@
       "rules": [
         "TUPLE-CONDITION-MISSING"
       ],
-      "test": "tests/conformance/a3-write-gate.test.ts:the condition omitted where the restriction requires one"
+      "test": "tests/conformance/write-gate.test.ts:the condition omitted where the restriction requires one"
     },
     {
       "package": "validation",
@@ -663,7 +663,7 @@
       "rules": [
         "TUPLE-CONDITION-UNDEFINED"
       ],
-      "test": "tests/conformance/a3-write-gate.test.ts:a condition name the model does not define"
+      "test": "tests/conformance/write-gate.test.ts:a condition name the model does not define"
     },
     {
       "package": "validation",
@@ -676,7 +676,7 @@
       "rules": [
         "TUPLE-CONDITION-NOT-ADMITTED"
       ],
-      "test": "tests/conformance/a3-write-gate.test.ts:a condition where the restriction names none"
+      "test": "tests/conformance/write-gate.test.ts:a condition where the restriction names none"
     },
     {
       "package": "validation",
@@ -689,7 +689,7 @@
       "rules": [
         "TUPLE-CONTEXT-PARAMETER-UNDECLARED"
       ],
-      "test": "tests/conformance/a3-write-gate.test.ts:a context key the condition does not declare"
+      "test": "tests/conformance/write-gate.test.ts:a context key the condition does not declare"
     },
     {
       "package": "validation",
@@ -718,7 +718,7 @@
       "rules": [
         "TUPLE-RELATION-UNDEFINED"
       ],
-      "test": "tests/conformance/a3-write-gate.test.ts:a relation the model does not define"
+      "test": "tests/conformance/write-gate.test.ts:a relation the model does not define"
     },
     {
       "package": "validation",
@@ -821,7 +821,7 @@
         "TUPLE-SUBJECT-MALFORMED",
         "DELETE-SUBJECT-MALFORMED"
       ],
-      "test": "tests/conformance/e1-delete-gate.test.ts:a subject holding a space"
+      "test": "tests/conformance/delete-gate.test.ts:a subject holding a space"
     },
     {
       "package": "commands",
@@ -1156,7 +1156,7 @@
       "rules": [
         "TUPLE-RELATION-UNDEFINED"
       ],
-      "test": "tests/conformance/a3-write-gate.test.ts:a relation the model does not define"
+      "test": "tests/conformance/write-gate.test.ts:a relation the model does not define"
     },
     {
       "package": "errors",
@@ -1257,7 +1257,7 @@
       "rules": [
         "TUPLE-CONTEXT-PARAMETER-TYPE"
       ],
-      "test": "tests/conformance/a3-write-gate.test.ts:a context value that cannot be coerced"
+      "test": "tests/conformance/write-gate.test.ts:a context value that cannot be coerced"
     }
   ]
 }
